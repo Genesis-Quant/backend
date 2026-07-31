@@ -1,20 +1,33 @@
 """FastAPI entry point."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 
-from scheduler import DolphinSchedulerError, create_and_submit_incremental_update
+from app.database import DatabaseError, check_database
+from app.routers.scheduler import router as scheduler_router
+from scheduler import ensure_all_workflows
 
-app = FastAPI(title="Arena Backend", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    application.state.workflows = ensure_all_workflows()
+    yield
+
+
+app = FastAPI(title="Arena Backend", version="0.1.0", lifespan=lifespan)
+app.include_router(scheduler_router)
 
 
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/api/v1/scheduler/incremental-updates", tags=["scheduler"])
-def submit_incremental_update() -> dict[str, int]:
     try:
-        return create_and_submit_incremental_update()
-    except DolphinSchedulerError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+        database = check_database()
+    except DatabaseError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return {
+        "status": "ok",
+        "database": database.database,
+        "schema": database.schema,
+    }
