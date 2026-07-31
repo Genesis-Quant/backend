@@ -5,7 +5,7 @@ FastAPI 服务和 DolphinScheduler 工作流定义。
 ## 启动
 
 ```powershell
-cd D:\Arena\backend
+cd backend
 uv sync
 uv run uvicorn app.main:app --reload
 ```
@@ -23,7 +23,7 @@ result = create_and_submit_incremental_update()
 print(result)
 ```
 
-HTTP：
+也可以调用后端接口：
 
 ```powershell
 Invoke-RestMethod `
@@ -31,25 +31,25 @@ Invoke-RestMethod `
   -Uri http://127.0.0.1:8000/api/v1/scheduler/incremental-updates
 ```
 
-函数会幂等创建 DolphinScheduler Project、一个容量为 1 的全局增量 Task Group，
-以及包含全部独立 Shell 节点的工作流，然后发布并立即启动工作流。
-`docker-compose.yml` 将每个 DolphinScheduler Worker 容器的执行线程数设为 1。
-14 个 Runtime Worker 会分别生成任务实例和日志，但通过共享 Task Group 依次运行，
-保证当前 Tushare 限速器不会因多进程而叠加请求速率。
+后端通过官方 `apache-dolphinscheduler` SDK 连接 Python Gateway，不直接请求
+DolphinScheduler HTTP API。工作流包含 14 个串行依赖的 Shell 任务，前一个
+Runtime Worker 完成后才会启动下一个；这个限制只作用于该工作流，不限制
+DolphinScheduler Worker 节点执行其它工作流。
+提交时会创建一个仅执行一次的在线 schedule，由 DolphinScheduler 启动任务实例。
 
 ## 配置
 
-默认读取 `D:\Arena\.env`。生产环境由进程或容器同时注入 `.env` 和
-`.env.prod`，后者覆盖前者。
+默认读取项目根目录 `.env`。
 
 | 变量 | 默认值 |
 | --- | --- |
-| `DOLPHINSCHEDULER_BASE_URL` | `http://127.0.0.1:12345/dolphinscheduler` |
-| `DOLPHINSCHEDULER_USERNAME` | `admin` |
+| `DOLPHINSCHEDULER_PYTHON_GATEWAY_ADDRESS` | `127.0.0.1` |
+| `DOLPHINSCHEDULER_PYTHON_GATEWAY_PORT` | `25333` |
+| `DOLPHINSCHEDULER_PYTHON_GATEWAY_AUTH_TOKEN` | 必填，必须与容器一致 |
+| `DOLPHINSCHEDULER_USERNAME` | `arena-scheduler` |
 | `DOLPHINSCHEDULER_PASSWORD` | `dolphinscheduler123` |
 | `DOLPHINSCHEDULER_PROJECT_NAME` | `arena-runtime` |
 | `DOLPHINSCHEDULER_WORKFLOW_NAME` | `incremental-update` |
-| `DOLPHINSCHEDULER_TASK_GROUP_PREFIX` | `arena-incremental` |
 | `DOLPHINSCHEDULER_WORKER_GROUP` | `default` |
 | `DOLPHINSCHEDULER_TENANT_CODE` | `default` |
 | `DOLPHINSCHEDULER_RUNTIME_COMMAND` | `/opt/arena-runtime/.venv/bin/core-manage` |
