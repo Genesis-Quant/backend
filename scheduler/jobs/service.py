@@ -60,6 +60,7 @@ class SchedulerService:
             {
                 "input_file": str(metadata["input_file"]),
                 "job_id": metadata["job_id"],
+                "output": " ".join(metadata["requested_outputs"]),
             },
         )
 

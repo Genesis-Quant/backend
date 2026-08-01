@@ -15,6 +15,18 @@ JobKind: TypeAlias = Literal[
 
 APPLICATIONS: tuple[ApplicationName, ...] = ("query", "factor", "backtest")
 JOB_KINDS: tuple[JobKind, ...] = (*APPLICATIONS, "incremental-update")
+APPLICATION_OUTPUTS: dict[ApplicationName, tuple[str, ...]] = {
+    "query": ("source_data", "computed_data", "filtered_data", "data"),
+    "factor": ("processed_data", "information_coefficient", "group_returns"),
+    "backtest": (
+        "trade_details",
+        "daily_positions",
+        "daily_portfolios",
+        "return_summary",
+        "daily_trading_statistics",
+        "engine_stat",
+    ),
+}
 
 TERMINAL_STATES = frozenset(
     {

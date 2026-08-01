@@ -98,12 +98,15 @@ def factor_payload():
         "dataset_query": {"start_date": "2025-01-01"},
         "factor_columns": ["close"],
         "return_columns": ["pct_chg"],
+        "output": ["processed_data", "information_coefficient"],
     }
 
 
 def test_service_tracks_process_tasks_and_log_cursor(tmp_path, monkeypatch):
     service, client = make_service(tmp_path, monkeypatch)
     submitted = service.submit_application("factor", factor_payload())
+
+    assert client.started[0]["start_params"]["output"] == "processed_data information_coefficient"
 
     tracked = service.get_job(submitted["job_id"])
 

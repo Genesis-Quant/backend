@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from scheduler.config import DolphinSchedulerSettings
-from scheduler.domain import APPLICATIONS
+from scheduler.domain import APPLICATION_OUTPUTS, APPLICATIONS
 from scheduler.errors import DolphinSchedulerError
 
 
@@ -35,6 +35,7 @@ def create_application_workflows(
                 param={
                     "input_file": f"/shared/{application}/input.json",
                     "job_id": "definition-default",
+                    "output": APPLICATION_OUTPUTS[application][0],
                 },
             )
             with workflow:
@@ -42,7 +43,8 @@ def create_application_workflows(
                     name=application,
                     command=(
                         f"exec {current_settings.runtime_command} "
-                        f'apps {application} --input-file "${{input_file}}"'
+                        f'apps {application} --input-file "${{input_file}}" '
+                        "--output ${output}"
                     ),
                     description=(
                         f"从共享目录 input.json 运行 {application}，"

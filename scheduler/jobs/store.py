@@ -10,7 +10,13 @@ from threading import RLock
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from scheduler.domain import APPLICATIONS, JOB_KINDS, ApplicationName, JobKind
+from scheduler.domain import (
+    APPLICATION_OUTPUTS,
+    APPLICATIONS,
+    JOB_KINDS,
+    ApplicationName,
+    JobKind,
+)
 from scheduler.errors import JobValidationError
 
 _store_lock = RLock()
@@ -35,6 +41,7 @@ class SharedJobStore:
         output_dir.mkdir(parents=True, exist_ok=False)
 
         runtime_input = deepcopy(payload)
+        requested_outputs = runtime_input.pop("output")
         runtime_input["output_dir"] = "output"
         input_file = job_dir / "input.json"
         self._write_json(input_file, runtime_input)
@@ -42,6 +49,7 @@ class SharedJobStore:
             {
                 "input_file": str(input_file),
                 "output_dir": str(output_dir),
+                "requested_outputs": requested_outputs,
             }
         )
         self.save(metadata)
@@ -182,7 +190,7 @@ class SharedJobStore:
             raise JobValidationError(
                 "output_dir 由 backend 统一设置为共享任务目录，请勿传入"
             )
-        required = {"dataset_query"}
+        required = {"dataset_query", "output"}
         if application == "factor":
             required.update(("factor_columns", "return_columns"))
         if application == "backtest":
@@ -190,6 +198,13 @@ class SharedJobStore:
         missing = sorted(required - payload.keys())
         if missing:
             raise JobValidationError(f"缺少必填字段: {missing}")
+        outputs = payload["output"]
+        if not isinstance(outputs, list) or not outputs or not all(isinstance(output, str) for output in outputs):
+            raise JobValidationError("output 必须是非空字符串数组")
+        if len(outputs) != len(set(outputs)):
+            raise JobValidationError("output 中的名称不能重复")
+        if unsupported := sorted(set(outputs) - set(APPLICATION_OUTPUTS[application])):
+            raise JobValidationError(f"{application} 不支持以下输出: {unsupported}")
 
     def _job_dir(self, application: JobKind, job_id: str) -> Path:
         if application not in JOB_KINDS:

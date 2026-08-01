@@ -59,11 +59,13 @@ Invoke-RestMethod `
 
 ### 提交任务
 
-提交 query 时，请求体就是 Runtime 的 query 输入，但不能包含 `output_dir`：
+提交 query 时，请求体包含 Runtime 的 query 输入和必填的 `output`，但不能包含
+`output_dir`：
 
 ```powershell
 $input = Get-Content ..\runtime\examples\query.json -Raw | ConvertFrom-Json
 $input.PSObject.Properties.Remove("output_dir")
+$input | Add-Member -NotePropertyName output -NotePropertyValue @("data")
 $job = Invoke-RestMethod `
   -Method Post `
   -ContentType application/json `
@@ -72,8 +74,11 @@ $job = Invoke-RestMethod `
 ```
 
 factor 使用 `/api/v1/scheduler/jobs/factor`，请求体对应 Runtime 的
-`factor.json`，同样不能包含 `output_dir`。backtest 使用
-`/api/v1/scheduler/jobs/backtest`。
+`factor.json`，并增加例如 `"output": ["processed_data", "information_coefficient"]`。
+backtest 使用 `/api/v1/scheduler/jobs/backtest`，并增加例如
+`"output": ["daily_portfolios", "return_summary"]`。`output` 至少包含一个结果且
+不能重复；backend 不会把它写入 `input.json`，而是通过 DolphinScheduler 启动参数传给
+Runtime 的 `--output`。
 
 增量更新同样创建可跟踪的 Arena Job，并立即启动已注册的工作流：
 
