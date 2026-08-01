@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
-from sqlalchemy.engine import make_url
 
 from alembic import context
-from app.database import BACKEND_SCHEMA
-from app.models import Base
+import apps.backtest.models
+import apps.factor.models
+import apps.query.models
+import apps.users.models
+from config.database import BACKEND_SCHEMA, Base, sqlalchemy_database_url
 
 VERSION_TABLE = "alembic_version_backend"
 ARENA_ROOT = Path(__file__).resolve().parents[2]
@@ -38,18 +39,7 @@ def include_name(
 
 
 def sqlalchemy_url() -> str:
-    database_url = os.getenv("DATABASE_URL", "")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL 不能为空")
-    url = make_url(database_url)
-    if url.drivername == "postgresql":
-        url = url.set(drivername="postgresql+psycopg")
-    if url.username is None and os.getenv("POSTGRES_USER"):
-        url = url.set(
-            username=os.environ["POSTGRES_USER"],
-            password=os.getenv("POSTGRES_PASSWORD"),
-        )
-    return url.render_as_string(hide_password=False).replace("%", "%%")
+    return sqlalchemy_database_url().render_as_string(hide_password=False).replace("%", "%%")
 
 
 def run_migrations_offline() -> None:

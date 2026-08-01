@@ -6,8 +6,11 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.14,<2",
     "apache-dolphinscheduler==4.1.0",
+    "arena-runtime>=0.1,<0.2",
+    "bcrypt>=4.3,<5",
     "fastapi>=0.115,<1",
     "psycopg[binary]>=3.2,<4",
+    "pyjwt>=2.10,<3",
     "python-dotenv>=1.0,<2",
     "requests>=2.32,<3",
     "sqlalchemy>=2.0,<3",
@@ -16,13 +19,17 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28,<1",
     "pytest>=8,<9",
 ]
 
 [tool.pytest.ini_options]
 addopts = "-q"
 pythonpath = ["."]
-testpaths = ["tests"]
+testpaths = ["apps", "config"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+arena-runtime = { path = "../runtime" }

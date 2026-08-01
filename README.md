@@ -1,236 +1,159 @@
 # Arena Backend
 
-FastAPI 服务以及完整的 DolphinScheduler 工作流注册、任务提交、状态跟踪、控制和
-日志访问封装。
+Backend 提供用户认证，以及 query、factor、backtest 三类 DolphinScheduler 后台任务。
+DolphinScheduler 是 `config/dolphinscheduler` 中的运行基础设施，不是业务 app，也不暴露
+`/api/v1/scheduler` 接口。
 
-## 代码结构
+## 结构
 
 ```text
-app/
-├── main.py                    # 应用入口和健康检查
-└── routers/
-    └── scheduler.py           # 调度 HTTP API
-scheduler/
-├── clients/
-│   └── dolphinscheduler.py    # DolphinScheduler 3.2 HTTP 客户端
-├── definitions/
-│   ├── applications.py        # query/factor/backtest 工作流
-│   ├── incremental.py         # 增量更新工作流
-│   └── registry.py            # 工作流注册与发现
-├── jobs/
-│   ├── store.py               # 共享目录任务元数据
-│   └── service.py             # 提交、同步、控制、日志服务
-├── config.py
-├── domain.py
-└── errors.py
+main.py
+config/
+├── database.py
+├── settings.py
+└── dolphinscheduler/
+    ├── client.py              # DolphinScheduler HTTP 客户端
+    ├── workflows.py           # 工作流注册和查询
+    ├── applications.py        # query/factor/backtest 工作流定义
+    ├── incremental.py         # 数据增量更新工作流定义
+    └── task_groups.py
+apps/
+├── users/
+├── query/
+│   ├── models.py
+│   ├── schemas.py
+│   ├── services.py            # 提交 query 并读取完成结果
+│   ├── views.py
+│   └── tests/
+├── factor/                    # 与 query 相同的 app 结构
+├── backtest/                  # 与 query 相同的 app 结构
+├── tasks/                     # 提交执行、状态同步、日志、控制和轮询
+└── utils/                     # 三个业务 app 共用的结果读取和参数校验
 ```
 
-## 启动
+三个业务 app 分别拥有 `query_tasks`、`factor_tasks`、`backtest_tasks` 表。每条记录归属
+一个用户，并保存：
+
+- `task_id`：实际 DolphinScheduler task instance ID，不是启动流程返回的 command ID。
+- `process_instance_id`、`process_definition_code` 和 `project_code`：用于同步运行状态。
+- `payload` 和 `requested_outputs`：原始运行参数及选定结果。
+- `input_file` 和 `output_dir`：该任务独占的共享目录。
+- `state`、`process_state`、worker、重试次数、运行时间和失败日志摘要。
+- task/process ID 历史、状态历史、控制事件和最后同步时间。
+
+DolphinScheduler 异步创建 task instance。提交接口等待最多 10 秒，只在获得真实 `task_id`
+后才返回；提交后的状态、日志和控制全部通过通用 tasks API 完成。Backend 每隔 5 秒轮询
+非终态任务，PostgreSQL advisory lock 保证部署多个 Backend 进程时同一轮只有一个轮询器工作。
+
+## API
+
+所有任务接口都需要登录获得的 Bearer JWT，且只能访问当前用户自己的记录。
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `POST` | `/api/v1/query/tasks` | 提交 query 后台任务 |
+| `GET` | `/api/v1/query/tasks/{task_id}/outputs` | 任务成功后列出 query 结果 |
+| `GET` | `/api/v1/query/tasks/{task_id}/outputs/{name}` | 下载指定 query 结果 |
+
+factor 和 backtest 使用完全相同的路径结构，只需将路径中的 `query` 换成 `factor` 或
+`backtest`。业务 app 不提供任务列表、状态详情、日志或控制接口。
+
+结果接口只查询 Backend 已同步的数据库状态，不会调用 DolphinScheduler。任务不是
+`SUCCESS` 时返回 HTTP 409；任务成功但缺少约定结果时返回 HTTP 502；未授权、不存在或
+没有请求指定结果时返回 HTTP 404。
+
+### 通用 task_id 网关
+
+以下接口的 `{task_id}` 都是实际 DolphinScheduler task instance ID。Backend 会先在
+query、factor、backtest 三张表中校验该 ID 是否归属当前用户，未授权和不存在统一返回
+HTTP 404。
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `GET` | `/api/v1/tasks/{task_id}` | 同步并返回 task、process、worker、重试、耗时和状态历史 |
+| `GET` | `/api/v1/tasks/{task_id}/logs` | 分页读取日志 |
+| `GET` | `/api/v1/tasks/{task_id}/logs/download` | 流式下载完整日志 |
+| `POST` | `/api/v1/tasks/{task_id}/actions/{action}` | 控制 task 或 process instance |
+| `DELETE` | `/api/v1/tasks/{task_id}` | 删除终态任务的数据库记录和 shared 目录 |
+
+支持的 action 为 `stop`、`force-success`、`pause`、`resume`、`rerun` 和
+`retry-failed`。重跑后旧 task ID 会写入历史，仍可用于读取旧日志和鉴权，新 task instance
+出现后数据库会保存新的 `task_id`。
+
+提交参数就是对应 Runtime API 参数，再增加必填 `output`。调用方不能传 `output_dir`，
+Backend 会创建以下目录并写入 Runtime 输入：
+
+```text
+/shared/<query|factor|backtest>/<database-record-id>/
+├── input.json
+└── output/
+    └── *.parquet
+```
+
+例如提交 query：
+
+```powershell
+$auth = Invoke-RestMethod -Method Post -ContentType application/json `
+  -Body '{"username":"arena_user","password":"secure-password"}' `
+  -Uri http://127.0.0.1:8000/api/v1/auth/login
+
+$body = @{
+  dataset_query = @{
+    start_date = "2025-01-01"
+    end_date = "2025-01-31"
+    codes = @("000001.SZ")
+    factors = @("close")
+  }
+  output = @("data")
+} | ConvertTo-Json -Depth 20
+
+$task = Invoke-RestMethod -Method Post -ContentType application/json `
+  -Headers @{ Authorization = "Bearer $($auth.access_token)" } `
+  -Body $body -Uri http://127.0.0.1:8000/api/v1/query/tasks
+```
+
+提交响应只包含可直接用于通用网关的真实 `task_id`：
+
+```json
+{"task_id": 123}
+```
+
+日志分页响应包含当前偏移、本页行数和下一页绝对游标：
+
+```json
+{
+  "task_id": 123,
+  "state": "RUNNING_EXECUTION",
+  "skip_line_num": 50,
+  "returned_lines": 25,
+  "next_line_num": 75,
+  "has_more": true,
+  "message": "..."
+}
+```
+
+下一次将 `next_line_num` 作为 `skip_line_num`。完整日志由 Backend 流式转发，不会把整个
+日志文件加载进内存。
+
+## 启动与迁移
 
 ```powershell
 cd backend
 uv sync
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
+uv run pytest
+uv run uvicorn main:app --reload
 ```
 
-接口文档：<http://127.0.0.1:8000/docs>
+Compose 使用外部 PostgreSQL。DolphinScheduler 表由官方初始化器管理，Backend 表位于
+`arena_backend` schema，由 Alembic 管理。`GET /health` 会检查数据库和 schema。
 
-FastAPI 初始化时会创建或更新 `query`、`factor`、`backtest` 和
-`incremental-update` 四个工作流。DolphinScheduler 不可用或工作流注册失败时，
-Backend 启动失败。
+Backend 启动时创建或更新 query、factor、backtest 和现有增量更新工作流。增量更新属于
+基础设施工作流，不再有 scheduler app 或通用 job API。
 
-## 调度 API
-
-### 工作流
-
-| 方法 | 路径 | 功能 |
-| --- | --- | --- |
-| `GET` | `/api/v1/scheduler/workflows` | 查询当前注册的工作流 |
-| `POST` | `/api/v1/scheduler/workflows` | 创建或更新全部工作流 |
-
-如需在服务运行期间手动重新注册：
-
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://127.0.0.1:8000/api/v1/scheduler/workflows
-```
-
-### 提交任务
-
-提交 query 时，请求体包含 Runtime 的 query 输入和必填的 `output`，但不能包含
-`output_dir`：
-
-```powershell
-$input = Get-Content ..\runtime\examples\query.json -Raw | ConvertFrom-Json
-$input.PSObject.Properties.Remove("output_dir")
-$input | Add-Member -NotePropertyName output -NotePropertyValue @("data")
-$job = Invoke-RestMethod `
-  -Method Post `
-  -ContentType application/json `
-  -Body ($input | ConvertTo-Json -Depth 30) `
-  -Uri http://127.0.0.1:8000/api/v1/scheduler/jobs/query
-```
-
-factor 使用 `/api/v1/scheduler/jobs/factor`，请求体对应 Runtime 的
-`factor.json`，并增加例如 `"output": ["processed_data", "information_coefficient"]`。
-backtest 使用 `/api/v1/scheduler/jobs/backtest`，并增加例如
-`"output": ["daily_portfolios", "return_summary"]`。`output` 至少包含一个结果且
-不能重复；backend 不会把它写入 `input.json`，而是通过 DolphinScheduler 启动参数传给
-Runtime 的 `--output`。
-
-增量更新同样创建可跟踪的 Arena Job，并立即启动已注册的工作流：
-
-```powershell
-$job = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://127.0.0.1:8000/api/v1/scheduler/incremental-updates
-```
-
-### 状态跟踪
-
-查询任务详情时，响应包含工作流实例、全部 task instance、状态计数、开始/结束时间、
-执行耗时、重试次数和 Parquet 产物：
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/scheduler/jobs/$($job.job_id)"
-```
-
-查询任务列表：
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/scheduler/jobs?application=factor&refresh=true"
-```
-
-`refresh=false` 只读取本地持久化状态；`refresh=true` 会逐个向 DolphinScheduler
-同步最新状态。单任务详情始终同步最新状态。
-
-backend 为每个任务创建独立目录：
-
-```text
-/shared/<query|factor|backtest|incremental-update>/<job-id>/
-├── input.json
-├── job.json
-└── output/
-    └── *.parquet
-```
-
-`input.json` 中的 `output_dir` 固定为相对路径 `output`。backend 通过
-DolphinScheduler 的 `startParams` 将该文件的容器路径传给工作流，因此并发实例不会互相
-覆盖参数或输出。
-
-`incremental-update` 不需要 `input.json` 和 `output/`，但仍保存 `job.json`，
-其中包含状态变化事件和历次工作流实例 ID。
-
-### 实时日志
-
-先从任务详情的 `tasks[].id` 获取 task instance ID，然后增量读取日志：
-
-```powershell
-$taskId = $status.tasks[0].id
-$log = Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/scheduler/jobs/$($job.job_id)/tasks/$taskId/logs?skip_line_num=0&limit=1000"
-```
-
-下一次请求把 `skip_line_num` 设置为上次返回的 `line_num`，即可持续获取新增日志。
-下载完整日志：
-
-```powershell
-Invoke-WebRequest `
-  -OutFile task.log `
-  -Uri "http://127.0.0.1:8000/api/v1/scheduler/jobs/$($job.job_id)/tasks/$taskId/logs/download"
-```
-
-### 控制任务
-
-工作流实例支持以下操作：
-
-```text
-POST /api/v1/scheduler/jobs/<job-id>/actions/stop
-POST /api/v1/scheduler/jobs/<job-id>/actions/pause
-POST /api/v1/scheduler/jobs/<job-id>/actions/resume
-POST /api/v1/scheduler/jobs/<job-id>/actions/rerun
-POST /api/v1/scheduler/jobs/<job-id>/actions/retry-failed
-```
-
-task instance 支持：
-
-```text
-POST /api/v1/scheduler/jobs/<job-id>/tasks/<task-id>/actions/stop
-POST /api/v1/scheduler/jobs/<job-id>/tasks/<task-id>/actions/force-success
-```
-
-`rerun` 和 `retry-failed` 会把原工作流实例 ID 放入
-`process_instance_history`，随后自动跟踪新实例。
-
-### 审计日志
-
-```text
-GET /api/v1/scheduler/audit-logs
-GET /api/v1/scheduler/audit-logs/types
-```
-
-审计日志支持 `model_types`、`operation_types`、时间范围、用户名和对象名称过滤。
-
-## 增量更新工作流
-
-工作流包含 14 个相互独立的 Runtime 增量更新根任务，它们在 DAG 中采用并行结构。
-Backend 自动创建 `tushare-api` Task Group，并将容量保持为 `1`，因此所有工作流
-实例中实际同时只会运行一个 Tushare 更新任务，其余任务在 Task Group 中等待。
-
-任务使用 `task_group_priority` 保持原有更新顺序。单个任务失败并完成重试后会释放
-Task Group 槽位，不会阻止其他根任务继续执行。全部 14 个任务结束后由一个
-Condition 汇总状态，只要存在失败任务，工作流最终状态就是失败。
-
-```python
-from scheduler import create_and_submit_incremental_update
-
-result = create_and_submit_incremental_update()
-print(result)
-```
-
-## PostgreSQL
-
-Compose 只使用一个 PostgreSQL 数据库：
-
-- DolphinScheduler 的 `t_ds_*` 表由官方 schema initializer 管理。
-- Backend 的表位于 `arena_backend` schema，由 Alembic revision 管理。
-
-Backend 容器启动时会先执行 `alembic upgrade head`，迁移成功后再启动 API。
-`GET /health` 只有在数据库可连接且当前 schema 为 `arena_backend` 时才返回 HTTP 200。
-
-创建新迁移：
-
-```powershell
-cd backend
-uv run alembic revision --autogenerate -m "describe change"
-uv run alembic upgrade head
-```
-
-## 配置
-
-默认读取项目根目录 `.env`。
+状态轮询配置：
 
 | 变量 | 默认值 |
 | --- | --- |
-| `ARENA_SHARED_DIR` | `/shared` |
-| `DATABASE_URL` | 必填，backend PostgreSQL 连接地址 |
-| `DOLPHINSCHEDULER_BASE_URL` | `http://127.0.0.1:12345/dolphinscheduler` |
-| `DOLPHINSCHEDULER_PYTHON_GATEWAY_ADDRESS` | `127.0.0.1` |
-| `DOLPHINSCHEDULER_PYTHON_GATEWAY_PORT` | `25333` |
-| `DOLPHINSCHEDULER_PYTHON_GATEWAY_AUTH_TOKEN` | 必填，必须与容器一致 |
-| `DOLPHINSCHEDULER_USERNAME` | `arena-scheduler` |
-| `DOLPHINSCHEDULER_PASSWORD` | `dolphinscheduler123` |
-| `DOLPHINSCHEDULER_PROJECT_NAME` | `arena-runtime` |
-| `DOLPHINSCHEDULER_WORKFLOW_NAME` | `incremental-update` |
-| `DOLPHINSCHEDULER_QUERY_WORKFLOW_NAME` | `query` |
-| `DOLPHINSCHEDULER_FACTOR_WORKFLOW_NAME` | `factor` |
-| `DOLPHINSCHEDULER_BACKTEST_WORKFLOW_NAME` | `backtest` |
-| `DOLPHINSCHEDULER_INCREMENTAL_TASK_GROUP_NAME` | `tushare-api` |
-| `DOLPHINSCHEDULER_INCREMENTAL_TASK_GROUP_SIZE` | `1` |
-| `DOLPHINSCHEDULER_WORKER_GROUP` | `default` |
-| `DOLPHINSCHEDULER_TENANT_CODE` | `default` |
-| `DOLPHINSCHEDULER_RUNTIME_COMMAND` | `/opt/arena-runtime/.venv/bin/core-manage` |
+| `DOLPHINSCHEDULER_POLL_INTERVAL_SECONDS` | `5` |
+| `DOLPHINSCHEDULER_POLL_BATCH_SIZE` | `100` |

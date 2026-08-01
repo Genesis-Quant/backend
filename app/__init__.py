@@ -1,1 +1,0 @@
-"""Arena FastAPI application."""
