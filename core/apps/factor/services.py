@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from core.apps.factor.models import FactorProject, FactorTask, FactorVersion
 from core.apps.tasks.models import utc_now
-from core.apps.tasks.services import TaskExecutionService, resolve_task_directory
+from core.apps.tasks.services import TaskExecutionService, delete_workflow_task_mappings, resolve_task_directory
 from core.utils.dsl import build_dsl_catalog
 from core.utils.results import result_files, result_path
 from core.scheduler.domain import TERMINAL_STATES
@@ -67,6 +67,7 @@ def delete_factor_project(session: Session, user_id: int, project_id: int) -> in
     if running:
         raise RuntimeError(f"项目仍有运行中的分析任务: {sorted(set(running))}")
     task_directories = [resolve_task_directory("factor", task) for task in tasks]
+    delete_workflow_task_mappings(session, "factor", [task.id for task in tasks])
     session.execute(delete(FactorVersion).where(FactorVersion.project_id == project.id))
     session.execute(delete(FactorTask).where(FactorTask.project_id == project.id))
     session.delete(project)

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from core.apps.query.models import QueryProject, QueryTask
 from core.apps.tasks.models import utc_now
-from core.apps.tasks.services import TaskExecutionService, resolve_task_directory
+from core.apps.tasks.services import TaskExecutionService, delete_workflow_task_mappings, resolve_task_directory
 from core.apps.users.models import User
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
@@ -66,6 +66,7 @@ def delete_query_project(session: Session, user_id: int, project_id: int) -> int
         raise RuntimeError(f"项目仍有 {task.state} 状态的查询任务")
     task_directory = resolve_task_directory("query", task) if task is not None and task.input_file else None
     if task is not None:
+        delete_workflow_task_mappings(session, "query", [task.id])
         session.execute(delete(QueryTask).where(QueryTask.id == task.id))
     session.delete(project)
     session.commit()

@@ -3,9 +3,11 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+
+from core.database.base import Base
 
 JSON_VALUE = JSON().with_variant(JSONB(), "postgresql")
 
@@ -35,6 +37,7 @@ class ApplicationTaskFields:
     requested_outputs: Mapped[list[str]] = mapped_column(JSON_VALUE)
     task_id_history: Mapped[list[int]] = mapped_column(JSON_VALUE, default=list)
     process_instance_history: Mapped[list[int]] = mapped_column(JSON_VALUE, default=list)
+    workflow_tasks: Mapped[list[dict[str, Any]]] = mapped_column(JSON_VALUE, default=list)
     state_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON_VALUE, default=list)
     events: Mapped[list[dict[str, Any]]] = mapped_column(JSON_VALUE, default=list)
     input_file: Mapped[str | None] = mapped_column(Text)
@@ -42,3 +45,29 @@ class ApplicationTaskFields:
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkflowTaskInstance(Base):
+    """Indexed ownership mapping for DolphinScheduler child task instances."""
+
+    __tablename__ = "workflow_task_instances"
+    __table_args__ = (
+        Index(
+            "ix_workflow_task_instances_parent",
+            "application",
+            "record_id",
+        ),
+    )
+
+    task_instance_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=False,
+    )
+    application: Mapped[str] = mapped_column(String(32))
+    record_id: Mapped[int] = mapped_column(Integer)
+    task_code: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )

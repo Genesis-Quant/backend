@@ -53,6 +53,21 @@ def ensure_workflow_definition(
         return found
 
 
+def ensure_incremental_workflow_definition() -> tuple[int, dict[str, Any]]:
+    """Return the incremental-update definition, registering it when missing."""
+    name = DolphinSchedulerSettings.WORKFLOW_NAME
+    with WORKFLOW_LOCK:
+        found = find_definition(name)
+        if found is None:
+            create_incremental_update_workflow()
+            found = find_definition(name)
+        if found is None:
+            raise DolphinSchedulerError(
+                f"工作流创建后仍无法通过 API 查询: {name}"
+            )
+        return found
+
+
 def find_definition(name: str) -> tuple[int, dict[str, Any]] | None:
     with DolphinSchedulerClient() as client:
         project_code = client.project_code(DolphinSchedulerSettings.PROJECT_NAME)

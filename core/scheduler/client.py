@@ -46,6 +46,7 @@ class DolphinSchedulerClient:
         self.timeout = timeout
         self.session = self.create_session()
         self.logged_in = False
+        self._process_definition_details: dict[tuple[int, int], dict[str, Any]] = {}
 
     def __enter__(self) -> Self:
         self.login()
@@ -72,6 +73,7 @@ class DolphinSchedulerClient:
 
     def login(self) -> None:
         """Authenticate the session and retain the server cookie."""
+        DolphinSchedulerSettings.validate()
         self.request(
             "POST",
             "/login",
@@ -84,8 +86,8 @@ class DolphinSchedulerClient:
         self.logged_in = True
 
     def project_code(self, project_name: str) -> int | None:
-        """Return a project code by name."""
-        projects = self.request("GET", "/projects/list")
+        """Return an owned or authorized project code by name."""
+        projects = self.request("GET", "/projects/created-and-authed")
         for project in projects or []:
             if project.get("name") == project_name:
                 return int(project["code"])
@@ -107,21 +109,42 @@ class DolphinSchedulerClient:
             return None
         return result.get("processDefinition", result)
 
+    def process_definition_details(
+        self,
+        project_code: int,
+        process_definition_code: int,
+    ) -> dict[str, Any]:
+        """Return the current definition together with its tasks and relations."""
+        cache_key = (project_code, process_definition_code)
+        cached = self._process_definition_details.get(cache_key)
+        if cached is not None:
+            return cached
+        result = self.request(
+            "GET",
+            f"/projects/{project_code}/process-definition/{process_definition_code}",
+        )
+        details = dict(result or {})
+        self._process_definition_details[cache_key] = details
+        return details
+
     def start_process_instance(
         self,
         *,
         project_code: int,
         process_definition_code: int,
         start_params: dict[str, str],
+        failure_strategy: str = "END",
     ) -> Any:
         """Start an online process definition immediately."""
+        if failure_strategy not in {"END", "CONTINUE"}:
+            raise ValueError(f"不支持的失败策略: {failure_strategy}")
         return self.request(
             "POST",
             f"/projects/{project_code}/executors/start-process-instance",
             params={
                 "processDefinitionCode": process_definition_code,
                 "scheduleTime": "",
-                "failureStrategy": "END",
+                "failureStrategy": failure_strategy,
                 "warningType": "NONE",
                 "processInstancePriority": "MEDIUM",
                 "workerGroup": DolphinSchedulerSettings.WORKER_GROUP,
@@ -210,6 +233,14 @@ class DolphinSchedulerClient:
         )
         return list((page or {}).get("totalList") or [])
 
+    def worker_groups(self) -> list[str]:
+        """Return every worker group visible to the scheduler user."""
+        return [str(name) for name in self.request("GET", "/worker-groups/all") or []]
+
+    def workers(self) -> list[dict[str, Any]]:
+        """Return the current worker registry and heartbeat information."""
+        return list(self.request("GET", "/monitor/WORKER") or [])
+
     def create_task_group(
         self,
         *,
@@ -268,13 +299,17 @@ class DolphinSchedulerClient:
             },
         )
         if isinstance(result, dict):
-            returned_lines = int(result.get("lineNum", 0))
+            message = str(result.get("message", ""))
+            # DolphinScheduler 3.2.2 reports lineNum=1 even when a request past
+            # the end of the log returns an empty message. An empty page must
+            # not advance the cursor or polling will invent one line per tick.
+            returned_lines = int(result.get("lineNum", 0)) if message else 0
             return {
                 "skip_line_num": skip_line_num,
                 "returned_lines": returned_lines,
                 "next_line_num": skip_line_num + returned_lines,
                 "has_more": returned_lines == limit,
-                "message": str(result.get("message", "")),
+                "message": message,
             }
         message = str(result or "")
         returned_lines = len(message.splitlines())

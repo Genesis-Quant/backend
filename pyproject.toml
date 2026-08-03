@@ -22,3 +22,6 @@ package = false
 
 [tool.uv.sources]
 arena-runtime = { path = "../runtime" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

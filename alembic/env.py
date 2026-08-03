@@ -11,7 +11,9 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 import core.apps.backtest.models
 import core.apps.factor.models
+import core.apps.incremental.models
 import core.apps.query.models
+import core.apps.tasks.models
 import core.apps.users.models
 from config import DatabaseSettings
 from core.database.base import Base

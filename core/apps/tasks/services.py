@@ -7,30 +7,38 @@ import json
 import logging
 import shutil
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.models import BacktestTask
 from core.apps.factor.models import FactorTask
+from core.apps.incremental.models import IncrementalUpdateTask
 from core.apps.query.models import QueryTask
-from core.apps.tasks.models import utc_now
+from core.apps.tasks.models import WorkflowTaskInstance, utc_now
 from core.apps.tasks.schemas import TaskAction
+from core.apps.users.models import User
 from config import DolphinSchedulerSettings
 from core.database.session import database_engine, database_session_factory
 from core.scheduler.client import DolphinSchedulerClient, StreamedLog
 from core.scheduler.domain import FAILURE_STATES, TERMINAL_STATES
 from core.scheduler.errors import DolphinSchedulerError
-from core.scheduler.workflows import ensure_workflow_definition
+from core.scheduler.workflows import ensure_incremental_workflow_definition, ensure_workflow_definition
 
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
 POLLER_LOCK_ID = 280284398913
-APPLICATION_MODELS = (("query", QueryTask), ("factor", FactorTask), ("backtest", BacktestTask))
+BACKFILL_RETRY_INTERVAL = timedelta(hours=1)
+APPLICATION_MODELS = (
+    ("query", QueryTask),
+    ("factor", FactorTask),
+    ("backtest", BacktestTask),
+    ("incremental", IncrementalUpdateTask),
+)
 PROCESS_ACTIONS = {
     TaskAction.STOP: "STOP",
     TaskAction.PAUSE: "PAUSE",
@@ -78,6 +86,7 @@ class TaskExecutionService:
         task.task_id = None
         task.process_instance_id = None
         task.process_state = None
+        task.workflow_tasks = []
         task.host = None
         task.retry_times = None
         task.max_retry_times = None
@@ -163,11 +172,18 @@ class TaskExecutionService:
             if instance is not None:
                 self.apply_process_state(task, instance)
                 instances = client.process_instance_tasks(project_code=int(task.project_code), process_instance_id=task.process_instance_id)
-                task_id_history = set(task.task_id_history or [])
-                runtime_tasks = [item for item in instances if item.get("name") == self.application and int(item["id"]) not in task_id_history]
-                runtime_task = max(runtime_tasks, key=lambda item: int(item["id"]), default=None)
-                if runtime_task is not None:
-                    self.apply_task_state(client, task, runtime_task)
+                synchronize_workflow_task_instances(
+                    session,
+                    application=self.application,
+                    record_id=task.id,
+                    instances=instances,
+                )
+                definition = client.process_definition_details(
+                    int(task.project_code),
+                    int(task.process_definition_code),
+                )
+                task.workflow_tasks = workflow_task_information(instances, definition)
+                self.synchronize_task_instances(client, task, instance, instances)
             task.error = None if task.state not in FAILURE_STATES else task.error
             task.last_synced_at = utc_now()
             session.commit()
@@ -177,6 +193,28 @@ class TaskExecutionService:
             task.last_synced_at = utc_now()
             session.commit()
             raise
+
+    def synchronize_task_instances(
+        self,
+        client: DolphinSchedulerClient,
+        task: Any,
+        process_instance: dict[str, Any],
+        instances: list[dict[str, Any]],
+    ) -> None:
+        task_id_history = set(task.task_id_history or [])
+        runtime_tasks = [
+            item
+            for item in instances
+            if item.get("name") == self.application
+            and int(item["id"]) not in task_id_history
+        ]
+        runtime_task = max(
+            runtime_tasks,
+            key=lambda item: int(item["id"]),
+            default=None,
+        )
+        if runtime_task is not None:
+            self.apply_task_state(client, task, runtime_task)
 
     def locate_process_instance(self, client: DolphinSchedulerClient, task: Any) -> dict[str, Any] | None:
         if task.process_instance_id is not None:
@@ -225,25 +263,157 @@ class TaskExecutionService:
             task.error = None
 
 
+class IncrementalUpdateExecutionService(TaskExecutionService):
+    """Submit and track one multi-task incremental-update workflow."""
+
+    def submit_workflow(self, session: Session, user_id: int) -> dict[str, Any]:
+        created_at = utc_now()
+        task = self.model(
+            user_id=user_id,
+            payload={},
+            requested_outputs=[],
+            state="CREATED",
+            task_id_history=[],
+            process_instance_history=[],
+            workflow_tasks=[],
+            state_history=[{"state": "CREATED", "timestamp": created_at.isoformat()}],
+            events=[],
+        )
+        session.add(task)
+        session.flush()
+        record_id = task.id
+        job_id = f"incremental:{record_id}"
+        task.payload = {"job_id": job_id}
+        try:
+            project_code, definition = ensure_incremental_workflow_definition()
+            task.project_code = project_code
+            task.process_definition_code = int(definition["code"])
+            task.workflow_name = str(definition["name"])
+            record_state(task, "SUBMITTING")
+            session.commit()
+            with DolphinSchedulerClient() as client:
+                definition_details = client.process_definition_details(
+                    int(task.project_code),
+                    int(task.process_definition_code),
+                )
+                task.workflow_tasks = workflow_task_information([], definition_details)
+                session.commit()
+                submission = client.start_process_instance(
+                    project_code=project_code,
+                    process_definition_code=task.process_definition_code,
+                    start_params={"job_id": job_id},
+                    failure_strategy="CONTINUE",
+                )
+                record_state(task, "SUBMITTED")
+                record_event(task, "WORKFLOW_SUBMITTED", job_id=job_id)
+                session.commit()
+                for attempt in range(self.submission_attempts):
+                    try:
+                        self.synchronize(session, task, client=client)
+                    except DolphinSchedulerError:
+                        pass
+                    if task.process_instance_id is not None:
+                        break
+                    if attempt + 1 < self.submission_attempts:
+                        time.sleep(self.submission_interval)
+            return {
+                "task": task,
+                "job_id": job_id,
+                "scheduler_submission": submission,
+            }
+        except (DolphinSchedulerError, ValueError) as error:
+            session.rollback()
+            task = session.get(self.model, record_id)
+            if task is not None:
+                if task.state in {"CREATED", "SUBMITTING"}:
+                    record_state(task, "SUBMIT_FAILED")
+                task.error = str(error)
+                task.last_synced_at = utc_now()
+                session.commit()
+            raise
+
+    def synchronize_task_instances(
+        self,
+        client: DolphinSchedulerClient,
+        task: Any,
+        process_instance: dict[str, Any],
+        instances: list[dict[str, Any]],
+    ) -> None:
+        representative = next(
+            (
+                item
+                for item in instances
+                if task.task_id is not None and int(item["id"]) == task.task_id
+            ),
+            None,
+        )
+        if representative is None:
+            representative = min(
+                instances,
+                key=lambda item: int(item["id"]),
+                default=None,
+            )
+        if representative is not None:
+            representative_id = int(representative["id"])
+            if task.task_id is not None and task.task_id != representative_id:
+                task.task_id_history = append_unique(task.task_id_history, task.task_id)
+            task.task_id = representative_id
+
+        hosts = sorted({str(item["host"]) for item in instances if item.get("host")})
+        task.host = ", ".join(hosts) or None
+        retry_times = [integer_or_none(item.get("retryTimes")) for item in instances]
+        max_retry_times = [integer_or_none(item.get("maxRetryTimes")) for item in instances]
+        task.retry_times = max((value for value in retry_times if value is not None), default=None)
+        task.max_retry_times = max((value for value in max_retry_times if value is not None), default=None)
+        task.started_at = parse_scheduler_datetime(process_instance.get("startTime"))
+        task.finished_at = parse_scheduler_datetime(process_instance.get("endTime"))
+        task.duration_seconds = duration_seconds(task.started_at, task.finished_at)
+
+        state = str(process_instance.get("state") or task.process_state or task.state)
+        previous_state = task.state
+        record_state(task, state)
+        if state in FAILURE_STATES:
+            failed_tasks = [item for item in instances if item.get("state") in FAILURE_STATES]
+            failed_task = max(
+                failed_tasks,
+                key=lambda item: int(item["id"]),
+                default=None,
+            )
+            if failed_task is not None and (previous_state != state or not task.error):
+                task.error = failure_message(client, int(failed_task["id"]), state)
+        else:
+            task.error = None
+
+
 class TaskGatewayService:
     def __init__(self) -> None:
         self.executors = {
             application: TaskExecutionService(application, model)
             for application, model in APPLICATION_MODELS
         }
+        self.executors["incremental"] = IncrementalUpdateExecutionService(
+            "incremental",
+            IncrementalUpdateTask,
+        )
 
-    def status(self, session: Session, user_id: int, task_id: int) -> dict[str, Any]:
-        application, task = self.find_owned_task(session, user_id, task_id)
+    def submit_incremental(self, session: Session, user_id: int) -> dict[str, Any]:
+        executor = self.executors["incremental"]
+        if not isinstance(executor, IncrementalUpdateExecutionService):
+            raise RuntimeError("增量更新任务执行器配置错误")
+        return executor.submit_workflow(session, user_id)
+
+    def status(self, session: Session, user: User, task_id: int) -> dict[str, Any]:
+        application, task = self.find_accessible_task(session, user, task_id)
         task = self.executors[application].synchronize(session, task)
         return task_status(application, task, task_id)
 
-    def list(self, session: Session, user_id: int, page: int, page_size: int, application: str | None, state: str | None) -> dict[str, Any]:
+    def list(self, session: Session, user: User, page: int, page_size: int, application: str | None, state: str | None) -> dict[str, Any]:
         selected_models = ((name, model) for name, model in APPLICATION_MODELS if application is None or name == application)
         candidates: list[tuple[str, Any]] = []
         total = 0
         window_size = page * page_size
         for name, model in selected_models:
-            conditions = [model.user_id == user_id]
+            conditions = [] if user.is_admin else [model.user_id == user.id]
             if state == "active":
                 conditions.append(model.state.not_in(TERMINAL_STATES))
             elif state == "success":
@@ -255,18 +425,28 @@ class TaskGatewayService:
             candidates.extend((name, task) for task in tasks)
         candidates.sort(key=lambda item: (item[1].created_at, item[1].id), reverse=True)
         offset = (page - 1) * page_size
-        items = [task_list_item(name, task) for name, task in candidates[offset:offset + page_size]]
+        page_candidates = candidates[offset:offset + page_size]
+        owner_ids = {task.user_id for _, task in page_candidates}
+        owner_names = {
+            owner.id: owner.username
+            for owner in session.scalars(select(User).where(User.id.in_(owner_ids)))
+        }
+        items = [
+            task_list_item(name, task, owner_names.get(task.user_id, f"用户 #{task.user_id}"))
+            for name, task in page_candidates
+        ]
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    def log(self, session: Session, user_id: int, task_id: int, skip_line_num: int, limit: int) -> dict[str, Any]:
-        application, task = self.find_owned_task(session, user_id, task_id)
+    def log(self, session: Session, user: User, task_id: int, skip_line_num: int, limit: int) -> dict[str, Any]:
+        application, task = self.find_accessible_task(session, user, task_id)
         with DolphinSchedulerClient() as client:
             page = client.task_log(task_instance_id=task_id, skip_line_num=skip_line_num, limit=limit)
-        state = task.state if task.task_id == task_id else "HISTORICAL"
+        workflow_task = next((item for item in task.workflow_tasks or [] if integer_or_none(item.get("task_id")) == task_id), None)
+        state = str(workflow_task.get("state")) if workflow_task is not None else task.state if task.task_id == task_id else "HISTORICAL"
         return {"task_id": task_id, "state": state, **page}
 
-    def stream_log(self, session: Session, user_id: int, task_id: int) -> StreamedLog:
-        application, task = self.find_owned_task(session, user_id, task_id)
+    def stream_log(self, session: Session, user: User, task_id: int) -> StreamedLog:
+        application, task = self.find_accessible_task(session, user, task_id)
         client = DolphinSchedulerClient()
         try:
             client.login()
@@ -275,8 +455,8 @@ class TaskGatewayService:
             client.session.close()
             raise
 
-    def control(self, session: Session, user_id: int, task_id: int, action: TaskAction) -> dict[str, Any]:
-        application, task = self.find_owned_task(session, user_id, task_id)
+    def control(self, session: Session, user: User, task_id: int, action: TaskAction) -> dict[str, Any]:
+        application, task = self.find_accessible_task(session, user, task_id)
         if task.task_id != task_id:
             raise RuntimeError("历史 task instance 不能执行控制操作")
         if application == "factor" and getattr(task, "saved", False) and action in {TaskAction.RERUN, TaskAction.RETRY_FAILED}:
@@ -291,6 +471,7 @@ class TaskGatewayService:
         if action in {TaskAction.RERUN, TaskAction.RETRY_FAILED}:
             task.task_id_history = append_unique(task.task_id_history, task_id)
             task.task_id = None
+            task.workflow_tasks = []
             task.started_at = None
             task.finished_at = None
             task.duration_seconds = None
@@ -299,29 +480,37 @@ class TaskGatewayService:
         session.commit()
         return {"action": action, "scheduler_submission": submission, "task": task_status(application, task, task_id)}
 
-    def delete(self, session: Session, user_id: int, task_id: int) -> dict[str, Any]:
-        application, task = self.find_owned_task(session, user_id, task_id)
+    def delete(self, session: Session, user: User, task_id: int) -> dict[str, Any]:
+        application, task = self.find_accessible_task(session, user, task_id)
         if task.state not in TERMINAL_STATES:
             raise RuntimeError(f"{task.state} 状态不能删除")
         if application == "factor" and getattr(task, "saved", False):
             raise RuntimeError("已保存版本的分析任务不能单独删除")
         record_id = task.id
-        task_dir = resolve_task_directory(application, task)
+        task_dir = None if application == "incremental" else resolve_task_directory(application, task)
+        delete_workflow_task_mappings(session, application, [task.id])
         session.delete(task)
         session.commit()
-        if task_dir.exists():
+        if task_dir is not None and task_dir.exists():
             shutil.rmtree(task_dir)
         return {"application": application, "record_id": record_id, "task_id": task_id}
 
-    def find_owned_task(self, session: Session, user_id: int, task_id: int) -> tuple[str, Any]:
+    def find_accessible_task(self, session: Session, user: User, task_id: int) -> tuple[str, Any]:
+        mapping = session.get(WorkflowTaskInstance, task_id)
+        if mapping is not None:
+            model = dict(APPLICATION_MODELS).get(mapping.application)
+            task = session.get(model, mapping.record_id) if model is not None else None
+            if task is None or (not user.is_admin and task.user_id != user.id):
+                raise FileNotFoundError(f"任务不存在: {task_id}")
+            return mapping.application, task
+
         for application, model in APPLICATION_MODELS:
-            task = session.scalar(select(model).where(model.user_id == user_id, model.task_id == task_id))
+            statement = select(model).where(model.task_id == task_id)
+            if not user.is_admin:
+                statement = statement.where(model.user_id == user.id)
+            task = session.scalar(statement)
             if task is not None:
                 return application, task
-        for application, model in APPLICATION_MODELS:
-            for task in session.scalars(select(model).where(model.user_id == user_id)):
-                if task_id in (task.task_id_history or []):
-                    return application, task
         raise FileNotFoundError(f"任务不存在: {task_id}")
 
     def poll_once(self) -> int:
@@ -339,10 +528,17 @@ class TaskGatewayService:
 
     def poll_records(self) -> int:
         synchronized = 0
+        backfill_retry_before = utc_now() - BACKFILL_RETRY_INTERVAL
         with database_session_factory()() as session, DolphinSchedulerClient() as client:
             for application, model in APPLICATION_MODELS:
-                statement = select(model).where(model.state.not_in(TERMINAL_STATES)).order_by(model.id).limit(DolphinSchedulerSettings.POLL_BATCH_SIZE)
-                for task in session.scalars(statement):
+                active_statement = select(model).where(model.state.not_in(TERMINAL_STATES)).order_by(model.id).limit(DolphinSchedulerSettings.POLL_BATCH_SIZE)
+                backfill_statement = workflow_task_backfill_statement(
+                    model,
+                    retry_before=backfill_retry_before,
+                    limit=DolphinSchedulerSettings.POLL_BATCH_SIZE,
+                )
+                records = [*session.scalars(active_statement), *session.scalars(backfill_statement)]
+                for task in records:
                     try:
                         self.executors[application].synchronize(session, task, client=client)
                         synchronized += 1
@@ -351,6 +547,11 @@ class TaskGatewayService:
                     except Exception as error:
                         task_record_id = task.id
                         session.rollback()
+                        failed_task = session.get(model, task_record_id)
+                        if failed_task is not None:
+                            failed_task.error = str(error)
+                            failed_task.last_synced_at = utc_now()
+                            session.commit()
                         LOGGER.exception("同步 %s task %s 失败: %s", application, task_record_id, error)
         return synchronized
 
@@ -372,10 +573,12 @@ def task_information(application: str, task: Any) -> dict[str, Any]:
     return {
         "application": application,
         "record_id": task.id,
+        "user_id": task.user_id,
         "task_id": task.task_id,
         "task_id_history": task.task_id_history or [],
         "process_instance_id": task.process_instance_id,
         "process_instance_history": task.process_instance_history or [],
+        "workflow_tasks": task.workflow_tasks or [],
         "project_code": task.project_code,
         "process_definition_code": task.process_definition_code,
         "workflow_name": task.workflow_name,
@@ -396,12 +599,177 @@ def task_information(application: str, task: Any) -> dict[str, Any]:
     }
 
 
+def workflow_task_backfill_statement(
+    model: type[Any],
+    *,
+    retry_before: datetime,
+    limit: int,
+) -> Any:
+    """Select an old-task backfill batch without retrying recent failures."""
+    return select(model).where(
+        model.state.in_(TERMINAL_STATES),
+        model.process_instance_id.is_not(None),
+        model.workflow_tasks == [],
+        or_(
+            model.last_synced_at.is_(None),
+            model.last_synced_at < retry_before,
+        ),
+    ).order_by(
+        model.last_synced_at.asc().nullsfirst(),
+        model.id,
+    ).limit(limit)
+
+
 def task_status(application: str, task: Any, requested_task_id: int) -> dict[str, Any]:
     return {**task_information(application, task), "requested_task_id": requested_task_id}
 
 
-def task_list_item(application: str, task: Any) -> dict[str, Any]:
-    return {**task_information(application, task), "payload": task.payload, "requested_outputs": task.requested_outputs or []}
+def task_list_item(application: str, task: Any, owner_username: str) -> dict[str, Any]:
+    return {
+        **task_information(application, task),
+        "owner_username": owner_username,
+        "payload": task.payload,
+        "requested_outputs": task.requested_outputs or [],
+    }
+
+
+def delete_workflow_task_mappings(
+    session: Session,
+    application: str,
+    record_ids: list[int],
+) -> None:
+    """Delete indexed child-task mappings before their parent records."""
+    if not record_ids:
+        return
+    session.execute(
+        delete(WorkflowTaskInstance).where(
+            WorkflowTaskInstance.application == application,
+            WorkflowTaskInstance.record_id.in_(record_ids),
+        )
+    )
+
+
+def synchronize_workflow_task_instances(
+    session: Session,
+    *,
+    application: str,
+    record_id: int,
+    instances: list[dict[str, Any]],
+) -> None:
+    """Persist indexed task-instance ownership without discarding old attempts."""
+    observed = {
+        task_instance_id: integer_or_none(instance.get("taskCode"))
+        for instance in instances
+        if (task_instance_id := integer_or_none(instance.get("id"))) is not None
+    }
+    if not observed:
+        return
+
+    existing = {
+        mapping.task_instance_id: mapping
+        for mapping in session.scalars(
+            select(WorkflowTaskInstance).where(
+                WorkflowTaskInstance.task_instance_id.in_(observed)
+            )
+        )
+    }
+    for task_instance_id, task_code in observed.items():
+        mapping = existing.get(task_instance_id)
+        if mapping is not None:
+            if (
+                mapping.application != application
+                or mapping.record_id != record_id
+            ):
+                raise RuntimeError(
+                    "DolphinScheduler task instance 映射冲突: "
+                    f"{task_instance_id}"
+                )
+            if mapping.task_code is None and task_code is not None:
+                mapping.task_code = task_code
+            continue
+        session.add(
+            WorkflowTaskInstance(
+                task_instance_id=task_instance_id,
+                application=application,
+                record_id=record_id,
+                task_code=task_code,
+            )
+        )
+
+
+def workflow_task_information(
+    instances: list[dict[str, Any]],
+    definition: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    latest_instances: dict[int, dict[str, Any]] = {}
+    for instance in instances:
+        task_code = integer_or_none(instance.get("taskCode"))
+        task_id = integer_or_none(instance.get("id"))
+        if task_code is None or task_id is None:
+            continue
+        current = latest_instances.get(task_code)
+        if current is None or task_id > int(current.get("id") or 0):
+            latest_instances[task_code] = instance
+
+    tasks: list[dict[str, Any]] = []
+    definition_codes: set[int] = set()
+    for node in ordered_workflow_definition_tasks(definition or {}):
+        task_code = int(node["code"])
+        definition_codes.add(task_code)
+        instance = latest_instances.get(task_code)
+        task_type = (instance or {}).get("taskType") or node.get("taskType") or "UNKNOWN"
+        tasks.append(
+            {
+                "task_code": task_code,
+                "task_id": integer_or_none(instance.get("id")) if instance else None,
+                "name": str(node.get("name") or f"Task {task_code}"),
+                "task_type": str(task_type),
+                "state": str(instance.get("state") or "WAITING") if instance else "WAITING",
+            }
+        )
+
+    for task_code, instance in sorted(latest_instances.items(), key=lambda item: int(item[1].get("id") or 0)):
+        if task_code in definition_codes:
+            continue
+        task_id = int(instance["id"])
+        tasks.append(
+            {
+                "task_code": task_code,
+                "task_id": task_id,
+                "name": str(instance.get("name") or f"Task {task_id}"),
+                "task_type": str(instance.get("taskType") or "UNKNOWN"),
+                "state": str(instance.get("state") or "UNKNOWN"),
+            }
+        )
+    return tasks
+
+
+def ordered_workflow_definition_tasks(definition: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = [
+        node
+        for node in definition.get("taskDefinitionList") or []
+        if integer_or_none(node.get("code")) is not None
+    ]
+    nodes_by_code = {int(node["code"]): node for node in nodes}
+    dependencies = {code: set() for code in nodes_by_code}
+    for relation in definition.get("processTaskRelationList") or []:
+        pre_task_code = integer_or_none(relation.get("preTaskCode"))
+        post_task_code = integer_or_none(relation.get("postTaskCode"))
+        if pre_task_code in nodes_by_code and post_task_code in nodes_by_code:
+            dependencies[post_task_code].add(pre_task_code)
+
+    ordered: list[dict[str, Any]] = []
+    emitted: set[int] = set()
+    pending = [int(node["code"]) for node in nodes]
+    while pending:
+        ready = [code for code in pending if dependencies[code] <= emitted]
+        if not ready:
+            ready = list(pending)
+        for code in ready:
+            ordered.append(nodes_by_code[code])
+            emitted.add(code)
+            pending.remove(code)
+    return ordered
 
 
 def validate_action(task: Any, action: TaskAction) -> None:

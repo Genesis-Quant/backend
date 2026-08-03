@@ -16,13 +16,23 @@ class TaskAction(StrEnum):
     RETRY_FAILED = "retry-failed"
 
 
+class WorkflowTaskInformation(BaseModel):
+    task_code: int | None = None
+    task_id: int | None
+    name: str
+    task_type: str | None = None
+    state: str
+
+
 class TaskInformation(BaseModel):
-    application: Literal["query", "factor", "backtest"]
+    application: Literal["query", "factor", "backtest", "incremental"]
     record_id: int
+    user_id: int
     task_id: int | None
     task_id_history: list[int]
     process_instance_id: int | None
     process_instance_history: list[int]
+    workflow_tasks: list[WorkflowTaskInformation]
     project_code: int | None
     process_definition_code: int | None
     workflow_name: str | None
@@ -47,6 +57,7 @@ class TaskStatusResponse(TaskInformation):
 
 
 class TaskListItem(TaskInformation):
+    owner_username: str
     payload: dict[str, Any]
     requested_outputs: list[str]
 
@@ -75,6 +86,6 @@ class TaskActionResponse(BaseModel):
 
 
 class TaskDeletedResponse(BaseModel):
-    application: Literal["query", "factor", "backtest"]
+    application: Literal["query", "factor", "backtest", "incremental"]
     record_id: int
     task_id: int

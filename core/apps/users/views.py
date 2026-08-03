@@ -19,7 +19,12 @@ router = APIRouter(prefix="/api/v1")
 def register(credentials: Credentials, session: Annotated[Session, Depends(get_database_session)]) -> AuthenticationResponse:
     if session.scalar(select(User.id).where(User.username == credentials.username)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已存在")
-    user = User(username=credentials.username, password_hash=hash_password(credentials.password))
+    has_admin = session.scalar(select(User.id).where(User.is_admin.is_(True))) is not None
+    user = User(
+        username=credentials.username,
+        password_hash=hash_password(credentials.password),
+        is_admin=not has_admin,
+    )
     session.add(user)
     try:
         session.commit()

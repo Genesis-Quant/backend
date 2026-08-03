@@ -9,6 +9,7 @@ from config import DatabaseSettings
 
 
 def sqlalchemy_database_url() -> URL:
+    DatabaseSettings.validate()
     url = make_url(DatabaseSettings.URL)
     if url.drivername == "postgresql":
         url = url.set(drivername="postgresql+psycopg")

@@ -1,0 +1,1 @@
+"""Arena administrator application."""

@@ -16,15 +16,30 @@ if PROD:
     warnings.filterwarnings("ignore")
 
 
+def positive_integer_environment(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as error:
+        raise RuntimeError(f"{name} 必须是正整数") from error
+    if value < 1:
+        raise RuntimeError(f"{name} 必须是正整数")
+    return value
+
+
 class DatabaseSettings:
     """PostgreSQL 连接配置。"""
 
     HOST = os.getenv("PGSQL_HOST", "127.0.0.1")
     PORT = int(os.getenv("PGSQL_PORT", "5432"))
     USERNAME = os.getenv("PGSQL_USER", "postgres")
-    PASSWORD = os.getenv("PGSQL_PASSWORD", "")
-    DATABASE = os.getenv("PGSQL_DATABASE", "arena_runtime")
-    URL = f"postgresql+psycopg://{quote_plus(USERNAME)}:{quote_plus(PASSWORD)}@{HOST}:{PORT}/{DATABASE}"
+    PASSWORD = os.getenv("PGSQL_PASSWORD")
+    DATABASE = os.getenv("ARENA_DATABASE", "arena_runtime")
+    URL = f"postgresql+psycopg://{quote_plus(USERNAME)}:{quote_plus(PASSWORD or '')}@{HOST}:{PORT}/{DATABASE}"
+
+    @classmethod
+    def validate(cls) -> None:
+        if not cls.PASSWORD:
+            raise RuntimeError("缺少 PostgreSQL 配置：PGSQL_PASSWORD")
 
 
 class AuthenticationSettings:
@@ -37,18 +52,18 @@ class AuthenticationSettings:
 class DolphinSchedulerSettings:
     """DolphinScheduler 连接、工作流和任务轮询配置。"""
 
-    BASE_URL = os.getenv("DOLPHINSCHEDULER_BASE_URL", "http://127.0.0.1:12345/dolphinscheduler").rstrip("/")
-    PYTHON_GATEWAY_ADDRESS = os.getenv("DOLPHINSCHEDULER_PYTHON_GATEWAY_ADDRESS", "127.0.0.1")
-    PYTHON_GATEWAY_PORT = int(os.getenv("DOLPHINSCHEDULER_PYTHON_GATEWAY_PORT", "25333"))
-    PYTHON_GATEWAY_AUTH_TOKEN = os.getenv("API_PYTHON_GATEWAY_AUTH_TOKEN")
+    HOST = os.getenv("DOLPHINSCHEDULER_HOST", "127.0.0.1")
+    BASE_URL = f"http://{HOST}:12345/dolphinscheduler"
+    PYTHON_GATEWAY_PORT = 25333
+    PYTHON_GATEWAY_AUTH_TOKEN = os.getenv("DOLPHINSCHEDULER_PYTHON_GATEWAY_TOKEN")
     USERNAME = os.getenv("DOLPHINSCHEDULER_USERNAME", "arena-scheduler")
-    PASSWORD = os.getenv("DOLPHINSCHEDULER_PASSWORD", "dolphinscheduler123")
+    PASSWORD = os.getenv("DOLPHINSCHEDULER_PASSWORD")
     PROJECT_NAME = os.getenv("DOLPHINSCHEDULER_PROJECT_NAME", "arena-runtime")
     WORKFLOW_NAME = "incremental-update"
     INCREMENTAL_TASK_GROUP_NAME = "tushare-api"
     WORKER_GROUP = os.getenv("DOLPHINSCHEDULER_WORKER_GROUP", "default")
     TENANT_CODE = os.getenv("DOLPHINSCHEDULER_TENANT_CODE", "default")
-    RUNTIME_COMMAND = os.getenv("DOLPHINSCHEDULER_RUNTIME_COMMAND", "/opt/arena-runtime/.venv/bin/core-manage")
+    RUNTIME_COMMAND = "/opt/arena-runtime/.venv/bin/core-manage"
     SHARED_DIR = Path(os.getenv("ARENA_SHARED_DIR", "/shared")).resolve()
     POLL_INTERVAL_SECONDS = float(os.getenv("DOLPHINSCHEDULER_POLL_INTERVAL_SECONDS", "5"))
     POLL_BATCH_SIZE = int(os.getenv("DOLPHINSCHEDULER_POLL_BATCH_SIZE", "100"))
@@ -57,11 +72,37 @@ class DolphinSchedulerSettings:
         "factor": "factor",
         "backtest": "backtest",
     }
+    APPLICATION_TASK_GROUP_NAMES = {
+        "query": "query-tasks",
+        "factor": "factor-tasks",
+        "backtest": "backtest-tasks",
+    }
+    APPLICATION_TASK_GROUP_SIZES = {
+        "query": positive_integer_environment("DOLPHINSCHEDULER_QUERY_TASK_GROUP_SIZE", 1),
+        "factor": positive_integer_environment("DOLPHINSCHEDULER_FACTOR_TASK_GROUP_SIZE", 1),
+        "backtest": positive_integer_environment("DOLPHINSCHEDULER_BACKTEST_TASK_GROUP_SIZE", 1),
+    }
+
+    @classmethod
+    def validate(cls) -> None:
+        missing = [
+            name
+            for name, value in {
+                "DOLPHINSCHEDULER_PASSWORD": cls.PASSWORD,
+                "DOLPHINSCHEDULER_PYTHON_GATEWAY_TOKEN": cls.PYTHON_GATEWAY_AUTH_TOKEN,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"缺少 DolphinScheduler 配置：{', '.join(missing)}"
+            )
 
     @classmethod
     def configure_sdk_environment(cls) -> None:
+        cls.validate()
         os.environ.update({
-            "PYDS_JAVA_GATEWAY_ADDRESS": cls.PYTHON_GATEWAY_ADDRESS,
+            "PYDS_JAVA_GATEWAY_ADDRESS": cls.HOST,
             "PYDS_JAVA_GATEWAY_PORT": str(cls.PYTHON_GATEWAY_PORT),
             "PYDS_JAVA_GATEWAY_AUTH_TOKEN": cls.PYTHON_GATEWAY_AUTH_TOKEN,
             "PYDS_USER_NAME": cls.USERNAME,

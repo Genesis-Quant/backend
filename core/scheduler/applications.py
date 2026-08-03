@@ -7,6 +7,7 @@ from typing import Any
 from config import DolphinSchedulerSettings
 from core.scheduler.domain import APPLICATIONS
 from core.scheduler.errors import DolphinSchedulerError
+from core.scheduler.task_groups import ensure_application_task_groups
 
 DEFAULT_OUTPUT = {
     "query": "data",
@@ -23,8 +24,15 @@ def create_application_workflows() -> dict[str, Any]:
         from py4j.protocol import Py4JError
         from pydolphinscheduler.core.workflow import Workflow
         from pydolphinscheduler.exceptions import PyDSBaseException
+        from pydolphinscheduler.models.project import Project
+        from pydolphinscheduler.models.user import User
         from pydolphinscheduler.tasks.shell import Shell
 
+        User(name=DolphinSchedulerSettings.USERNAME).create_if_not_exists()
+        Project(name=DolphinSchedulerSettings.PROJECT_NAME).create_if_not_exists(
+            DolphinSchedulerSettings.USERNAME
+        )
+        task_groups = ensure_application_task_groups()
         workflow_codes: dict[str, int] = {}
         for application in APPLICATIONS:
             workflow = Workflow(
@@ -54,6 +62,8 @@ def create_application_workflows() -> dict[str, Any]:
                         "并将 Parquet 写回任务 output 目录"
                     ),
                     worker_group=DolphinSchedulerSettings.WORKER_GROUP,
+                    task_group_id=int(task_groups[application]["id"]),
+                    task_group_priority=1,
                 )
             workflow_codes[application] = int(workflow.submit())
     except (OSError, Py4JError, PyDSBaseException) as error:
@@ -65,6 +75,11 @@ def create_application_workflows() -> dict[str, Any]:
             application: {
                 "name": DolphinSchedulerSettings.APPLICATION_WORKFLOW_NAMES[application],
                 "code": workflow_codes[application],
+                "task_group": {
+                    "id": int(task_groups[application]["id"]),
+                    "name": task_groups[application]["name"],
+                    "group_size": int(task_groups[application]["groupSize"]),
+                },
             }
             for application in APPLICATIONS
         },

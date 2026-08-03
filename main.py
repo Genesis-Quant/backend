@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
+from core.apps.admin.views import router as admin_router
 from core.apps.backtest.views import router as backtest_router
 from core.apps.factor.views import router as factor_router
 from core.apps.query.views import router as query_router
@@ -33,6 +34,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Arena Backend", version="0.1.0", lifespan=lifespan)
 app.include_router(users_router)
+app.include_router(admin_router)
 app.include_router(query_router)
 app.include_router(factor_router)
 app.include_router(backtest_router)
