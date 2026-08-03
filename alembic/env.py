@@ -8,14 +8,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
+import core.apps.backtest.models  # noqa: F401 -- register tables in Base.metadata
+import core.apps.factor.models  # noqa: F401 -- register tables in Base.metadata
+import core.apps.incremental.models  # noqa: F401 -- register tables in Base.metadata
+import core.apps.query.models  # noqa: F401 -- register tables in Base.metadata
+import core.apps.users.models  # noqa: F401 -- register tables in Base.metadata
+import core.apps.workflows.models  # noqa: F401 -- register tables in Base.metadata
 from alembic import context
-import core.apps.backtest.models
-import core.apps.factor.models
-import core.apps.incremental.models
-import core.apps.query.models
-import core.apps.tasks.models
-import core.apps.users.models
-from config import DatabaseSettings
 from core.database.base import Base
 from core.database.session import sqlalchemy_database_url
 

@@ -1,4 +1,4 @@
-"""Factor task, project, version, and DSL catalog schemas."""
+"""Factor workflow, project, version, and DSL catalog schemas."""
 
 from datetime import datetime
 from typing import Any, Literal
@@ -6,19 +6,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.factor.schema import FactorAnalysisParameters
 
-from core.utils.dsl import DslCatalog
 from core.utils.results import ResultFile
 from core.utils.validation import normalize_text, validate_outputs
 
 
-class FactorTaskCreate(FactorAnalysisParameters):
+class FactorWorkflowCreate(FactorAnalysisParameters):
     output: list[Literal["processed_data", "information_coefficient", "group_returns"]] = Field(min_length=1)
 
     validate_output = field_validator("output")(validate_outputs)
 
 
-class FactorTaskSubmitted(BaseModel):
-    task_id: int
+class FactorWorkflowSubmitted(BaseModel):
+    record_id: int
+    workflow_instance_id: int
 
 
 class FactorResultFile(ResultFile):
@@ -36,9 +36,9 @@ class FactorProjectUpdate(FactorProjectCreate):
     pass
 
 
-class FactorTaskSummary(BaseModel):
+class FactorWorkflowSummary(BaseModel):
     record_id: int
-    task_id: int | None
+    workflow_instance_id: int | None
     state: str
     error: str | None
     parameters: dict[str, Any]
@@ -50,7 +50,7 @@ class FactorProjectItem(BaseModel):
     title: str
     latest_version: int | None
     latest_metrics: dict[str, Any] | None
-    draft: FactorTaskSummary | None
+    draft: FactorWorkflowSummary | None
     created_at: datetime
     updated_at: datetime
 
@@ -60,12 +60,6 @@ class FactorProjectPage(BaseModel):
     page: int
     page_size: int
     total: int
-
-
-class FactorAnalysisSubmitted(BaseModel):
-    record_id: int
-    task_id: int
-    reused: bool
 
 
 class FactorMetricSummary(BaseModel):
@@ -93,7 +87,7 @@ FactorMetrics = dict[str, dict[str, FactorMetricSummary]]
 class FactorVersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    task_id: int = Field(gt=0)
+    workflow_instance_id: int = Field(gt=0)
     remark: str = Field(default="", max_length=512)
     metrics: FactorMetrics
 
@@ -106,7 +100,7 @@ class FactorVersionCreate(BaseModel):
 class FactorVersionResponse(BaseModel):
     id: int
     project_id: int
-    task_id: int
+    workflow_instance_id: int
     version: int
     remark: str
     parameters: dict[str, Any]

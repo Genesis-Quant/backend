@@ -1,4 +1,4 @@
-"""Shared DolphinScheduler task constants."""
+"""Shared DolphinScheduler application and execution-state constants."""
 
 from typing import Literal, TypeAlias
 

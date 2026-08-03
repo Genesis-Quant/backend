@@ -3,10 +3,20 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
-from core.apps.tasks.models import ApplicationTaskFields, JSON_VALUE, utc_now
+from core.apps.workflows.models import JSON_VALUE, WorkflowRun, utc_now
 from core.database.base import Base
 
 
@@ -21,11 +31,11 @@ class FactorProject(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
-class FactorTask(ApplicationTaskFields, Base):
-    __tablename__ = "factor_tasks"
+class FactorWorkflowRun(WorkflowRun):
+    __tablename__ = "factor_workflow_runs"
     __table_args__ = (
         Index(
-            "uq_factor_tasks_project_draft",
+            "uq_factor_workflow_runs_project_draft",
             "project_id",
             unique=True,
             postgresql_where=text("project_id IS NOT NULL AND saved = false"),
@@ -33,21 +43,27 @@ class FactorTask(ApplicationTaskFields, Base):
         ),
     )
 
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("factor_projects.id", ondelete="CASCADE"), index=True)
+    id: Mapped[int] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("factor_projects.id", ondelete="SET NULL"), index=True)
     saved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    __mapper_args__ = {"polymorphic_identity": "factor"}
 
 
 class FactorVersion(Base):
     __tablename__ = "factor_versions"
     __table_args__ = (
         UniqueConstraint("project_id", "version", name="uq_factor_versions_project_number"),
-        UniqueConstraint("task_record_id", name="uq_factor_versions_task_record"),
+        UniqueConstraint("workflow_instance_id", name="uq_factor_versions_workflow_instance"),
         Index("ix_factor_versions_project_created", "project_id", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("factor_projects.id", ondelete="CASCADE"))
-    task_record_id: Mapped[int] = mapped_column(ForeignKey("factor_tasks.id", ondelete="RESTRICT"))
+    workflow_instance_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("workflow_instances.workflow_instance_id", ondelete="RESTRICT"),
+    )
     version: Mapped[int] = mapped_column(Integer)
     remark: Mapped[str] = mapped_column(String(512), default="")
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE)

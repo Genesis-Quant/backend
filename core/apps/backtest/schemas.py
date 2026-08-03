@@ -1,8 +1,7 @@
-"""Backtest task, strategy project, and version schemas."""
+"""Backtest workflow, strategy project, and version schemas."""
 
 from datetime import datetime
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.backtest.schema import BacktestParameters
@@ -11,14 +10,15 @@ from core.utils.results import ResultFile
 from core.utils.validation import normalize_text, validate_outputs
 
 
-class BacktestTaskCreate(BacktestParameters):
+class BacktestWorkflowCreate(BacktestParameters):
     output: list[Literal["trade_details", "daily_positions", "daily_portfolios", "return_summary", "daily_trading_statistics", "engine_stat"]] = Field(min_length=1)
 
     validate_output = field_validator("output")(validate_outputs)
 
 
-class BacktestTaskSubmitted(BaseModel):
-    task_id: int
+class BacktestWorkflowSubmitted(BaseModel):
+    record_id: int
+    workflow_instance_id: int
 
 
 class BacktestResultFile(ResultFile):
@@ -36,9 +36,9 @@ class BacktestProjectUpdate(BacktestProjectCreate):
     pass
 
 
-class BacktestTaskSummary(BaseModel):
+class BacktestWorkflowSummary(BaseModel):
     record_id: int
-    task_id: int | None
+    workflow_instance_id: int | None
     state: str
     error: str | None
     parameters: dict[str, Any]
@@ -50,7 +50,7 @@ class BacktestProjectItem(BaseModel):
     title: str
     latest_version: int | None
     latest_summary: dict[str, float | int | None] | None
-    draft: BacktestTaskSummary | None
+    draft: BacktestWorkflowSummary | None
     created_at: datetime
     updated_at: datetime
 
@@ -62,16 +62,10 @@ class BacktestProjectPage(BaseModel):
     total: int
 
 
-class BacktestRunSubmitted(BaseModel):
-    record_id: int
-    task_id: int
-    reused: bool
-
-
 class BacktestVersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    task_id: int = Field(gt=0)
+    workflow_instance_id: int = Field(gt=0)
     remark: str = Field(default="", max_length=512)
     summary: dict[str, float | int | None] = Field(min_length=1)
 
@@ -84,7 +78,7 @@ class BacktestVersionCreate(BaseModel):
 class BacktestVersionResponse(BaseModel):
     id: int
     project_id: int
-    task_id: int
+    workflow_instance_id: int
     version: int
     remark: str
     parameters: dict[str, Any]

@@ -9,8 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config import DolphinSchedulerSettings
-from core.apps.tasks.services import APPLICATION_MODELS, TaskGatewayService
 from core.apps.users.models import User
+from core.apps.workflows.models import WorkflowInstance
+from core.apps.workflows.services import (
+    WorkflowGatewayService,
+    current_workflow_instance,
+)
 from core.scheduler.client import DolphinSchedulerClient
 from core.scheduler.domain import FAILURE_STATES, TERMINAL_STATES
 from core.scheduler.errors import DolphinSchedulerError
@@ -21,7 +25,7 @@ class AdminService:
     def overview(self, session: Session) -> dict[str, Any]:
         return {
             "users": self.user_summary(session),
-            "tasks": self.task_summary(session),
+            "workflow_instances": self.workflow_summary(session),
             "scheduler": self.scheduler_overview(),
         }
 
@@ -47,48 +51,35 @@ class AdminService:
 
     @staticmethod
     def run_incremental_update(session: Session, user_id: int) -> dict[str, Any]:
-        result = TaskGatewayService().submit_incremental(session, user_id)
-        task = result["task"]
+        run, submission = WorkflowGatewayService().submit_incremental(session, user_id)
+        workflow = current_workflow_instance(session, run.id)
+        if workflow is None:
+            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
         return {
             "message": "增量更新工作流已提交",
-            "job_id": result["job_id"],
-            "record_id": task.id,
-            "task_id": task.task_id,
-            "process_instance_id": task.process_instance_id,
-            "project_code": int(task.project_code),
-            "process_definition_code": int(task.process_definition_code),
-            "scheduler_submission": result["scheduler_submission"],
+            "job_id": str(run.payload["job_id"]),
+            "record_id": run.id,
+            "workflow_instance_id": workflow.workflow_instance_id,
+            "project_code": int(run.project_code or 0),
+            "workflow_definition_code": int(run.workflow_definition_code or 0),
+            "scheduler_submission": submission,
         }
 
     @staticmethod
     def user_summary(session: Session) -> dict[str, int]:
         return {
             "total": int(session.scalar(select(func.count()).select_from(User)) or 0),
-            "administrators": int(
-                session.scalar(
-                    select(func.count()).select_from(User).where(User.is_admin.is_(True))
-                )
-                or 0
-            ),
+            "administrators": int(session.scalar(select(func.count()).select_from(User).where(User.is_admin.is_(True))) or 0),
         }
 
     @staticmethod
-    def task_summary(session: Session) -> dict[str, int]:
-        result = {"total": 0, "active": 0, "success": 0, "failure": 0}
-        for _, model in APPLICATION_MODELS:
-            result["total"] += count_tasks(session, model)
-            result["active"] += count_tasks(session, model, model.state.not_in(TERMINAL_STATES))
-            result["success"] += count_tasks(
-                session,
-                model,
-                model.state.in_(("SUCCESS", "FORCED_SUCCESS")),
-            )
-            result["failure"] += count_tasks(
-                session,
-                model,
-                model.state.in_((*FAILURE_STATES, "SUBMIT_FAILED")),
-            )
-        return result
+    def workflow_summary(session: Session) -> dict[str, int]:
+        return {
+            "total": count_workflows(session),
+            "active": count_workflows(session, WorkflowInstance.state.not_in(TERMINAL_STATES)),
+            "success": count_workflows(session, WorkflowInstance.state.in_(("SUCCESS", "FORCED_SUCCESS"))),
+            "failure": count_workflows(session, WorkflowInstance.state.in_(FAILURE_STATES)),
+        }
 
     @staticmethod
     def scheduler_overview() -> dict[str, Any]:
@@ -105,9 +96,7 @@ class AdminService:
             with DolphinSchedulerClient() as client:
                 project_code = client.project_code(DolphinSchedulerSettings.PROJECT_NAME)
                 if project_code is None:
-                    raise DolphinSchedulerError(
-                        f"DolphinScheduler 项目不存在: {DolphinSchedulerSettings.PROJECT_NAME}"
-                    )
+                    raise DolphinSchedulerError(f"DolphinScheduler 项目不存在: {DolphinSchedulerSettings.PROJECT_NAME}")
                 workflow_names = [
                     *DolphinSchedulerSettings.APPLICATION_WORKFLOW_NAMES.values(),
                     DolphinSchedulerSettings.WORKFLOW_NAME,
@@ -117,36 +106,28 @@ class AdminService:
                     for name in workflow_names
                     if (definition := client.process_definition(project_code, name)) is not None
                 ]
-                base.update(
-                    {
-                        "available": True,
-                        "project_code": project_code,
-                        "workflows": [workflow_information(item) for item in definitions],
-                        "task_groups": [task_group_information(item) for item in client.task_groups(project_code=project_code)],
-                        "worker_groups": client.worker_groups(),
-                        "workers": [worker_information(item) for item in client.workers()],
-                        "recent_instances": [
-                            process_instance_information(item)
-                            for item in client.process_instances(
-                                project_code=project_code,
-                                page_size=20,
-                            )
-                        ],
-                    }
-                )
+                base.update({
+                    "available": True,
+                    "project_code": project_code,
+                    "workflows": [workflow_definition_information(item) for item in definitions],
+                    "task_groups": [task_group_information(item) for item in client.task_groups(project_code=project_code)],
+                    "worker_groups": client.worker_groups(),
+                    "workers": [worker_information(item) for item in client.workers()],
+                    "recent_instances": [process_instance_information(item) for item in client.process_instances(project_code=project_code, page_size=20)],
+                })
         except DolphinSchedulerError as error:
             base["error"] = str(error)
         return base
 
 
-def count_tasks(session: Session, model: type[Any], *conditions: Any) -> int:
-    statement = select(func.count()).select_from(model)
+def count_workflows(session: Session, *conditions: Any) -> int:
+    statement = select(func.count()).select_from(WorkflowInstance)
     if conditions:
         statement = statement.where(*conditions)
     return int(session.scalar(statement) or 0)
 
 
-def workflow_information(definition: dict[str, Any]) -> dict[str, Any]:
+def workflow_definition_information(definition: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": str(definition.get("name") or ""),
         "code": int(definition.get("code") or 0),

@@ -7,41 +7,63 @@ from fastapi.responses import FileResponse
 from runtime.apps.query.schema import FactorQuery
 from sqlalchemy.orm import Session
 
-from core.apps.query.schemas import DslCatalog, QueryProjectCreate, QueryProjectItem, QueryProjectPage, QueryProjectSubmitted, QueryResultFile, QueryTaskCreate, QueryTaskSubmitted
-from core.apps.query.services import create_query_project, delete_query_project, get_query_project, list_query_projects, query_dsl_catalog, query_result_files, query_result_path, submit_project_query, submit_query_task
-from core.apps.tasks.http import raise_task_http_error
+from core.apps.query.schemas import (
+    QueryProjectCreate,
+    QueryProjectItem,
+    QueryProjectPage,
+    QueryResultFile,
+    QueryWorkflowCreate,
+    QueryWorkflowSubmitted,
+)
+from core.apps.query.services import (
+    create_query_project,
+    delete_query_project,
+    get_query_project,
+    list_query_projects,
+    query_dsl_catalog,
+    query_result_files,
+    query_result_path,
+    submit_project_query,
+    submit_query_workflow,
+)
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
+from core.apps.workflows.services import current_workflow_instance
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
+from core.utils.dsl import DslCatalog
+from core.utils.http import raise_api_http_error
 
 router = APIRouter(prefix="/api/v1/query", tags=["query"])
 
 
-@router.post("/tasks", response_model=QueryTaskSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def create_query_task(request: QueryTaskCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> QueryTaskSubmitted:
+@router.post("/workflows", response_model=QueryWorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
+def create_query_workflow(request: QueryWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> QueryWorkflowSubmitted:
     try:
-        task = submit_query_task(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
-        return QueryTaskSubmitted(task_id=int(task.task_id))
+        run = submit_query_workflow(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
+        workflow = current_workflow_instance(session, run.id)
+        if workflow is None:
+            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
+        return QueryWorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, OSError, ValueError) as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
-@router.get("/tasks/{task_id}/outputs", response_model=list[QueryResultFile])
-def list_query_results(task_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[QueryResultFile]:
+@router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[QueryResultFile])
+def list_query_results(workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[QueryResultFile]:
     try:
-        return query_result_files(session, user.id, task_id)
+        return query_result_files(session, user.id, workflow_instance_id)
     except (FileNotFoundError, RuntimeError, OSError) as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
-@router.get("/tasks/{task_id}/outputs/{name}", response_class=FileResponse)
-def download_query_result(task_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FileResponse:
+@router.get("/workflows/{workflow_instance_id}/outputs/{name}", response_class=FileResponse)
+def download_query_result(workflow_instance_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FileResponse:
     try:
-        path = query_result_path(session, user.id, task_id, name)
+        path = query_result_path(session, user.id, workflow_instance_id, name)
         return FileResponse(path, filename=path.name, media_type="application/vnd.apache.parquet")
     except (FileNotFoundError, RuntimeError, OSError) as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
 @router.get("/projects", response_model=QueryProjectPage)
@@ -54,7 +76,7 @@ def create_project(request: QueryProjectCreate, user: Annotated[User, Depends(ge
     try:
         return QueryProjectItem.model_validate(create_query_project(session, user.id, request.title))
     except RuntimeError as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
 @router.get("/projects/{project_id}", response_model=QueryProjectItem)
@@ -62,7 +84,7 @@ def project(project_id: int, user: Annotated[User, Depends(get_current_user)], s
     try:
         return QueryProjectItem.model_validate(get_query_project(session, user.id, project_id))
     except FileNotFoundError as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
 @router.delete("/projects/{project_id}")
@@ -70,16 +92,19 @@ def delete_project(project_id: int, user: Annotated[User, Depends(get_current_us
     try:
         return {"id": delete_query_project(session, user.id, project_id)}
     except (FileNotFoundError, RuntimeError, OSError) as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
-@router.post("/projects/{project_id}/queries", response_model=QueryProjectSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def run_project_query(project_id: int, request: FactorQuery, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> QueryProjectSubmitted:
+@router.post("/projects/{project_id}/queries", response_model=QueryWorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
+def run_project_query(project_id: int, request: FactorQuery, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> QueryWorkflowSubmitted:
     try:
-        task, reused = submit_project_query(session, user.id, project_id, {"dataset_query": request.model_dump(mode="json")})
-        return QueryProjectSubmitted(record_id=task.id, task_id=int(task.task_id), reused=reused)
+        run = submit_project_query(session, user.id, project_id, {"dataset_query": request.model_dump(mode="json")})
+        workflow = current_workflow_instance(session, run.id)
+        if workflow is None:
+            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
+        return QueryWorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
-        raise_task_http_error(error)
+        raise_api_http_error(error)
 
 
 @router.get("/dsl/catalog", response_model=DslCatalog)

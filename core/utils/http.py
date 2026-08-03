@@ -1,4 +1,4 @@
-"""HTTP error mapping shared by task and result endpoints."""
+"""Shared API exception-to-HTTP mapping."""
 
 from typing import NoReturn
 
@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from core.scheduler.errors import DolphinSchedulerError
 
 
-def raise_task_http_error(error: Exception) -> NoReturn:
+def raise_api_http_error(error: Exception) -> NoReturn:
     if isinstance(error, FileNotFoundError):
         status_code = 404
     elif isinstance(error, ValueError):

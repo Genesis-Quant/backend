@@ -1,12 +1,11 @@
-"""Query projects and their reusable task records."""
+"""Query projects and their current workflow runs."""
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, text
+from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from core.apps.tasks.models import ApplicationTaskFields
-from core.apps.tasks.models import utc_now
+from core.apps.workflows.models import WorkflowRun, utc_now
 from core.database.base import Base
 
 
@@ -21,16 +20,10 @@ class QueryProject(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
-class QueryTask(ApplicationTaskFields, Base):
-    __tablename__ = "query_tasks"
-    __table_args__ = (
-        Index(
-            "uq_query_tasks_project_id",
-            "project_id",
-            unique=True,
-            postgresql_where=text("project_id IS NOT NULL"),
-            sqlite_where=text("project_id IS NOT NULL"),
-        ),
-    )
+class QueryWorkflowRun(WorkflowRun):
+    __tablename__ = "query_workflow_runs"
 
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("query_projects.id", ondelete="CASCADE"))
+    id: Mapped[int] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("query_projects.id", ondelete="SET NULL"), unique=True)
+
+    __mapper_args__ = {"polymorphic_identity": "query"}

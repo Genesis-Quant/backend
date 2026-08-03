@@ -16,7 +16,7 @@ class AdminUserListResponse(BaseModel):
     items: list[UserResponse]
 
 
-class AdminTaskSummary(BaseModel):
+class AdminWorkflowInstanceSummary(BaseModel):
     total: int
     active: int
     success: int
@@ -82,7 +82,7 @@ class AdminSchedulerOverview(BaseModel):
 
 class AdminOverviewResponse(BaseModel):
     users: AdminUserSummary
-    tasks: AdminTaskSummary
+    workflow_instances: AdminWorkflowInstanceSummary
     scheduler: AdminSchedulerOverview
 
 
@@ -95,8 +95,7 @@ class IncrementalUpdateRunResponse(BaseModel):
     message: str
     job_id: str
     record_id: int
-    task_id: int | None
-    process_instance_id: int | None
+    workflow_instance_id: int
     project_code: int
-    process_definition_code: int
+    workflow_definition_code: int
     scheduler_submission: Any

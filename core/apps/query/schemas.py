@@ -1,4 +1,4 @@
-"""Query task and project API schemas."""
+"""Query workflow and project API schemas."""
 
 from datetime import datetime
 from typing import Literal
@@ -6,22 +6,24 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.query.schema import FactorQuery
 
-from core.utils.dsl import DslCatalog
 from core.utils.results import ResultFile
 from core.utils.validation import normalize_text, validate_outputs
 
 
-class QueryTaskCreate(BaseModel):
+class QueryWorkflowCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_query: FactorQuery
-    output: list[Literal["source_data", "computed_data", "filtered_data", "data"]] = Field(min_length=1)
+    output: list[Literal["source_data", "computed_data", "filtered_data", "data"]] = (
+        Field(min_length=1)
+    )
 
     validate_output = field_validator("output")(validate_outputs)
 
 
-class QueryTaskSubmitted(BaseModel):
-    task_id: int
+class QueryWorkflowSubmitted(BaseModel):
+    record_id: int
+    workflow_instance_id: int
 
 
 class QueryResultFile(ResultFile):
@@ -35,9 +37,9 @@ class QueryProjectCreate(BaseModel):
     validate_title = field_validator("title")(normalize_text)
 
 
-class QueryTaskSummary(BaseModel):
+class QueryWorkflowSummary(BaseModel):
     record_id: int
-    task_id: int | None
+    workflow_instance_id: int | None
     state: str
     error: str | None
     parameters: FactorQuery
@@ -47,7 +49,7 @@ class QueryTaskSummary(BaseModel):
 class QueryProjectItem(BaseModel):
     id: int
     title: str
-    current: QueryTaskSummary | None
+    current: QueryWorkflowSummary | None
     created_at: datetime
     updated_at: datetime
 
@@ -58,9 +60,3 @@ class QueryProjectPage(BaseModel):
     page_size: int
     total: int
     limit: int
-
-
-class QueryProjectSubmitted(BaseModel):
-    record_id: int
-    task_id: int
-    reused: bool

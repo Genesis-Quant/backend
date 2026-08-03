@@ -1,16 +1,20 @@
-"""Query projects, reusable submissions, and result access."""
+"""Query projects, workflow submissions, and result access."""
 
 import shutil
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from core.apps.query.models import QueryProject, QueryTask
-from core.apps.tasks.models import utc_now
-from core.apps.tasks.services import TaskExecutionService, delete_workflow_task_mappings, resolve_task_directory
+from core.apps.query.models import QueryProject, QueryWorkflowRun
 from core.apps.users.models import User
+from core.apps.workflows.models import WorkflowRun, utc_now
+from core.apps.workflows.services import (
+    WorkflowExecutionService,
+    current_workflow_instance,
+    resolve_run_directory,
+)
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
 from core.utils.results import result_files, result_path
@@ -25,22 +29,26 @@ PROJECT_LIMIT = 5
 PROJECT_OUTPUTS = ["data"]
 
 
-def submit_query_task(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> QueryTask:
-    return TaskExecutionService("query", QueryTask).submit(session, user_id, payload, outputs)
+def submit_query_workflow(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> WorkflowRun:
+    return WorkflowExecutionService("query", QueryWorkflowRun).submit(session, user_id, payload, outputs)
 
 
-def query_result_files(session: Session, user_id: int, task_id: int) -> list[dict[str, Any]]:
-    return result_files(session, user_id, task_id, QueryTask, OUTPUT_FILES)
+def query_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
+    return result_files(session, user_id, workflow_instance_id, "query", OUTPUT_FILES)
 
 
-def query_result_path(session: Session, user_id: int, task_id: int, name: str) -> Path:
-    return result_path(session, user_id, task_id, name, QueryTask, OUTPUT_FILES)
+def query_result_path(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Path:
+    return result_path(session, user_id, workflow_instance_id, name, "query", OUTPUT_FILES)
 
 
 def list_query_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
     statement = select(QueryProject).where(QueryProject.user_id == user_id)
     total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    projects = session.scalars(statement.order_by(QueryProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    projects = session.scalars(
+        statement.order_by(QueryProject.updated_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return {"items": [serialize_project(session, project) for project in projects], "page": page, "page_size": page_size, "total": total, "limit": PROJECT_LIMIT}
 
 
@@ -61,50 +69,56 @@ def get_query_project(session: Session, user_id: int, project_id: int) -> dict[s
 
 def delete_query_project(session: Session, user_id: int, project_id: int) -> int:
     project = owned_project(session, user_id, project_id)
-    task = session.scalar(select(QueryTask).where(QueryTask.project_id == project.id))
-    if task is not None and task.state not in TERMINAL_STATES:
-        raise RuntimeError(f"项目仍有 {task.state} 状态的查询任务")
-    task_directory = resolve_task_directory("query", task) if task is not None and task.input_file else None
-    if task is not None:
-        delete_workflow_task_mappings(session, "query", [task.id])
-        session.execute(delete(QueryTask).where(QueryTask.id == task.id))
+    run = session.scalar(select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id))
+    if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
+        raise RuntimeError(f"项目仍有 {workflow_state(session, run)} 状态的查询工作流")
+    run_directory = resolve_run_directory(run) if run is not None and run.input_file else None
+    if run is not None:
+        session.delete(run)
     session.delete(project)
     session.commit()
-    if task_directory is not None and task_directory.exists():
-        shutil.rmtree(task_directory)
+    if run_directory is not None and run_directory.exists():
+        shutil.rmtree(run_directory)
     return project_id
 
 
-def submit_project_query(session: Session, user_id: int, project_id: int, payload: dict[str, Any]) -> tuple[QueryTask, bool]:
-    project = session.scalar(select(QueryProject).where(QueryProject.id == project_id, QueryProject.user_id == user_id).with_for_update())
+def submit_project_query(
+    session: Session,
+    user_id: int,
+    project_id: int,
+    payload: dict[str, Any],
+) -> WorkflowRun:
+    project = session.scalar(
+        select(QueryProject).where(
+            QueryProject.id == project_id,
+            QueryProject.user_id == user_id,
+        ).with_for_update()
+    )
     if project is None:
         raise FileNotFoundError(f"查询项目不存在: {project_id}")
-    task = session.scalar(select(QueryTask).where(QueryTask.project_id == project.id).with_for_update())
-    executor = TaskExecutionService("query", QueryTask)
-    reused = task is not None
-    if task is None:
-        created_at = utc_now()
-        task = QueryTask(
-            user_id=user_id,
-            project_id=project.id,
-            payload=payload,
-            requested_outputs=PROJECT_OUTPUTS,
-            state="CREATED",
-            task_id_history=[],
-            process_instance_history=[],
-            state_history=[{"state": "CREATED", "timestamp": created_at.isoformat()}],
-            events=[],
-        )
-        session.add(task)
+    previous = session.scalar(
+        select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id).with_for_update()
+    )
+    if previous is not None and workflow_state(session, previous) not in TERMINAL_STATES:
+        raise RuntimeError(f"项目已有 {workflow_state(session, previous)} 状态的查询工作流")
+    if previous is not None:
+        previous.project_id = None
         session.flush()
-        executor.submit_record(session, task, payload, PROJECT_OUTPUTS, create_directory=True)
-    else:
-        if task.state not in TERMINAL_STATES:
-            raise RuntimeError(f"项目已有 {task.state} 状态的查询任务")
-        executor.resubmit(session, task, payload, PROJECT_OUTPUTS)
+    run = QueryWorkflowRun(
+        user_id=user_id,
+        application="query",
+        project_id=project.id,
+        payload=payload,
+        requested_outputs=PROJECT_OUTPUTS,
+        submission_state="CREATED",
+        events=[],
+    )
+    session.add(run)
+    session.flush()
+    WorkflowExecutionService("query", QueryWorkflowRun).submit_run(session, run, create_directory=True)
     project.updated_at = utc_now()
     session.commit()
-    return task, reused
+    return run
 
 
 def query_dsl_catalog() -> dict[str, Any]:
@@ -118,14 +132,20 @@ def owned_project(session: Session, user_id: int, project_id: int) -> QueryProje
     return project
 
 
+def workflow_state(session: Session, run: WorkflowRun) -> str:
+    workflow = current_workflow_instance(session, run.id)
+    return workflow.state if workflow is not None else run.submission_state
+
+
 def serialize_project(session: Session, project: QueryProject) -> dict[str, Any]:
-    task = session.scalar(select(QueryTask).where(QueryTask.project_id == project.id))
-    current = None if task is None else {
-        "record_id": task.id,
-        "task_id": task.task_id,
-        "state": task.state,
-        "error": task.error,
-        "parameters": task.payload["dataset_query"],
-        "updated_at": task.updated_at,
+    run = session.scalar(select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id))
+    workflow = current_workflow_instance(session, run.id) if run is not None else None
+    current = None if run is None else {
+        "record_id": run.id,
+        "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
+        "state": workflow.state if workflow is not None else run.submission_state,
+        "error": run.error,
+        "parameters": run.payload["dataset_query"],
+        "updated_at": run.updated_at,
     }
     return {"id": project.id, "title": project.title, "current": current, "created_at": project.created_at, "updated_at": project.updated_at}

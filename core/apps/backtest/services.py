@@ -1,4 +1,4 @@
-"""Backtest task submission, strategy projects, versions, and result access."""
+"""Backtest workflow submission, strategy projects, versions, and results."""
 
 import shutil
 from pathlib import Path
@@ -7,9 +7,17 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from core.apps.backtest.models import BacktestProject, BacktestTask, BacktestVersion
-from core.apps.tasks.models import utc_now
-from core.apps.tasks.services import TaskExecutionService, delete_workflow_task_mappings, resolve_task_directory
+from core.apps.backtest.models import (
+    BacktestProject,
+    BacktestVersion,
+    BacktestWorkflowRun,
+)
+from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
+from core.apps.workflows.services import (
+    WorkflowExecutionService,
+    current_workflow_instance,
+    resolve_run_directory,
+)
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
 from core.utils.results import result_files, result_path
@@ -25,16 +33,16 @@ OUTPUT_FILES = {
 PROJECT_OUTPUTS = list(OUTPUT_FILES)
 
 
-def submit_backtest_task(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> BacktestTask:
-    return TaskExecutionService("backtest", BacktestTask).submit(session, user_id, payload, outputs)
+def submit_backtest_workflow(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> WorkflowRun:
+    return WorkflowExecutionService("backtest", BacktestWorkflowRun).submit(session, user_id, payload, outputs)
 
 
-def backtest_result_files(session: Session, user_id: int, task_id: int) -> list[dict[str, Any]]:
-    return result_files(session, user_id, task_id, BacktestTask, OUTPUT_FILES)
+def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
+    return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
 
 
-def backtest_result_path(session: Session, user_id: int, task_id: int, name: str) -> Path:
-    return result_path(session, user_id, task_id, name, BacktestTask, OUTPUT_FILES)
+def backtest_result_path(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Path:
+    return result_path(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
 
 
 def list_backtest_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
@@ -65,83 +73,84 @@ def update_backtest_project(session: Session, user_id: int, project_id: int, tit
 
 def delete_backtest_project(session: Session, user_id: int, project_id: int) -> int:
     project = owned_project(session, user_id, project_id)
-    tasks = list(session.scalars(select(BacktestTask).where(BacktestTask.project_id == project.id)))
-    running = [task.state for task in tasks if task.state not in TERMINAL_STATES]
+    runs = list(session.scalars(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id)))
+    running = [run_state(session, run) for run in runs if run_state(session, run) not in TERMINAL_STATES]
     if running:
-        raise RuntimeError(f"项目仍有运行中的回测任务: {sorted(set(running))}")
-    task_directories = [resolve_task_directory("backtest", task) for task in tasks]
-    delete_workflow_task_mappings(session, "backtest", [task.id for task in tasks])
+        raise RuntimeError(f"项目仍有运行中的回测工作流: {sorted(set(running))}")
+    run_directories = [resolve_run_directory(run) for run in runs if run.input_file]
     session.execute(delete(BacktestVersion).where(BacktestVersion.project_id == project.id))
-    session.execute(delete(BacktestTask).where(BacktestTask.project_id == project.id))
+    for run in runs:
+        session.delete(run)
     session.delete(project)
     session.commit()
-    for task_directory in task_directories:
-        if task_directory.exists():
-            shutil.rmtree(task_directory)
+    for run_directory in run_directories:
+        if run_directory.exists():
+            shutil.rmtree(run_directory)
     return project_id
 
 
-def submit_project_backtest(session: Session, user_id: int, project_id: int, payload: dict[str, Any]) -> tuple[BacktestTask, bool]:
+def submit_project_backtest(session: Session, user_id: int, project_id: int, payload: dict[str, Any]) -> WorkflowRun:
     project = session.scalar(select(BacktestProject).where(BacktestProject.id == project_id, BacktestProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"回测项目不存在: {project_id}")
-    draft = session.scalar(select(BacktestTask).where(BacktestTask.project_id == project.id, BacktestTask.saved.is_(False)).with_for_update())
-    executor = TaskExecutionService("backtest", BacktestTask)
-    reused = draft is not None
-    if draft is None:
-        created_at = utc_now()
-        draft = BacktestTask(
-            user_id=user_id,
-            project_id=project.id,
-            saved=False,
-            payload=payload,
-            requested_outputs=PROJECT_OUTPUTS,
-            state="CREATED",
-            task_id_history=[],
-            process_instance_history=[],
-            state_history=[{"state": "CREATED", "timestamp": created_at.isoformat()}],
-            events=[],
-        )
-        session.add(draft)
+    draft = session.scalar(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id, BacktestWorkflowRun.saved.is_(False)).with_for_update())
+    if draft is not None and run_state(session, draft) not in TERMINAL_STATES:
+        raise RuntimeError(f"项目已有 {run_state(session, draft)} 状态的回测工作流")
+    if draft is not None:
+        draft.project_id = None
         session.flush()
-        task = executor.submit_record(session, draft, payload, PROJECT_OUTPUTS, create_directory=True)
-    else:
-        if draft.state not in TERMINAL_STATES:
-            raise RuntimeError(f"项目已有 {draft.state} 状态的回测任务")
-        task = executor.resubmit(session, draft, payload, PROJECT_OUTPUTS)
+    run = BacktestWorkflowRun(
+        user_id=user_id,
+        application="backtest",
+        project_id=project.id,
+        saved=False,
+        payload=payload,
+        requested_outputs=PROJECT_OUTPUTS,
+        submission_state="CREATED",
+        events=[],
+    )
+    session.add(run)
+    session.flush()
+    WorkflowExecutionService("backtest", BacktestWorkflowRun).submit_run(session, run, create_directory=True)
     project.updated_at = utc_now()
     session.commit()
-    return task, reused
+    return run
 
 
-def create_backtest_version(session: Session, user_id: int, project_id: int, task_id: int, remark: str, summary: dict[str, Any]) -> dict[str, Any]:
+def create_backtest_version(session: Session, user_id: int, project_id: int, workflow_instance_id: int, remark: str, summary: dict[str, Any]) -> dict[str, Any]:
     project = session.scalar(select(BacktestProject).where(BacktestProject.id == project_id, BacktestProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"回测项目不存在: {project_id}")
-    task = session.scalar(select(BacktestTask).where(
-        BacktestTask.project_id == project.id,
-        BacktestTask.user_id == user_id,
-        BacktestTask.task_id == task_id,
-        BacktestTask.saved.is_(False),
-    ).with_for_update())
-    if task is None:
-        raise FileNotFoundError("当前未保存回测不存在或 task_id 已失效")
-    if task.state != "SUCCESS":
-        raise RuntimeError(f"任务状态为 {task.state}，成功后才能保存版本")
-    backtest_result_files(session, user_id, task_id)
+    row = session.execute(
+        select(BacktestWorkflowRun, WorkflowInstance)
+        .join(WorkflowInstance, WorkflowInstance.workflow_run_id == BacktestWorkflowRun.id)
+        .where(
+            BacktestWorkflowRun.project_id == project.id,
+            BacktestWorkflowRun.user_id == user_id,
+            BacktestWorkflowRun.saved.is_(False),
+            WorkflowInstance.workflow_instance_id == workflow_instance_id,
+            WorkflowInstance.is_current.is_(True),
+        ).with_for_update()
+    ).one_or_none()
+    if row is None:
+        raise FileNotFoundError("当前未保存回测不存在或 workflow_instance_id 已失效")
+    run, workflow = row
+    if workflow.state != "SUCCESS":
+        raise RuntimeError(f"工作流状态为 {workflow.state}，成功后才能保存版本")
+    backtest_result_files(session, user_id, workflow_instance_id)
     next_version = (session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id)) or 0) + 1
-    version = BacktestVersion(project_id=project.id, task_record_id=task.id, version=next_version, remark=remark, parameters=task.payload, summary=summary)
+    version = BacktestVersion(project_id=project.id, workflow_instance_id=workflow.workflow_instance_id, version=next_version, remark=remark, parameters=run.payload, summary=summary)
     session.add(version)
-    task.saved = True
+    run.saved = True
     project.updated_at = utc_now()
     session.commit()
-    return serialize_version(task, version)
+    return serialize_version(version)
 
 
 def list_backtest_versions(session: Session, user_id: int, project_id: int) -> list[dict[str, Any]]:
     project = owned_project(session, user_id, project_id)
     versions = session.scalars(select(BacktestVersion).where(BacktestVersion.project_id == project.id).order_by(BacktestVersion.version.desc())).all()
-    return [serialize_version(session.get(BacktestTask, version.task_record_id), version) for version in versions]
+    return [serialize_version(version) for version in versions]
 
 
 def get_backtest_version(session: Session, user_id: int, project_id: int, version_number: int) -> dict[str, Any]:
@@ -149,7 +158,7 @@ def get_backtest_version(session: Session, user_id: int, project_id: int, versio
     version = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == project.id, BacktestVersion.version == version_number))
     if version is None:
         raise FileNotFoundError(f"回测版本不存在: {version_number}")
-    return serialize_version(session.get(BacktestTask, version.task_record_id), version)
+    return serialize_version(version)
 
 
 def dsl_catalog() -> dict[str, Any]:
@@ -163,37 +172,25 @@ def owned_project(session: Session, user_id: int, project_id: int) -> BacktestPr
     return project
 
 
+def run_state(session: Session, run: WorkflowRun) -> str:
+    workflow = current_workflow_instance(session, run.id)
+    return workflow.state if workflow is not None else run.submission_state
+
+
 def serialize_project(session: Session, project: BacktestProject) -> dict[str, Any]:
     latest = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == project.id).order_by(BacktestVersion.version.desc()).limit(1))
-    draft = session.scalar(select(BacktestTask).where(BacktestTask.project_id == project.id, BacktestTask.saved.is_(False)))
-    return {
-        "id": project.id,
-        "title": project.title,
-        "latest_version": latest.version if latest else None,
-        "latest_summary": latest.summary if latest else None,
-        "draft": None if draft is None else {
-            "record_id": draft.id,
-            "task_id": draft.task_id,
-            "state": draft.state,
-            "error": draft.error,
-            "parameters": draft.payload,
-            "updated_at": draft.updated_at,
-        },
-        "created_at": project.created_at,
-        "updated_at": project.updated_at,
+    draft = session.scalar(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id, BacktestWorkflowRun.saved.is_(False)))
+    workflow = current_workflow_instance(session, draft.id) if draft is not None else None
+    draft_data = None if draft is None else {
+        "record_id": draft.id,
+        "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
+        "state": workflow.state if workflow is not None else draft.submission_state,
+        "error": draft.error,
+        "parameters": draft.payload,
+        "updated_at": draft.updated_at,
     }
+    return {"id": project.id, "title": project.title, "latest_version": latest.version if latest else None, "latest_summary": latest.summary if latest else None, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
 
 
-def serialize_version(task: BacktestTask | None, version: BacktestVersion) -> dict[str, Any]:
-    if task is None or task.task_id is None:
-        raise RuntimeError("版本关联的回测任务不完整")
-    return {
-        "id": version.id,
-        "project_id": version.project_id,
-        "task_id": task.task_id,
-        "version": version.version,
-        "remark": version.remark,
-        "parameters": version.parameters,
-        "summary": version.summary,
-        "created_at": version.created_at,
-    }
+def serialize_version(version: BacktestVersion) -> dict[str, Any]:
+    return {"id": version.id, "project_id": version.project_id, "workflow_instance_id": version.workflow_instance_id, "version": version.version, "remark": version.remark, "parameters": version.parameters, "summary": version.summary, "created_at": version.created_at}
