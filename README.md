@@ -1,34 +1,27 @@
 # Arena Backend
 
 Backend 提供用户认证，以及 query、factor、backtest 三类 DolphinScheduler 后台任务。
-DolphinScheduler 是 `config/dolphinscheduler` 中的运行基础设施，不是业务 app，也不暴露
+DolphinScheduler 是 `core/scheduler` 中的运行基础设施，不是业务 app，也不暴露
 `/api/v1/scheduler` 接口。
 
 ## 结构
 
 ```text
 main.py
-config/
-├── database.py
-├── settings.py
-└── dolphinscheduler/
-    ├── client.py              # DolphinScheduler HTTP 客户端
-    ├── workflows.py           # 工作流注册和查询
-    ├── applications.py        # query/factor/backtest 工作流定义
-    ├── incremental.py         # 数据增量更新工作流定义
-    └── task_groups.py
-apps/
-├── users/
-├── query/
-│   ├── models.py
-│   ├── schemas.py
-│   ├── services.py            # 提交 query 并读取完成结果
-│   ├── views.py
-│   └── tests/
-├── factor/                    # 与 query 相同的 app 结构
-├── backtest/                  # 与 query 相同的 app 结构
-├── tasks/                     # 提交执行、状态同步、日志、控制和轮询
-└── utils/                     # 三个业务 app 共用的结果读取和参数校验
+config.py                      # 环境配置
+core/
+├── apps/
+│   ├── users/
+│   ├── query/
+│   ├── factor/
+│   ├── backtest/
+│   └── tasks/
+├── database/
+│   ├── base.py                # SQLAlchemy 模型基类
+│   ├── session.py             # Engine、Session 和请求依赖
+│   └── health.py              # 数据库健康检查
+├── scheduler/                 # DolphinScheduler 接入和工作流
+└── utils/                     # 业务 app 共用的结果读取和参数校验
 ```
 
 三个业务 app 分别拥有 `query_tasks`、`factor_tasks`、`backtest_tasks` 表。每条记录归属
@@ -55,8 +48,20 @@ DolphinScheduler 异步创建 task instance。提交接口等待最多 10 秒，
 | `GET` | `/api/v1/query/tasks/{task_id}/outputs` | 任务成功后列出 query 结果 |
 | `GET` | `/api/v1/query/tasks/{task_id}/outputs/{name}` | 下载指定 query 结果 |
 
-factor 和 backtest 使用完全相同的路径结构，只需将路径中的 `query` 换成 `factor` 或
-`backtest`。业务 app 不提供任务列表、状态详情、日志或控制接口。
+factor 和 backtest 的一次性任务使用完全相同的路径结构，只需将路径中的 `query` 换成
+`factor` 或 `backtest`。业务 app 不提供任务列表、状态详情、日志或控制接口。
+
+factor 与 backtest 还提供研究项目和不可变版本接口。未保存时，同一项目复用唯一草稿
+任务记录并覆写输入输出；保存版本后，下一次运行创建新的草稿记录。
+
+| 方法 | 路径 | 功能 |
+| --- | --- | --- |
+| `GET/POST` | `/api/v1/<factor|backtest>/projects` | 查询或创建项目 |
+| `GET/PATCH/DELETE` | `/api/v1/<factor|backtest>/projects/{project_id}` | 读取、改名或删除项目 |
+| `POST` | `/api/v1/factor/projects/{project_id}/analyses` | 提交因子分析草稿 |
+| `POST` | `/api/v1/backtest/projects/{project_id}/runs` | 提交策略回测草稿 |
+| `GET/POST` | `/api/v1/<factor|backtest>/projects/{project_id}/versions` | 查询或保存版本 |
+| `GET` | `/api/v1/<factor|backtest>/projects/{project_id}/versions/{version}` | 读取指定版本 |
 
 结果接口只查询 Backend 已同步的数据库状态，不会调用 DolphinScheduler。任务不是
 `SUCCESS` 时返回 HTTP 409；任务成功但缺少约定结果时返回 HTTP 502；未授权、不存在或
@@ -141,7 +146,6 @@ $task = Invoke-RestMethod -Method Post -ContentType application/json `
 cd backend
 uv sync
 uv run alembic upgrade head
-uv run pytest
 uv run uvicorn main:app --reload
 ```
 

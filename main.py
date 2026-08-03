@@ -6,15 +6,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from apps.backtest.views import router as backtest_router
-from apps.factor.views import router as factor_router
-from apps.query.views import router as query_router
-from apps.tasks.services import poll_task_statuses
-from apps.tasks.views import router as tasks_router
-from apps.users.services import validate_security_configuration
-from apps.users.views import router as users_router
-from config.database import DatabaseError, check_database
-from config.dolphinscheduler.workflows import ensure_all_workflows
+from core.apps.backtest.views import router as backtest_router
+from core.apps.factor.views import router as factor_router
+from core.apps.query.views import router as query_router
+from core.apps.tasks.services import poll_task_statuses
+from core.apps.tasks.views import router as tasks_router
+from core.apps.users.services import validate_security_configuration
+from core.apps.users.views import router as users_router
+from core.database.health import DatabaseError, check_database
+from core.scheduler.workflows import ensure_all_workflows
 
 
 @asynccontextmanager

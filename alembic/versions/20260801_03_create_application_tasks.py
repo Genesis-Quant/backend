@@ -17,7 +17,6 @@ down_revision: str | None = "20260801_02"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-BACKEND_SCHEMA = "arena_backend"
 TABLES = ("query_tasks", "factor_tasks", "backtest_tasks")
 
 
@@ -40,16 +39,14 @@ def upgrade() -> None:
             sa.Column("error", sa.Text(), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
-            sa.ForeignKeyConstraint(["user_id"], [f"{BACKEND_SCHEMA}.users.id"], ondelete="CASCADE"),
-            schema=BACKEND_SCHEMA,
+            sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         )
         for column in ("user_id", "state"):
-            op.create_index(f"ix_{BACKEND_SCHEMA}_{table}_{column}", table, [column], schema=BACKEND_SCHEMA)
+            op.create_index(f"ix_{table}_{column}", table, [column])
         for column in ("task_id", "process_instance_id"):
-            op.create_index(f"ix_{BACKEND_SCHEMA}_{table}_{column}", table, [column], unique=True, schema=BACKEND_SCHEMA)
+            op.create_index(f"ix_{table}_{column}", table, [column], unique=True)
 
 
 def downgrade() -> None:
     for table in reversed(TABLES):
-        op.drop_table(table, schema=BACKEND_SCHEMA)
-
+        op.drop_table(table)
