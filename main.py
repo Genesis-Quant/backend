@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import ArenaSettings
 from core.apps.admin.views import router as admin_router
 from core.apps.backtest.views import router as backtest_router
 from core.apps.factor.views import router as factor_router
@@ -23,6 +24,7 @@ from core.scheduler.workflows import ensure_all_workflows
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     validate_security_configuration()
+    ArenaSettings.validate()
     application.state.workflows = ensure_all_workflows()
     stop_poller = asyncio.Event()
     workflow_poller = asyncio.create_task(poll_workflow_statuses(stop_poller))

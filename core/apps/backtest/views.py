@@ -2,8 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, Response, status
 from runtime.apps.backtest.schema import BacktestParameters
 from sqlalchemy.orm import Session
 
@@ -20,7 +19,7 @@ from core.apps.backtest.schemas import (
 )
 from core.apps.backtest.services import (
     backtest_result_files,
-    backtest_result_path,
+    backtest_result_response,
     create_backtest_project,
     create_backtest_version,
     delete_backtest_project,
@@ -64,11 +63,10 @@ def list_backtest_results(workflow_instance_id: int, user: Annotated[User, Depen
         raise_api_http_error(error)
 
 
-@router.get("/workflows/{workflow_instance_id}/outputs/{name}", response_class=FileResponse)
-def download_backtest_result(workflow_instance_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FileResponse:
+@router.get("/workflows/{workflow_instance_id}/outputs/{name}")
+def download_backtest_result(workflow_instance_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> Response:
     try:
-        path = backtest_result_path(session, user.id, workflow_instance_id, name)
-        return FileResponse(path, filename=path.name, media_type="application/vnd.apache.parquet")
+        return backtest_result_response(session, user.id, workflow_instance_id, name)
     except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 

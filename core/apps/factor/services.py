@@ -1,9 +1,8 @@
 """Factor workflow submission, research projects, versions, and results."""
 
-import shutil
-from pathlib import Path
 from typing import Any
 
+from fastapi import Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -12,18 +11,19 @@ from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
 from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
+    remove_run_artifacts,
     resolve_run_directory,
 )
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
-from core.utils.results import result_files, result_path
+from core.utils.results import result_files, result_response
 
 OUTPUT_FILES = {
     "processed_data": "factor_processed.parquet",
     "information_coefficient": "factor_information_coefficients.parquet",
     "group_returns": "factor_group_returns.parquet",
 }
-PROJECT_OUTPUTS = list(OUTPUT_FILES)
+PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
 
 
 def submit_factor_workflow(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> WorkflowRun:
@@ -34,8 +34,8 @@ def factor_result_files(session: Session, user_id: int, workflow_instance_id: in
     return result_files(session, user_id, workflow_instance_id, "factor", OUTPUT_FILES)
 
 
-def factor_result_path(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Path:
-    return result_path(session, user_id, workflow_instance_id, name, "factor", OUTPUT_FILES)
+def factor_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
+    return result_response(session, user_id, workflow_instance_id, name, "factor", OUTPUT_FILES)
 
 
 def list_factor_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
@@ -70,15 +70,18 @@ def delete_factor_project(session: Session, user_id: int, project_id: int) -> in
     running = [run_state(session, run) for run in runs if run_state(session, run) not in TERMINAL_STATES]
     if running:
         raise RuntimeError(f"项目仍有运行中的因子工作流: {sorted(set(running))}")
-    run_directories = [resolve_run_directory(run) for run in runs if run.input_file]
+    artifacts = [
+        (resolve_run_directory(run), run.output_dir)
+        for run in runs
+        if run.input_file
+    ]
     session.execute(delete(FactorVersion).where(FactorVersion.project_id == project.id))
     for run in runs:
         session.delete(run)
     session.delete(project)
     session.commit()
-    for run_directory in run_directories:
-        if run_directory.exists():
-            shutil.rmtree(run_directory)
+    for run_artifacts in artifacts:
+        remove_run_artifacts(*run_artifacts)
     return project_id
 
 

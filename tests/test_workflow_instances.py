@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from config import DolphinSchedulerSettings
+from config import ArenaSettings
 from core.apps.backtest.models import BacktestVersion
 from core.apps.factor.models import FactorVersion, FactorWorkflowRun
 from core.apps.incremental.models import IncrementalWorkflowRun
@@ -300,7 +303,7 @@ def test_task_instances_are_not_persisted() -> None:
 
 def test_workflow_directory_uses_uuid_workspace_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace_key = "3a809554ba8f4c75a5cf46ec441994af"
-    monkeypatch.setattr(DolphinSchedulerSettings, "SHARED_DIR", tmp_path)
+    monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
     run = FactorWorkflowRun(
         id=1,
         user_id=1,
@@ -317,6 +320,61 @@ def test_workflow_directory_uses_uuid_workspace_key(tmp_path, monkeypatch: pytes
     run.input_file = str(tmp_path / "factor" / "1" / "input.json")
     with pytest.raises(RuntimeError, match="workspace key"):
         resolve_run_directory(run)
+
+
+def test_cloud_workflow_keeps_input_local_and_sends_output_cloud_flag(
+    session: Session,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = create_user(session, "cloud-owner")
+    run = IncrementalWorkflowRun(
+        user_id=owner.id,
+        application="incremental",
+        submission_state="CREATED",
+        payload={"dataset_query": {}},
+        requested_outputs=["data"],
+        events=[],
+    )
+    session.add(run)
+    session.flush()
+    captured: dict[str, object] = {}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *ignored: object) -> None:
+            return None
+
+        def start_process_instance(self, **arguments: object) -> None:
+            captured.update(arguments)
+
+    monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
+    monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
+    monkeypatch.setattr(
+        "core.apps.workflows.services.cloud_output_location",
+        lambda application, workspace_key: (
+            f"{application}/{workspace_key}/output",
+            f"s3://arena-bucket/arena-runtime/{application}/{workspace_key}/output",
+        ),
+    )
+    monkeypatch.setattr(
+        "core.apps.workflows.services.ensure_workflow_definition",
+        lambda application: (1, {"code": 2, "name": application}),
+    )
+    monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", Client)
+    executor = WorkflowExecutionService("query", IncrementalWorkflowRun)
+    monkeypatch.setattr(executor, "wait_for_workflow_instance", lambda *args: None)
+
+    executor.submit_run(session, run, create_directory=True)
+
+    input_file = Path(run.input_file or "")
+    input_data = json.loads(input_file.read_text(encoding="utf-8"))
+    assert input_data["output_dir"].startswith("query/")
+    assert input_data["output_dir"].endswith("/output")
+    assert run.output_dir == f"s3://arena-bucket/arena-runtime/{input_data['output_dir']}"
+    assert captured["start_params"]["output_cloud"] == "--output-cloud"
 
 
 def test_historical_workflow_cannot_read_current_rerun_results(session: Session) -> None:

@@ -26,6 +26,29 @@ def positive_integer_environment(name: str, default: int) -> int:
     return value
 
 
+def boolean_environment(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"{name} 必须是 True 或 False")
+    return value == "true"
+
+
+class ArenaSettings:
+    """Arena 工作流共享输入和结果存储配置。"""
+
+    SHARED_DIR = Path(os.getenv("ARENA_SHARED_DIR", "/shared")).resolve()
+    SHARED_CLOUD = boolean_environment("ARENA_SHARED_CLOUD")
+
+    @classmethod
+    def validate(cls) -> None:
+        if not cls.SHARED_CLOUD:
+            return
+        from runtime.utils.storage import ObjectStorage
+
+        with ObjectStorage.from_env():
+            pass
+
+
 class DatabaseSettings:
     """PostgreSQL 连接配置。"""
 
@@ -64,7 +87,6 @@ class DolphinSchedulerSettings:
     WORKER_GROUP = os.getenv("DOLPHINSCHEDULER_WORKER_GROUP", "default")
     TENANT_CODE = os.getenv("DOLPHINSCHEDULER_TENANT_CODE", "default")
     RUNTIME_COMMAND = "/opt/arena-runtime/.venv/bin/core-manage"
-    SHARED_DIR = Path(os.getenv("ARENA_SHARED_DIR", "/shared")).resolve()
     POLL_INTERVAL_SECONDS = float(os.getenv("DOLPHINSCHEDULER_POLL_INTERVAL_SECONDS", "5"))
     POLL_BATCH_SIZE = int(os.getenv("DOLPHINSCHEDULER_POLL_BATCH_SIZE", "100"))
     APPLICATION_WORKFLOW_NAMES = {

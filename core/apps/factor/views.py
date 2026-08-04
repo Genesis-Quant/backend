@@ -2,8 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, Response, status
 from runtime.apps.factor.schema import FactorAnalysisParameters
 from sqlalchemy.orm import Session
 
@@ -24,7 +23,7 @@ from core.apps.factor.services import (
     delete_factor_project,
     dsl_catalog,
     factor_result_files,
-    factor_result_path,
+    factor_result_response,
     get_factor_project,
     get_factor_version,
     list_factor_projects,
@@ -64,11 +63,10 @@ def list_factor_results(workflow_instance_id: int, user: Annotated[User, Depends
         raise_api_http_error(error)
 
 
-@router.get("/workflows/{workflow_instance_id}/outputs/{name}", response_class=FileResponse)
-def download_factor_result(workflow_instance_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FileResponse:
+@router.get("/workflows/{workflow_instance_id}/outputs/{name}")
+def download_factor_result(workflow_instance_id: int, name: str, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> Response:
     try:
-        path = factor_result_path(session, user.id, workflow_instance_id, name)
-        return FileResponse(path, filename=path.name, media_type="application/vnd.apache.parquet")
+        return factor_result_response(session, user.id, workflow_instance_id, name)
     except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 

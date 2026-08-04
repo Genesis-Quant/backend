@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
-from config import DolphinSchedulerSettings
+from config import ArenaSettings, DolphinSchedulerSettings
 from core.apps.backtest.models import BacktestWorkflowRun
 from core.apps.factor.models import FactorWorkflowRun
 from core.apps.incremental.models import IncrementalWorkflowRun
@@ -31,6 +31,11 @@ from core.scheduler.errors import DolphinSchedulerError
 from core.scheduler.workflows import (
     ensure_incremental_workflow_definition,
     ensure_workflow_definition,
+)
+from core.utils.results import (
+    cloud_output_location,
+    delete_result_objects,
+    is_cloud_output,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -92,19 +97,35 @@ class WorkflowExecutionService:
         create_directory: bool,
     ) -> WorkflowRun:
         run_id = run.id
-        if create_directory:
-            run_directory = DolphinSchedulerSettings.SHARED_DIR / self.application / uuid4().hex
-            run.output_dir = str(run_directory / "output")
-            run.input_file = str(run_directory / "input.json")
-        else:
-            run_directory = None
-
         try:
+            if create_directory:
+                workspace_key = uuid4().hex
+                run_directory = ArenaSettings.SHARED_DIR / self.application / workspace_key
+                if ArenaSettings.SHARED_CLOUD:
+                    output_argument, run.output_dir = cloud_output_location(
+                        self.application,
+                        workspace_key,
+                    )
+                else:
+                    output_argument = "output"
+                    run.output_dir = str(run_directory / output_argument)
+                run.input_file = str(run_directory / "input.json")
+            else:
+                run_directory = None
+                output_argument = None
+
             if run_directory is not None:
-                Path(run.output_dir or "").mkdir(parents=True, exist_ok=False)
+                if is_cloud_output(run.output_dir):
+                    run_directory.mkdir(parents=True, exist_ok=False)
+                else:
+                    Path(run.output_dir or "").mkdir(parents=True, exist_ok=False)
                 temporary = Path(run.input_file or "").with_suffix(".json.tmp")
                 temporary.write_text(
-                    json.dumps({**run.payload, "output_dir": "output"}, ensure_ascii=False, indent=2),
+                    json.dumps(
+                        {**run.payload, "output_dir": output_argument},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
                     encoding="utf-8",
                 )
                 temporary.replace(run.input_file or "")
@@ -124,6 +145,11 @@ class WorkflowExecutionService:
                         "input_file": str(run.input_file),
                         "job_id": workflow_marker(run),
                         "output": " ".join(run.requested_outputs),
+                        "output_cloud": (
+                            "--output-cloud"
+                            if is_cloud_output(run.output_dir)
+                            else "--no-output-cloud"
+                        ),
                     },
                 )
                 set_submission_state(run, "SUBMITTED")
@@ -435,17 +461,17 @@ class WorkflowGatewayService:
         if instance_count > 1 and workflow.is_current:
             raise RuntimeError("存在历史实例时不能单独删除当前 workflow instance")
         delete_run = instance_count <= 1
-        run_directory = (
+        artifacts = (
             None
             if not delete_run or run.application == "incremental"
-            else resolve_run_directory(run)
+            else (resolve_run_directory(run), run.output_dir)
         )
         application = run.application
         record_id = run.id
         session.delete(run if delete_run else workflow)
         session.commit()
-        if run_directory is not None and run_directory.exists():
-            shutil.rmtree(run_directory)
+        if artifacts is not None:
+            remove_run_artifacts(*artifacts)
         return {
             "application": application,
             "record_id": record_id,
@@ -831,7 +857,7 @@ def resolve_run_directory(run: WorkflowRun) -> Path:
     if not run.input_file:
         raise RuntimeError(f"工作流记录 {run.id} 没有 input_file")
     run_directory = Path(run.input_file).resolve().parent
-    expected_parent = (DolphinSchedulerSettings.SHARED_DIR / run.application).resolve()
+    expected_parent = (ArenaSettings.SHARED_DIR / run.application).resolve()
     try:
         workspace_key = UUID(run_directory.name)
     except ValueError as error:
@@ -839,3 +865,10 @@ def resolve_run_directory(run: WorkflowRun) -> Path:
     if run_directory.parent != expected_parent or workspace_key.hex != run_directory.name:
         raise RuntimeError(f"拒绝清理非工作流目录: {run_directory}")
     return run_directory
+
+
+def remove_run_artifacts(run_directory: Path, output_dir: str | None) -> None:
+    """清理一次工作流的本地输入目录及可选云端结果目录。"""
+    delete_result_objects(output_dir)
+    if run_directory.exists():
+        shutil.rmtree(run_directory)

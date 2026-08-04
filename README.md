@@ -57,6 +57,12 @@ Factor 和 Backtest 的一次性工作流使用相同结构，将路径中的 `q
 `backtest`。提交参数为对应 Runtime 参数并增加必填 `output`；调用方不能指定
 `output_dir`。
 
+工作流输入 JSON 始终写入 `ARENA_SHARED_DIR`，供 DolphinScheduler Worker 读取。默认情况下 Parquet
+结果也写入该共享目录；设置 `ARENA_SHARED_CLOUD=True` 后，Backend 会为 Runtime 追加
+`--output-cloud`，结果写入 `OBJECT_STORAGE_ROOT_FOLDER/<application>/<workspace>/output`。
+结果列表和下载接口根据工作流记录中的本地路径或 `s3://` URI 自动选择本地文件或对象存储，
+因此切换配置不会破坏已有任务的结果读取。
+
 提交响应同时包含内部提交记录 ID 和作为后续查询主键的 workflow instance ID：
 
 ```json

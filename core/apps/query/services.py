@@ -1,9 +1,8 @@
 """Query projects, workflow submissions, and result access."""
 
-import shutil
-from pathlib import Path
 from typing import Any
 
+from fastapi import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -13,11 +12,12 @@ from core.apps.workflows.models import WorkflowRun, utc_now
 from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
+    remove_run_artifacts,
     resolve_run_directory,
 )
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
-from core.utils.results import result_files, result_path
+from core.utils.results import result_files, result_response
 
 OUTPUT_FILES = {
     "source_data": "source_data.parquet",
@@ -37,8 +37,8 @@ def query_result_files(session: Session, user_id: int, workflow_instance_id: int
     return result_files(session, user_id, workflow_instance_id, "query", OUTPUT_FILES)
 
 
-def query_result_path(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Path:
-    return result_path(session, user_id, workflow_instance_id, name, "query", OUTPUT_FILES)
+def query_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
+    return result_response(session, user_id, workflow_instance_id, name, "query", OUTPUT_FILES)
 
 
 def list_query_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
@@ -72,13 +72,17 @@ def delete_query_project(session: Session, user_id: int, project_id: int) -> int
     run = session.scalar(select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id))
     if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
         raise RuntimeError(f"项目仍有 {workflow_state(session, run)} 状态的查询工作流")
-    run_directory = resolve_run_directory(run) if run is not None and run.input_file else None
+    artifacts = (
+        (resolve_run_directory(run), run.output_dir)
+        if run is not None and run.input_file
+        else None
+    )
     if run is not None:
         session.delete(run)
     session.delete(project)
     session.commit()
-    if run_directory is not None and run_directory.exists():
-        shutil.rmtree(run_directory)
+    if artifacts is not None:
+        remove_run_artifacts(*artifacts)
     return project_id
 
 

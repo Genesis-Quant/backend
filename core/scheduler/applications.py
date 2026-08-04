@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from config import DolphinSchedulerSettings
+from config import ArenaSettings, DolphinSchedulerSettings
 from core.scheduler.domain import APPLICATIONS
 from core.scheduler.errors import DolphinSchedulerError
 from core.scheduler.task_groups import ensure_application_task_groups
 
 DEFAULT_OUTPUT = {
     "query": "data",
-    "factor": "processed_data",
-    "backtest": "return_summary",
+    "factor": "information_coefficient",
+    "backtest": "daily_portfolios",
 }
 
 
@@ -47,6 +47,11 @@ def create_application_workflows() -> dict[str, Any]:
                     "input_file": f"/shared/{application}/input.json",
                     "job_id": "definition-default",
                     "output": DEFAULT_OUTPUT[application],
+                    "output_cloud": (
+                        "--output-cloud"
+                        if ArenaSettings.SHARED_CLOUD
+                        else "--no-output-cloud"
+                    ),
                 },
             )
             with workflow:
@@ -55,7 +60,7 @@ def create_application_workflows() -> dict[str, Any]:
                     command=(
                         f"exec {DolphinSchedulerSettings.RUNTIME_COMMAND} "
                         f'apps {application} --input-file "${{input_file}}" '
-                        "--output ${output}"
+                        "--output ${output} ${output_cloud}"
                     ),
                     description=(
                         f"从共享目录 input.json 运行 {application}，"

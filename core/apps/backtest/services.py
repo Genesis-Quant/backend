@@ -1,9 +1,8 @@
 """Backtest workflow submission, strategy projects, versions, and results."""
 
-import shutil
-from pathlib import Path
 from typing import Any
 
+from fastapi import Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -16,11 +15,12 @@ from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
 from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
+    remove_run_artifacts,
     resolve_run_directory,
 )
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
-from core.utils.results import result_files, result_path
+from core.utils.results import result_files, result_response
 
 OUTPUT_FILES = {
     "trade_details": "trade_details.parquet",
@@ -30,7 +30,12 @@ OUTPUT_FILES = {
     "daily_trading_statistics": "daily_trading_statistics.parquet",
     "engine_stat": "engine_stat.parquet",
 }
-PROJECT_OUTPUTS = list(OUTPUT_FILES)
+PROJECT_OUTPUTS = [
+    "trade_details",
+    "daily_positions",
+    "daily_portfolios",
+    "daily_trading_statistics",
+]
 
 
 def submit_backtest_workflow(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> WorkflowRun:
@@ -41,8 +46,8 @@ def backtest_result_files(session: Session, user_id: int, workflow_instance_id: 
     return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
 
 
-def backtest_result_path(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Path:
-    return result_path(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
+def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
+    return result_response(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
 
 
 def list_backtest_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
@@ -77,15 +82,18 @@ def delete_backtest_project(session: Session, user_id: int, project_id: int) -> 
     running = [run_state(session, run) for run in runs if run_state(session, run) not in TERMINAL_STATES]
     if running:
         raise RuntimeError(f"项目仍有运行中的回测工作流: {sorted(set(running))}")
-    run_directories = [resolve_run_directory(run) for run in runs if run.input_file]
+    artifacts = [
+        (resolve_run_directory(run), run.output_dir)
+        for run in runs
+        if run.input_file
+    ]
     session.execute(delete(BacktestVersion).where(BacktestVersion.project_id == project.id))
     for run in runs:
         session.delete(run)
     session.delete(project)
     session.commit()
-    for run_directory in run_directories:
-        if run_directory.exists():
-            shutil.rmtree(run_directory)
+    for run_artifacts in artifacts:
+        remove_run_artifacts(*run_artifacts)
     return project_id
 
 
