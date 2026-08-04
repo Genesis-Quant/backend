@@ -1,13 +1,12 @@
 """Result-file access keyed by DolphinScheduler workflow instance ID."""
 
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from runtime.utils.storage import (
     ObjectStorage,
@@ -128,18 +127,13 @@ def result_response(
         storage, output_key = _cloud_storage(run.output_dir)
         key = f"{output_key}/{filename}"
         try:
-            info = storage.object_info(key)
+            storage.object_info(key)
+            url = storage.download_url(key)
         except (BotoCoreError, ClientError) as error:
-            storage.close()
             raise OSError(f"工作流 {workflow_instance_id} 成功但无法读取结果 {name}: {error}") from error
-        return StreamingResponse(
-            _cloud_result_chunks(storage, key),
-            media_type=PARQUET_CONTENT_TYPE,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": str(info.size),
-            },
-        )
+        finally:
+            storage.close()
+        return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
     output_dir = Path(run.output_dir).resolve()
     path = (output_dir / filename).resolve()
@@ -214,10 +208,3 @@ def _cloud_storage(output_dir: str) -> tuple[ObjectStorage, str]:
         if storage is not None:
             storage.close()
         raise OSError(str(error)) from error
-
-
-def _cloud_result_chunks(storage: ObjectStorage, key: str) -> Iterator[bytes]:
-    try:
-        yield from storage.iter_bytes(key)
-    finally:
-        storage.close()
