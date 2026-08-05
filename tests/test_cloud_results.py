@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -68,7 +67,7 @@ def successful_run(
     return user, run
 
 
-def test_cloud_result_listing_and_download_stream(
+def test_cloud_result_listing_and_download_redirect(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -101,17 +100,14 @@ def test_cloud_result_listing_and_download_stream(
         {"data": "query.parquet"},
     )
 
-    async def body() -> bytes:
-        return b"".join([chunk async for chunk in response.body_iterator])
-
     assert files == [{
         "name": "data",
         "filename": "query.parquet",
         "size": 7,
         "modified_at": datetime(2026, 8, 4, tzinfo=UTC),
     }]
-    assert response.headers["content-length"] == "7"
-    assert asyncio.run(body()) == b"parquet"
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://storage.example/query.parquet"
     assert all(storage.closed for storage in instances)
 
 
@@ -187,7 +183,7 @@ def test_object_storage_deletes_each_object_for_s3_compatibility() -> None:
     ]
 
 
-def test_runtime_output_cloud_defaults_to_environment_and_can_be_overridden(
+def test_runtime_cloud_defaults_to_environment_and_can_be_overridden(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,6 +196,8 @@ def test_runtime_output_cloud_defaults_to_environment_and_can_be_overridden(
         "query",
         "--input-file",
         str(input_file),
+        "--output-dir",
+        "query/output",
         "--output",
         "data",
     ])
@@ -207,13 +205,17 @@ def test_runtime_output_cloud_defaults_to_environment_and_can_be_overridden(
         "query",
         "--input-file",
         str(input_file),
+        "--output-dir",
+        str(tmp_path / "output"),
         "--output",
         "data",
-        "--no-output-cloud",
+        "--cloud",
+        "false",
     ])
 
-    assert inherited.output_cloud is True
-    assert overridden.output_cloud is False
+    assert inherited.cloud is True
+    assert inherited.output_dir == "query/output"
+    assert overridden.cloud is False
 
 
 class FakeStorage:
@@ -229,10 +231,9 @@ class FakeStorage:
         assert key == "arena-runtime/query/workspace/output/query.parquet"
         return ObjectInfo(7, datetime(2026, 8, 4, tzinfo=UTC))
 
-    def iter_bytes(self, key: str):
+    def download_url(self, key: str) -> str:
         assert key == "arena-runtime/query/workspace/output/query.parquet"
-        yield b"par"
-        yield b"quet"
+        return "https://storage.example/query.parquet"
 
     def delete_prefix(self, key: str) -> None:
         self.deleted_key = key

@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class WorkflowAction(StrEnum):
@@ -27,6 +27,16 @@ class WorkflowTaskInformation(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_seconds: float | None = None
+
+
+class WorkflowStartPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_parameters: dict[str, str]
+
+
+class WorkflowInputPayload(WorkflowStartPayload):
+    input_json: dict[str, Any]
 
 
 class WorkflowInformation(BaseModel):
@@ -52,7 +62,7 @@ class WorkflowInformation(BaseModel):
 
 class WorkflowListItem(WorkflowInformation):
     owner_username: str
-    payload: dict[str, Any]
+    payload: WorkflowInputPayload | WorkflowStartPayload
     requested_outputs: list[str]
     tasks_error: str | None = None
 

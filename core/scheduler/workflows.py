@@ -1,4 +1,4 @@
-"""Registration and discovery of Backend-managed workflows."""
+"""Registration and discovery of application-managed workflows."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ WORKFLOW_LOCK = RLock()
 
 
 def ensure_all_workflows() -> dict[str, Any]:
-    """Create or update every workflow managed by the Backend."""
+    """Create or update every application-managed workflow."""
     with WORKFLOW_LOCK:
         application_result = create_application_workflows()
         incremental_result = create_incremental_update_workflow()

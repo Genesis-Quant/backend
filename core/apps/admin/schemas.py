@@ -3,9 +3,13 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.apps.users.schemas import UserResponse
+from core.scheduler.incremental import (
+    normalize_incremental_channel,
+    normalize_incremental_workers,
+)
 
 
 class AdminUserUpdate(BaseModel):
@@ -68,6 +72,11 @@ class AdminProcessInstance(BaseModel):
     duration: str | None
 
 
+class AdminIncrementalWorker(BaseModel):
+    name: str
+    description: str
+
+
 class AdminSchedulerOverview(BaseModel):
     available: bool
     error: str | None = None
@@ -78,6 +87,9 @@ class AdminSchedulerOverview(BaseModel):
     worker_groups: list[str] = Field(default_factory=list)
     workers: list[AdminWorker] = Field(default_factory=list)
     recent_instances: list[AdminProcessInstance] = Field(default_factory=list)
+    incremental_workers: list[AdminIncrementalWorker] = Field(
+        default_factory=list
+    )
 
 
 class AdminOverviewResponse(BaseModel):
@@ -91,9 +103,30 @@ class AdminActionResponse(BaseModel):
     result: Any
 
 
+class IncrementalUpdateRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    workers: list[str] | None = None
+    channel: str = "console"
+
+    @field_validator("workers")
+    @classmethod
+    def validate_workers(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return list(normalize_incremental_workers(value))
+
+    @field_validator("channel")
+    @classmethod
+    def validate_channel(cls, value: str) -> str:
+        return normalize_incremental_channel(value)
+
+
 class IncrementalUpdateRunResponse(BaseModel):
     message: str
     job_id: str
+    workers: list[str]
+    channel: str
     record_id: int
     workflow_instance_id: int
     project_code: int

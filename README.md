@@ -57,9 +57,14 @@ Factor 和 Backtest 的一次性工作流使用相同结构，将路径中的 `q
 `backtest`。提交参数为对应 Runtime 参数并增加必填 `output`；调用方不能指定
 `output_dir`。
 
+每条 `workflow_runs.payload` 按用途拆分：`start_parameters` 是实际提交给
+DolphinScheduler 的字符串参数；Query、Factor 和 Backtest 另外保存
+`input_json`，内容与写入共享目录的 `input.json` 一致。Incremental 没有应用输入
+JSON，因此只保存 `start_parameters`。这两类参数在工作流详情中独立展示。
+
 工作流输入 JSON 始终写入 `ARENA_SHARED_DIR`，供 DolphinScheduler Worker 读取。默认情况下 Parquet
-结果也写入该共享目录；设置 `ARENA_SHARED_CLOUD=True` 后，Backend 会为 Runtime 追加
-`--output-cloud`，结果写入 `OBJECT_STORAGE_ROOT_FOLDER/<application>/<workspace>/output`。
+结果也写入该共享目录；设置 `ARENA_SHARED_CLOUD=True` 后，Backend 会向 Runtime 传入
+`--cloud true`，结果写入 `OBJECT_STORAGE_ROOT_FOLDER/<application>/<workspace>/output`。
 结果列表和下载接口根据工作流记录中的本地路径或 `s3://` URI 自动选择本地文件或对象存储，
 因此切换配置不会破坏已有任务的结果读取。
 
@@ -139,7 +144,16 @@ Task API 必须同时传入 `workflow_instance_id`，Backend 会实时确认 Tas
 ├── input.json
 └── output/
     └── *.parquet
+
+/shared/incremental/<workspace-key>/output/
+├── <worker>.json
+└── message.json
 ```
+
+管理员提交 Incremental 时可以选择 Worker 并指定消息 `channel`，默认选择全部
+Worker 且使用 `console`。Backend 将 `job_id`、`output_dir`、`workers` 和 `channel`
+全部作为必填启动参数传给工作流；各 Worker 写入结构化结果，最后的 Python 节点汇总
+这些文件并调用 Runtime 的通用消息服务。
 
 ## 启动与迁移
 

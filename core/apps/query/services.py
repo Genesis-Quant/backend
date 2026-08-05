@@ -14,6 +14,7 @@ from core.apps.workflows.services import (
     current_workflow_instance,
     remove_run_artifacts,
     resolve_run_directory,
+    workflow_input_json,
 )
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
@@ -112,7 +113,7 @@ def submit_project_query(
         user_id=user_id,
         application="query",
         project_id=project.id,
-        payload=payload,
+        payload={"start_parameters": {}, "input_json": payload},
         requested_outputs=PROJECT_OUTPUTS,
         submission_state="CREATED",
         events=[],
@@ -149,7 +150,7 @@ def serialize_project(session: Session, project: QueryProject) -> dict[str, Any]
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": workflow.state if workflow is not None else run.submission_state,
         "error": run.error,
-        "parameters": run.payload["dataset_query"],
+        "parameters": workflow_input_json(run)["dataset_query"],
         "updated_at": run.updated_at,
     }
     return {"id": project.id, "title": project.title, "current": current, "created_at": project.created_at, "updated_at": project.updated_at}

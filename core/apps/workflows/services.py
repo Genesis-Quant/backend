@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,18 @@ from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
 from core.apps.workflows.schemas import WorkflowAction
 from core.database.session import database_engine, database_session_factory
 from core.scheduler.client import DolphinSchedulerClient
-from core.scheduler.domain import FAILURE_STATES, TERMINAL_STATES
+from core.scheduler.domain import (
+    APPLICATION_START_PARAMETERS,
+    FAILURE_STATES,
+    INCREMENTAL_START_PARAMETERS,
+    TERMINAL_STATES,
+    validate_start_parameters,
+)
 from core.scheduler.errors import DolphinSchedulerError
+from core.scheduler.incremental import (
+    normalize_incremental_channel,
+    normalize_incremental_workers,
+)
 from core.scheduler.workflows import (
     ensure_incremental_workflow_definition,
     ensure_workflow_definition,
@@ -57,6 +68,25 @@ PROCESS_ACTIONS = {
 }
 
 
+def workflow_input_json(run: WorkflowRun) -> dict[str, Any]:
+    """返回实际写入应用 input.json 的参数。"""
+    value = run.payload.get("input_json")
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{run.application} 工作流没有 input_json")
+    return value
+
+
+def workflow_start_parameters(run: WorkflowRun) -> dict[str, str]:
+    """返回实际提交给调度器的工作流启动参数。"""
+    value = run.payload.get("start_parameters")
+    if not isinstance(value, dict) or any(
+        not isinstance(name, str) or not isinstance(item, str)
+        for name, item in value.items()
+    ):
+        raise RuntimeError(f"{run.application} 工作流没有有效的 start_parameters")
+    return value
+
+
 class WorkflowExecutionService:
     def __init__(
         self,
@@ -80,7 +110,10 @@ class WorkflowExecutionService:
         run = self.model(
             user_id=user_id,
             application=self.application,
-            payload=payload,
+            payload={
+                "start_parameters": {},
+                "input_json": payload,
+            },
             requested_outputs=outputs,
             submission_state="CREATED",
             events=[],
@@ -107,8 +140,8 @@ class WorkflowExecutionService:
                         workspace_key,
                     )
                 else:
-                    output_argument = "output"
-                    run.output_dir = str(run_directory / output_argument)
+                    run.output_dir = str(run_directory / "output")
+                    output_argument = run.output_dir
                 run.input_file = str(run_directory / "input.json")
             else:
                 run_directory = None
@@ -122,7 +155,7 @@ class WorkflowExecutionService:
                 temporary = Path(run.input_file or "").with_suffix(".json.tmp")
                 temporary.write_text(
                     json.dumps(
-                        {**run.payload, "output_dir": output_argument},
+                        workflow_input_json(run),
                         ensure_ascii=False,
                         indent=2,
                     ),
@@ -130,10 +163,31 @@ class WorkflowExecutionService:
                 )
                 temporary.replace(run.input_file or "")
 
+            if not run.input_file or not output_argument:
+                raise RuntimeError(
+                    f"{self.application} 工作流缺少运行所需的输入或输出路径"
+                )
+
             project_code, definition = ensure_workflow_definition(self.application)
             run.project_code = project_code
             run.workflow_definition_code = int(definition["code"])
             run.workflow_name = str(definition["name"])
+            start_parameters = validate_start_parameters(
+                {
+                    "input_file": run.input_file,
+                    "output_dir": output_argument,
+                    "job_id": workflow_marker(run),
+                    "output": " ".join(run.requested_outputs),
+                    "cloud": str(
+                        is_cloud_output(run.output_dir)
+                    ).lower(),
+                },
+                APPLICATION_START_PARAMETERS,
+            )
+            run.payload = {
+                "start_parameters": start_parameters,
+                "input_json": workflow_input_json(run),
+            }
             set_submission_state(run, "SUBMITTING")
             session.commit()
 
@@ -141,16 +195,7 @@ class WorkflowExecutionService:
                 client.start_process_instance(
                     project_code=project_code,
                     process_definition_code=run.workflow_definition_code,
-                    start_params={
-                        "input_file": str(run.input_file),
-                        "job_id": workflow_marker(run),
-                        "output": " ".join(run.requested_outputs),
-                        "output_cloud": (
-                            "--output-cloud"
-                            if is_cloud_output(run.output_dir)
-                            else "--no-output-cloud"
-                        ),
-                    },
+                    start_params=start_parameters,
                 )
                 set_submission_state(run, "SUBMITTED")
                 run.error = None
@@ -275,11 +320,19 @@ class WorkflowExecutionService:
 
 
 class IncrementalWorkflowExecutionService(WorkflowExecutionService):
-    def submit_incremental(self, session: Session, user_id: int) -> tuple[WorkflowRun, Any]:
+    def submit_incremental(
+        self,
+        session: Session,
+        user_id: int,
+        workers: Sequence[str] | None = None,
+        channel: str | None = None,
+    ) -> tuple[WorkflowRun, Any]:
+        selected_workers = normalize_incremental_workers(workers)
+        selected_channel = normalize_incremental_channel(channel)
         run = self.model(
             user_id=user_id,
             application="incremental",
-            payload={},
+            payload={"start_parameters": {}},
             requested_outputs=[],
             submission_state="CREATED",
             events=[],
@@ -287,20 +340,36 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
         session.add(run)
         session.flush()
         run_id = run.id
-        run.payload = {"job_id": workflow_marker(run)}
         submission: Any = None
         try:
+            workspace_key = uuid4().hex
+            run_directory = (
+                ArenaSettings.SHARED_DIR / "incremental" / workspace_key
+            )
+            output_dir = run_directory / "output"
+            output_dir.mkdir(parents=True, exist_ok=False)
+            run.output_dir = str(output_dir)
             project_code, definition = ensure_incremental_workflow_definition()
             run.project_code = project_code
             run.workflow_definition_code = int(definition["code"])
             run.workflow_name = str(definition["name"])
+            start_parameters = validate_start_parameters(
+                {
+                    "job_id": workflow_marker(run),
+                    "output_dir": str(output_dir),
+                    "workers": ",".join(selected_workers),
+                    "channel": selected_channel,
+                },
+                INCREMENTAL_START_PARAMETERS,
+            )
+            run.payload = {"start_parameters": start_parameters}
             set_submission_state(run, "SUBMITTING")
             session.commit()
             with DolphinSchedulerClient() as client:
                 submission = client.start_process_instance(
                     project_code=project_code,
                     process_definition_code=run.workflow_definition_code,
-                    start_params={"job_id": workflow_marker(run)},
+                    start_params=start_parameters,
                     failure_strategy="CONTINUE",
                 )
                 set_submission_state(run, "SUBMITTED")
@@ -330,11 +399,22 @@ class WorkflowGatewayService:
             IncrementalWorkflowRun,
         )
 
-    def submit_incremental(self, session: Session, user_id: int) -> tuple[WorkflowRun, Any]:
+    def submit_incremental(
+        self,
+        session: Session,
+        user_id: int,
+        workers: Sequence[str] | None = None,
+        channel: str | None = None,
+    ) -> tuple[WorkflowRun, Any]:
         executor = self.executors["incremental"]
         if not isinstance(executor, IncrementalWorkflowExecutionService):
             raise RuntimeError("增量更新工作流执行器配置错误")
-        return executor.submit_incremental(session, user_id)
+        return executor.submit_incremental(
+            session,
+            user_id,
+            workers,
+            channel,
+        )
 
     def status(
         self,
@@ -461,10 +541,15 @@ class WorkflowGatewayService:
         if instance_count > 1 and workflow.is_current:
             raise RuntimeError("存在历史实例时不能单独删除当前 workflow instance")
         delete_run = instance_count <= 1
+        has_artifacts = bool(
+            run.output_dir
+            if run.application == "incremental"
+            else run.input_file
+        )
         artifacts = (
-            None
-            if not delete_run or run.application == "incremental"
-            else (resolve_run_directory(run), run.output_dir)
+            resolve_run_artifacts(run)
+            if delete_run and has_artifacts
+            else None
         )
         application = run.application
         record_id = run.id
@@ -865,6 +950,38 @@ def resolve_run_directory(run: WorkflowRun) -> Path:
     if run_directory.parent != expected_parent or workspace_key.hex != run_directory.name:
         raise RuntimeError(f"拒绝清理非工作流目录: {run_directory}")
     return run_directory
+
+
+def resolve_incremental_run_directory(run: WorkflowRun) -> Path:
+    """校验增量任务 output 目录并返回其 UUID 工作目录。"""
+    if not run.output_dir or is_cloud_output(run.output_dir):
+        raise RuntimeError(f"增量工作流记录 {run.id} 没有本地 output_dir")
+    output_dir = Path(run.output_dir).resolve()
+    run_directory = output_dir.parent
+    expected_parent = (ArenaSettings.SHARED_DIR / "incremental").resolve()
+    try:
+        workspace_key = UUID(run_directory.name)
+    except ValueError as error:
+        raise RuntimeError(
+            f"增量工作流目录不是有效的 workspace key: {run_directory}"
+        ) from error
+    if (
+        output_dir.name != "output"
+        or run_directory.parent != expected_parent
+        or workspace_key.hex != run_directory.name
+    ):
+        raise RuntimeError(f"拒绝清理非增量工作流目录: {run_directory}")
+    return run_directory
+
+
+def resolve_run_artifacts(run: WorkflowRun) -> tuple[Path, str | None]:
+    """返回经过应用类型校验的一次工作流产物目录。"""
+    run_directory = (
+        resolve_incremental_run_directory(run)
+        if run.application == "incremental"
+        else resolve_run_directory(run)
+    )
+    return run_directory, run.output_dir
 
 
 def remove_run_artifacts(run_directory: Path, output_dir: str | None) -> None:

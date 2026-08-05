@@ -1,1 +1,1 @@
-"""Arena Backend core package."""
+"""Arena core package."""

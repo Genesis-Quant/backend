@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -14,10 +15,12 @@ from core.apps.workflows.models import WorkflowInstance
 from core.apps.workflows.services import (
     WorkflowGatewayService,
     current_workflow_instance,
+    workflow_start_parameters,
 )
 from core.scheduler.client import DolphinSchedulerClient
 from core.scheduler.domain import FAILURE_STATES, TERMINAL_STATES
 from core.scheduler.errors import DolphinSchedulerError
+from core.scheduler.incremental import incremental_worker_options
 from core.scheduler.workflows import ensure_all_workflows
 
 
@@ -50,14 +53,27 @@ class AdminService:
         return ensure_all_workflows()
 
     @staticmethod
-    def run_incremental_update(session: Session, user_id: int) -> dict[str, Any]:
-        run, submission = WorkflowGatewayService().submit_incremental(session, user_id)
+    def run_incremental_update(
+        session: Session,
+        user_id: int,
+        workers: Sequence[str] | None = None,
+        channel: str | None = None,
+    ) -> dict[str, Any]:
+        run, submission = WorkflowGatewayService().submit_incremental(
+            session,
+            user_id,
+            workers,
+            channel,
+        )
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
+        start_parameters = workflow_start_parameters(run)
         return {
             "message": "增量更新工作流已提交",
-            "job_id": str(run.payload["job_id"]),
+            "job_id": start_parameters["job_id"],
+            "workers": start_parameters["workers"].split(","),
+            "channel": start_parameters["channel"],
             "record_id": run.id,
             "workflow_instance_id": workflow.workflow_instance_id,
             "project_code": int(run.project_code or 0),
@@ -91,6 +107,7 @@ class AdminService:
             "worker_groups": [],
             "workers": [],
             "recent_instances": [],
+            "incremental_workers": incremental_worker_options(),
         }
         try:
             with DolphinSchedulerClient() as client:

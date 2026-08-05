@@ -1,4 +1,4 @@
-"""Backend 自有请求字段的公共校验。"""
+"""应用请求字段的公共校验。"""
 
 from runtime.utils import normalize_str_list
 

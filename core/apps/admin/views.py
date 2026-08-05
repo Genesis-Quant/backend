@@ -10,6 +10,7 @@ from core.apps.admin.schemas import (
     AdminOverviewResponse,
     AdminUserListResponse,
     AdminUserUpdate,
+    IncrementalUpdateRunCreate,
     IncrementalUpdateRunResponse,
 )
 from core.apps.admin.services import AdminService
@@ -67,8 +68,19 @@ def ensure_workflows(
 def run_incremental_update(
     user: Annotated[User, Depends(get_current_admin)],
     session: Annotated[Session, Depends(get_database_session)],
+    body: IncrementalUpdateRunCreate | None = None,
 ) -> dict[str, object]:
     try:
-        return AdminService().run_incremental_update(session, user.id)
+        return AdminService().run_incremental_update(
+            session,
+            user.id,
+            None if body is None else body.workers,
+            None if body is None else body.channel,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
     except DolphinSchedulerError as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error

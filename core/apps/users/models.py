@@ -1,4 +1,4 @@
-"""SQLAlchemy models owned by Arena Backend."""
+"""SQLAlchemy models for Arena users."""
 
 from datetime import UTC, datetime
 

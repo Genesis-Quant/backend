@@ -33,5 +33,5 @@ def check_database() -> DatabaseInfo:
         raise DatabaseError("PostgreSQL 未返回当前数据库和 schema")
     database_name, schema_name = map(str, row)
     if database_name != DatabaseSettings.DATABASE:
-        raise DatabaseError(f"Backend 数据库错误: 期望 {DatabaseSettings.DATABASE}，实际 {database_name}")
+        raise DatabaseError(f"应用数据库错误: 期望 {DatabaseSettings.DATABASE}，实际 {database_name}")
     return DatabaseInfo(database=database_name, schema=schema_name)

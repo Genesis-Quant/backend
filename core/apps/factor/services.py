@@ -13,6 +13,7 @@ from core.apps.workflows.services import (
     current_workflow_instance,
     remove_run_artifacts,
     resolve_run_directory,
+    workflow_input_json,
 )
 from core.scheduler.domain import TERMINAL_STATES
 from core.utils.dsl import build_dsl_catalog
@@ -100,7 +101,7 @@ def submit_project_analysis(session: Session, user_id: int, project_id: int, pay
         application="factor",
         project_id=project.id,
         saved=False,
-        payload=payload,
+        payload={"start_parameters": {}, "input_json": payload},
         requested_outputs=PROJECT_OUTPUTS,
         submission_state="CREATED",
         events=[],
@@ -134,9 +135,10 @@ def create_factor_version(session: Session, user_id: int, project_id: int, workf
     if workflow.state != "SUCCESS":
         raise RuntimeError(f"工作流状态为 {workflow.state}，成功后才能保存版本")
     factor_result_files(session, user_id, workflow_instance_id)
-    validate_metric_dimensions(run.payload, metrics)
+    parameters = workflow_input_json(run)
+    validate_metric_dimensions(parameters, metrics)
     next_version = (session.scalar(select(func.max(FactorVersion.version)).where(FactorVersion.project_id == project.id)) or 0) + 1
-    version = FactorVersion(project_id=project.id, workflow_instance_id=workflow.workflow_instance_id, version=next_version, remark=remark, parameters=run.payload, metrics=metrics)
+    version = FactorVersion(project_id=project.id, workflow_instance_id=workflow.workflow_instance_id, version=next_version, remark=remark, parameters=parameters, metrics=metrics)
     session.add(version)
     run.saved = True
     project.updated_at = utc_now()
@@ -183,7 +185,7 @@ def serialize_project(session: Session, project: FactorProject) -> dict[str, Any
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": workflow.state if workflow is not None else draft.submission_state,
         "error": draft.error,
-        "parameters": draft.payload,
+        "parameters": workflow_input_json(draft),
         "updated_at": draft.updated_at,
     }
     return {"id": project.id, "title": project.title, "latest_version": latest.version if latest else None, "latest_metrics": latest.metrics if latest else None, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
