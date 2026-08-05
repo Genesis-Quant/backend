@@ -22,6 +22,7 @@ from core.apps.workflows.services import (
     resolve_incremental_run_directory,
     resolve_run_directory,
     workflow_task_information,
+    workflow_list_item,
 )
 from core.database.base import Base
 from core.scheduler.errors import DolphinSchedulerError
@@ -219,6 +220,15 @@ def test_workflow_list_survives_scheduler_login_failure(
     assert result["items"][0]["workflow_instance_id"] == 100
     assert result["items"][0]["tasks"] == []
     assert result["items"][0]["tasks_error"] == "scheduler unavailable"
+
+
+def test_workflow_list_item_includes_application_project_id() -> None:
+    run = QueryWorkflowRun(id=7, user_id=3, application="query", source_project_id=11, project_id=None, payload={}, requested_outputs=[])
+    workflow = WorkflowInstance(workflow_instance_id=100, workflow_run_id=7, state="SUCCESS", is_current=True, state_history=[])
+
+    item = workflow_list_item(None, workflow, run, "owner")
+
+    assert item["project_id"] == 11
 
 
 def test_task_authorization_accepts_an_older_retry_attempt(

@@ -38,6 +38,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("application", sa.String(32), nullable=False),
+        sa.Column("source_project_id", sa.Integer()),
         sa.Column("submission_state", sa.String(64), nullable=False, server_default="CREATED"),
         sa.Column("project_code", sa.BigInteger()),
         sa.Column("workflow_definition_code", sa.BigInteger()),
@@ -54,6 +55,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_workflow_runs_user_id", "workflow_runs", ["user_id"])
     op.create_index("ix_workflow_runs_application", "workflow_runs", ["application"])
+    op.create_index("ix_workflow_runs_source_project_id", "workflow_runs", ["source_project_id"])
     op.create_index("ix_workflow_runs_submission_state", "workflow_runs", ["submission_state"])
     op.create_index("ix_workflow_runs_user_created", "workflow_runs", ["user_id", "created_at"])
     op.create_index("ix_workflow_runs_application_submission", "workflow_runs", ["application", "submission_state"])

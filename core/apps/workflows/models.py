@@ -39,6 +39,7 @@ class WorkflowRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     application: Mapped[str] = mapped_column(String(32), index=True)
+    source_project_id: Mapped[int | None] = mapped_column(index=True)
     submission_state: Mapped[str] = mapped_column(String(64), default="CREATED", index=True)
     project_code: Mapped[int | None] = mapped_column(BigInteger)
     workflow_definition_code: Mapped[int | None] = mapped_column(BigInteger)

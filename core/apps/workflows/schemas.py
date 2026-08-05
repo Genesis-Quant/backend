@@ -61,6 +61,7 @@ class WorkflowInformation(BaseModel):
 
 
 class WorkflowListItem(WorkflowInformation):
+    project_id: int | None
     owner_username: str
     payload: WorkflowInputPayload | WorkflowStartPayload
     requested_outputs: list[str]

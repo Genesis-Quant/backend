@@ -112,6 +112,7 @@ def submit_project_query(
     run = QueryWorkflowRun(
         user_id=user_id,
         application="query",
+        source_project_id=project.id,
         project_id=project.id,
         payload={"start_parameters": {}, "input_json": payload},
         requested_outputs=PROJECT_OUTPUTS,

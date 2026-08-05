@@ -111,6 +111,7 @@ def submit_project_backtest(session: Session, user_id: int, project_id: int, pay
     run = BacktestWorkflowRun(
         user_id=user_id,
         application="backtest",
+        source_project_id=project.id,
         project_id=project.id,
         saved=False,
         payload={"start_parameters": {}, "input_json": payload},

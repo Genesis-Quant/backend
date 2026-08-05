@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from runtime.apps.backtest.schema import BacktestParameters
+from runtime import BacktestParameters
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.schemas import (

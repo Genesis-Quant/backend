@@ -99,6 +99,7 @@ def submit_project_analysis(session: Session, user_id: int, project_id: int, pay
     run = FactorWorkflowRun(
         user_id=user_id,
         application="factor",
+        source_project_id=project.id,
         project_id=project.id,
         saved=False,
         payload={"start_parameters": {}, "input_json": payload},

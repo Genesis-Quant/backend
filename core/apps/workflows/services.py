@@ -702,6 +702,7 @@ def workflow_list_item(
 ) -> dict[str, Any]:
     return {
         **workflow_information(client, run, workflow),
+        "project_id": run.source_project_id,
         "owner_username": username,
         "payload": run.payload,
         "requested_outputs": run.requested_outputs or [],

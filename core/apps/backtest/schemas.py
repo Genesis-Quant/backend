@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from runtime.apps.backtest.schema import BacktestParameters
+from runtime import BacktestParameters
 
 from core.utils.results import ResultFile
 from core.utils.validation import normalize_text, validate_outputs
