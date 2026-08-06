@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from runtime import BacktestParameters
 
 from core.apps.backtest.schemas import BacktestWorkflowCreate
+from core.apps.backtest.services import public_parameters
 
 
 CALLBACKS = {
@@ -35,6 +36,24 @@ def workflow_payload() -> dict:
 
 def test_workflow_api_uses_runtime_backtest_parameters() -> None:
     assert issubclass(BacktestWorkflowCreate, BacktestParameters)
+
+
+@pytest.mark.parametrize("name", ["name", "source_ref", "message_ref"])
+def test_workflow_api_rejects_runtime_only_parameters(name: str) -> None:
+    payload = workflow_payload()
+    payload[name] = "customValue"
+
+    with pytest.raises(ValidationError):
+        BacktestWorkflowCreate.model_validate(payload)
+
+
+def test_historical_parameters_hide_runtime_only_values() -> None:
+    assert public_parameters({
+        "name": "custom-engine",
+        "source_ref": "customSource",
+        "message_ref": "customMessage",
+        "config": {"cash": 100_000},
+    }) == {"config": {"cash": 100_000}}
 
 
 def test_workflow_api_rejects_static_empty_stock_pool() -> None:
