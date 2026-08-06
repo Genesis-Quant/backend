@@ -13,7 +13,7 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
     remove_run_artifacts,
-    resolve_run_directory,
+    resolve_run_artifacts,
     workflow_input_json,
 )
 from core.scheduler.domain import TERMINAL_STATES
@@ -74,8 +74,8 @@ def delete_query_project(session: Session, user_id: int, project_id: int) -> int
     if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
         raise RuntimeError(f"项目仍有 {workflow_state(session, run)} 状态的查询工作流")
     artifacts = (
-        (resolve_run_directory(run), run.output_dir)
-        if run is not None and run.input_file
+        resolve_run_artifacts(run)
+        if run is not None
         else None
     )
     if run is not None:
@@ -101,27 +101,28 @@ def submit_project_query(
     )
     if project is None:
         raise FileNotFoundError(f"查询项目不存在: {project_id}")
-    previous = session.scalar(
+    run = session.scalar(
         select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id).with_for_update()
     )
-    if previous is not None and workflow_state(session, previous) not in TERMINAL_STATES:
-        raise RuntimeError(f"项目已有 {workflow_state(session, previous)} 状态的查询工作流")
-    if previous is not None:
-        previous.project_id = None
+    if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
+        raise RuntimeError(f"项目已有 {workflow_state(session, run)} 状态的查询工作流")
+    executor = WorkflowExecutionService("query", QueryWorkflowRun)
+    if run is None:
+        run = QueryWorkflowRun(
+            user_id=user_id,
+            application="query",
+            source_project_id=project.id,
+            project_id=project.id,
+            payload={"start_parameters": {}, "input_json": payload},
+            requested_outputs=PROJECT_OUTPUTS,
+            submission_state="CREATED",
+            events=[],
+        )
+        session.add(run)
         session.flush()
-    run = QueryWorkflowRun(
-        user_id=user_id,
-        application="query",
-        source_project_id=project.id,
-        project_id=project.id,
-        payload={"start_parameters": {}, "input_json": payload},
-        requested_outputs=PROJECT_OUTPUTS,
-        submission_state="CREATED",
-        events=[],
-    )
-    session.add(run)
-    session.flush()
-    WorkflowExecutionService("query", QueryWorkflowRun).submit_run(session, run, create_directory=True)
+        executor.submit_run(session, run, create_directory=True)
+    else:
+        executor.resubmit_run(session, run, payload, PROJECT_OUTPUTS)
     project.updated_at = utc_now()
     session.commit()
     return run

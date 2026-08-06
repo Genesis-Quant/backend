@@ -13,11 +13,16 @@ from runtime.utils.storage import (
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from core.apps.incremental.models import IncrementalWorkflowRun
+from config import ArenaSettings
+from core.apps.query.models import QueryWorkflowRun
 from core.apps.users.models import User
+from core.apps.workflows.artifacts import workspace_output_directory
 from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.database.base import Base
 from core.utils import results
+
+
+WORKSPACE_KEY = "3a809554ba8f4c75a5cf46ec441994af"
 
 
 @pytest.fixture
@@ -28,7 +33,7 @@ def session() -> Session:
         tables=[
             User.__table__,
             WorkflowRun.__table__,
-            IncrementalWorkflowRun.__table__,
+            QueryWorkflowRun.__table__,
             WorkflowInstance.__table__,
         ],
     )
@@ -38,18 +43,17 @@ def session() -> Session:
 
 def successful_run(
     session: Session,
-    output_dir: str,
-) -> tuple[User, IncrementalWorkflowRun]:
+) -> tuple[User, QueryWorkflowRun]:
     user = User(username="owner", password_hash="test")
     session.add(user)
     session.flush()
-    run = IncrementalWorkflowRun(
+    run = QueryWorkflowRun(
         user_id=user.id,
-        application="incremental",
+        application="query",
+        workspace_key=WORKSPACE_KEY,
         submission_state="SUBMITTED",
         payload={},
         requested_outputs=["data"],
-        output_dir=output_dir,
         events=[],
     )
     session.add(run)
@@ -71,10 +75,7 @@ def test_cloud_result_listing_and_download_redirect(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    user, _ = successful_run(
-        session,
-        "s3://arena-bucket/arena-runtime/query/workspace/output",
-    )
+    user, _ = successful_run(session)
     instances: list[FakeStorage] = []
 
     def create_storage() -> FakeStorage:
@@ -83,12 +84,13 @@ def test_cloud_result_listing_and_download_redirect(
         return storage
 
     monkeypatch.setattr(results.ObjectStorage, "from_env", staticmethod(create_storage))
+    monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
 
     files = results.result_files(
         session,
         user.id,
         101,
-        "incremental",
+        "query",
         {"data": "query.parquet"},
     )
     response = results.result_response(
@@ -96,7 +98,7 @@ def test_cloud_result_listing_and_download_redirect(
         user.id,
         101,
         "data",
-        "incremental",
+        "query",
         {"data": "query.parquet"},
     )
 
@@ -114,18 +116,21 @@ def test_cloud_result_listing_and_download_redirect(
 def test_local_result_listing_and_download(
     session: Session,
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
+    monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", False)
+    monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
+    output_dir = workspace_output_directory("query", WORKSPACE_KEY)
+    output_dir.mkdir(parents=True)
     output = output_dir / "query.parquet"
     output.write_bytes(b"local")
-    user, _ = successful_run(session, str(output_dir))
+    user, _ = successful_run(session)
 
     files = results.result_files(
         session,
         user.id,
         101,
-        "incremental",
+        "query",
         {"data": "query.parquet"},
     )
     response = results.result_response(
@@ -133,7 +138,7 @@ def test_local_result_listing_and_download(
         user.id,
         101,
         "data",
-        "incremental",
+        "query",
         {"data": "query.parquet"},
     )
 
@@ -148,12 +153,11 @@ def test_cloud_result_directory_is_deleted(monkeypatch: pytest.MonkeyPatch) -> N
         "from_env",
         staticmethod(lambda: storage),
     )
+    monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
 
-    results.delete_result_objects(
-        "s3://arena-bucket/arena-runtime/query/workspace/output"
-    )
+    results.delete_result_objects("query", WORKSPACE_KEY)
 
-    assert storage.deleted_key == "arena-runtime/query/workspace/output"
+    assert storage.deleted_key == f"arena-runtime/query/{WORKSPACE_KEY}/output"
     assert storage.closed is True
 
 
@@ -223,16 +227,16 @@ class FakeStorage:
         self.closed = False
         self.deleted_key: str | None = None
 
-    def key_from_uri(self, uri: str) -> str:
-        assert uri == "s3://arena-bucket/arena-runtime/query/workspace/output"
-        return "arena-runtime/query/workspace/output"
+    @staticmethod
+    def object_key(key: str) -> str:
+        return f"arena-runtime/{key}"
 
     def object_info(self, key: str) -> ObjectInfo:
-        assert key == "arena-runtime/query/workspace/output/query.parquet"
+        assert key == f"arena-runtime/query/{WORKSPACE_KEY}/output/query.parquet"
         return ObjectInfo(7, datetime(2026, 8, 4, tzinfo=UTC))
 
     def download_url(self, key: str) -> str:
-        assert key == "arena-runtime/query/workspace/output/query.parquet"
+        assert key == f"arena-runtime/query/{WORKSPACE_KEY}/output/query.parquet"
         return "https://storage.example/query.parquet"
 
     def delete_prefix(self, key: str) -> None:

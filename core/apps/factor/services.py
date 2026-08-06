@@ -12,7 +12,7 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
     remove_run_artifacts,
-    resolve_run_directory,
+    resolve_run_artifacts,
     workflow_input_json,
 )
 from core.scheduler.domain import TERMINAL_STATES
@@ -72,9 +72,8 @@ def delete_factor_project(session: Session, user_id: int, project_id: int) -> in
     if running:
         raise RuntimeError(f"项目仍有运行中的因子工作流: {sorted(set(running))}")
     artifacts = [
-        (resolve_run_directory(run), run.output_dir)
+        resolve_run_artifacts(run)
         for run in runs
-        if run.input_file
     ]
     session.execute(delete(FactorVersion).where(FactorVersion.project_id == project.id))
     for run in runs:
@@ -93,23 +92,24 @@ def submit_project_analysis(session: Session, user_id: int, project_id: int, pay
     draft = session.scalar(select(FactorWorkflowRun).where(FactorWorkflowRun.project_id == project.id, FactorWorkflowRun.saved.is_(False)).with_for_update())
     if draft is not None and run_state(session, draft) not in TERMINAL_STATES:
         raise RuntimeError(f"项目已有 {run_state(session, draft)} 状态的因子工作流")
-    if draft is not None:
-        draft.project_id = None
+    executor = WorkflowExecutionService("factor", FactorWorkflowRun)
+    if draft is None:
+        run = FactorWorkflowRun(
+            user_id=user_id,
+            application="factor",
+            source_project_id=project.id,
+            project_id=project.id,
+            saved=False,
+            payload={"start_parameters": {}, "input_json": payload},
+            requested_outputs=PROJECT_OUTPUTS,
+            submission_state="CREATED",
+            events=[],
+        )
+        session.add(run)
         session.flush()
-    run = FactorWorkflowRun(
-        user_id=user_id,
-        application="factor",
-        source_project_id=project.id,
-        project_id=project.id,
-        saved=False,
-        payload={"start_parameters": {}, "input_json": payload},
-        requested_outputs=PROJECT_OUTPUTS,
-        submission_state="CREATED",
-        events=[],
-    )
-    session.add(run)
-    session.flush()
-    WorkflowExecutionService("factor", FactorWorkflowRun).submit_run(session, run, create_directory=True)
+        executor.submit_run(session, run, create_directory=True)
+    else:
+        run = executor.resubmit_run(session, draft, payload, PROJECT_OUTPUTS)
     project.updated_at = utc_now()
     session.commit()
     return run

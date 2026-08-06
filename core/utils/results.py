@@ -16,6 +16,11 @@ from runtime.utils.storage import (
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from core.apps.workflows.artifacts import (
+    uses_cloud_output,
+    workspace_output_directory,
+    workspace_output_prefix,
+)
 from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 
 
@@ -24,20 +29,6 @@ class ResultFile(BaseModel):
     filename: str
     size: int
     modified_at: datetime
-
-
-def cloud_output_location(application: str, workspace_key: str) -> tuple[str, str]:
-    """返回 Runtime 使用的对象前缀及持久化到任务记录的 S3 URI。"""
-    prefix = f"{application}/{workspace_key}/output"
-    try:
-        with ObjectStorage.from_env() as storage:
-            return prefix, storage.uri(storage.object_key(prefix))
-    except ObjectStorageConfigurationError as error:
-        raise OSError(str(error)) from error
-
-
-def is_cloud_output(output_dir: str | None) -> bool:
-    return bool(output_dir and output_dir.startswith("s3://"))
 
 
 def owned_result_run(
@@ -76,10 +67,8 @@ def result_files(
     output_files: dict[str, str],
 ) -> list[dict[str, Any]]:
     run = owned_result_run(session, user_id, workflow_instance_id, application)
-    if not run.output_dir:
-        raise OSError(f"工作流 {workflow_instance_id} 成功但未记录结果目录")
-    if is_cloud_output(run.output_dir):
-        storage, output_key = _cloud_storage(run.output_dir)
+    if uses_cloud_output(run.application):
+        storage, output_key = _cloud_storage(run.application, run.workspace_key)
         try:
             return [
                 _cloud_result_file(
@@ -95,7 +84,7 @@ def result_files(
         finally:
             storage.close()
 
-    output_dir = Path(run.output_dir).resolve()
+    output_dir = workspace_output_directory(run.application, run.workspace_key)
     return [
         _local_result_file(
             workflow_instance_id,
@@ -120,11 +109,9 @@ def result_response(
     run = owned_result_run(session, user_id, workflow_instance_id, application)
     if name not in run.requested_outputs:
         raise FileNotFoundError(f"工作流未请求结果: {name}")
-    if not run.output_dir:
-        raise OSError(f"工作流 {workflow_instance_id} 成功但未记录结果目录")
     filename = output_files[name]
-    if is_cloud_output(run.output_dir):
-        storage, output_key = _cloud_storage(run.output_dir)
+    if uses_cloud_output(run.application):
+        storage, output_key = _cloud_storage(run.application, run.workspace_key)
         key = f"{output_key}/{filename}"
         try:
             storage.object_info(key)
@@ -135,22 +122,29 @@ def result_response(
             storage.close()
         return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
-    output_dir = Path(run.output_dir).resolve()
+    output_dir = workspace_output_directory(run.application, run.workspace_key)
     path = (output_dir / filename).resolve()
     if path.parent != output_dir or not path.is_file():
         raise OSError(f"工作流 {workflow_instance_id} 成功但缺少结果: {name}")
     return FileResponse(path, filename=filename, media_type=PARQUET_CONTENT_TYPE)
 
 
-def delete_result_objects(output_dir: str | None) -> None:
+def delete_result_objects(application: str, workspace_key: str) -> None:
     """删除云端结果目录；本地结果由所属工作目录统一清理。"""
-    if not is_cloud_output(output_dir):
+    if not uses_cloud_output(application):
         return
-    storage, output_key = _cloud_storage(output_dir)
+    delete_cloud_result_objects(application, workspace_key)
+
+
+def delete_cloud_result_objects(application: str, workspace_key: str) -> None:
+    """删除当前对象存储中的指定 workspace 输出前缀。"""
+    storage, output_key = _cloud_storage(application, workspace_key)
     try:
         storage.delete_prefix(output_key)
     except (BotoCoreError, ClientError, ObjectStorageConfigurationError) as error:
-        raise OSError(f"无法清理对象存储结果 {output_dir}: {error}") from error
+        raise OSError(
+            f"无法清理对象存储 workspace {application}/{workspace_key}: {error}"
+        ) from error
     finally:
         storage.close()
 
@@ -199,11 +193,13 @@ def _cloud_result_file(
     }
 
 
-def _cloud_storage(output_dir: str) -> tuple[ObjectStorage, str]:
+def _cloud_storage(application: str, workspace_key: str) -> tuple[ObjectStorage, str]:
     storage: ObjectStorage | None = None
     try:
         storage = ObjectStorage.from_env()
-        return storage, storage.key_from_uri(output_dir)
+        return storage, storage.object_key(
+            workspace_output_prefix(application, workspace_key)
+        )
     except ObjectStorageConfigurationError as error:
         if storage is not None:
             storage.close()

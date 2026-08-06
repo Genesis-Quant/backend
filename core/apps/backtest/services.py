@@ -16,7 +16,7 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     current_workflow_instance,
     remove_run_artifacts,
-    resolve_run_directory,
+    resolve_run_artifacts,
     workflow_input_json,
 )
 from core.scheduler.domain import TERMINAL_STATES
@@ -84,9 +84,8 @@ def delete_backtest_project(session: Session, user_id: int, project_id: int) -> 
     if running:
         raise RuntimeError(f"项目仍有运行中的回测工作流: {sorted(set(running))}")
     artifacts = [
-        (resolve_run_directory(run), run.output_dir)
+        resolve_run_artifacts(run)
         for run in runs
-        if run.input_file
     ]
     session.execute(delete(BacktestVersion).where(BacktestVersion.project_id == project.id))
     for run in runs:
@@ -105,23 +104,24 @@ def submit_project_backtest(session: Session, user_id: int, project_id: int, pay
     draft = session.scalar(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id, BacktestWorkflowRun.saved.is_(False)).with_for_update())
     if draft is not None and run_state(session, draft) not in TERMINAL_STATES:
         raise RuntimeError(f"项目已有 {run_state(session, draft)} 状态的回测工作流")
-    if draft is not None:
-        draft.project_id = None
+    executor = WorkflowExecutionService("backtest", BacktestWorkflowRun)
+    if draft is None:
+        run = BacktestWorkflowRun(
+            user_id=user_id,
+            application="backtest",
+            source_project_id=project.id,
+            project_id=project.id,
+            saved=False,
+            payload={"start_parameters": {}, "input_json": payload},
+            requested_outputs=PROJECT_OUTPUTS,
+            submission_state="CREATED",
+            events=[],
+        )
+        session.add(run)
         session.flush()
-    run = BacktestWorkflowRun(
-        user_id=user_id,
-        application="backtest",
-        source_project_id=project.id,
-        project_id=project.id,
-        saved=False,
-        payload={"start_parameters": {}, "input_json": payload},
-        requested_outputs=PROJECT_OUTPUTS,
-        submission_state="CREATED",
-        events=[],
-    )
-    session.add(run)
-    session.flush()
-    WorkflowExecutionService("backtest", BacktestWorkflowRun).submit_run(session, run, create_directory=True)
+        executor.submit_run(session, run, create_directory=True)
+    else:
+        run = executor.resubmit_run(session, draft, payload, PROJECT_OUTPUTS)
     project.updated_at = utc_now()
     session.commit()
     return run

@@ -14,12 +14,15 @@ from core.apps.incremental.models import IncrementalWorkflowRun
 from core.apps.query.models import QueryWorkflowRun
 from core.apps.tasks.services import TaskGatewayService
 from core.apps.users.models import User
+from core.apps.workflows.artifacts import (
+    workspace_input_file,
+    workspace_output_directory,
+)
 from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.apps.workflows.services import (
     IncrementalWorkflowExecutionService,
     WorkflowExecutionService,
     WorkflowGatewayService,
-    resolve_incremental_run_directory,
     resolve_run_directory,
     workflow_task_information,
     workflow_list_item,
@@ -331,13 +334,13 @@ def test_workflow_directory_uses_uuid_workspace_key(tmp_path, monkeypatch: pytes
         payload={},
         requested_outputs=[],
         events=[],
-        input_file=str(tmp_path / "factor" / workspace_key / "input.json"),
+        workspace_key=workspace_key,
     )
 
     assert resolve_run_directory(run) == (tmp_path / "factor" / workspace_key).resolve()
 
-    run.input_file = str(tmp_path / "factor" / "1" / "input.json")
-    with pytest.raises(RuntimeError, match="workspace key"):
+    run.workspace_key = "1"
+    with pytest.raises(ValueError, match="workspace key"):
         resolve_run_directory(run)
 
 
@@ -355,18 +358,16 @@ def test_incremental_directory_uses_output_inside_uuid_workspace(
         payload={},
         requested_outputs=[],
         events=[],
-        output_dir=str(
-            tmp_path / "incremental" / workspace_key / "output"
-        ),
+        workspace_key=workspace_key,
     )
 
-    assert resolve_incremental_run_directory(run) == (
+    assert resolve_run_directory(run) == (
         tmp_path / "incremental" / workspace_key
     ).resolve()
 
-    run.output_dir = str(tmp_path / "incremental" / workspace_key / "other")
-    with pytest.raises(RuntimeError, match="拒绝清理"):
-        resolve_incremental_run_directory(run)
+    run.workspace_key = "other"
+    with pytest.raises(ValueError, match="workspace key"):
+        resolve_run_directory(run)
 
 
 def test_incremental_submission_passes_optional_worker_output_directory(
@@ -413,7 +414,7 @@ def test_incremental_submission_passes_optional_worker_output_directory(
         "console",
     )
 
-    output_dir = Path(run.output_dir or "")
+    output_dir = workspace_output_directory("incremental", run.workspace_key)
     assert output_dir.is_dir()
     assert output_dir.name == "output"
     assert output_dir.parent.parent == tmp_path / "incremental"
@@ -489,13 +490,6 @@ def test_cloud_workflow_keeps_input_local_and_sends_cloud_value(
     monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
     monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
     monkeypatch.setattr(
-        "core.apps.workflows.services.cloud_output_location",
-        lambda application, workspace_key: (
-            f"{application}/{workspace_key}/output",
-            f"s3://arena-bucket/arena-runtime/{application}/{workspace_key}/output",
-        ),
-    )
-    monkeypatch.setattr(
         "core.apps.workflows.services.ensure_workflow_definition",
         lambda application: (1, {"code": 2, "name": application}),
     )
@@ -505,14 +499,13 @@ def test_cloud_workflow_keeps_input_local_and_sends_cloud_value(
 
     executor.submit_run(session, run, create_directory=True)
 
-    input_file = Path(run.input_file or "")
+    input_file = workspace_input_file("query", run.workspace_key)
     input_data = json.loads(input_file.read_text(encoding="utf-8"))
     assert input_data == run.payload["input_json"]
     assert "output_dir" not in input_data
     output_argument = captured["start_params"]["output_dir"]
     assert output_argument.startswith("query/")
     assert output_argument.endswith("/output")
-    assert run.output_dir == f"s3://arena-bucket/arena-runtime/{output_argument}"
     assert captured["start_params"] == {
         "input_file": str(input_file),
         "output_dir": output_argument,

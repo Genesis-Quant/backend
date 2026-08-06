@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.apps.admin.schemas import (
     AdminActionResponse,
     AdminOverviewResponse,
+    AdminOutputStorageResponse,
     AdminUserListResponse,
     AdminUserUpdate,
     IncrementalUpdateRunCreate,
@@ -29,6 +30,48 @@ def overview(
     session: Annotated[Session, Depends(get_database_session)],
 ) -> AdminOverviewResponse:
     return AdminService().overview(session)
+
+
+@router.get("/output-storage", response_model=AdminOutputStorageResponse)
+def output_storage(
+    _: Annotated[User, Depends(get_current_admin)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> dict[str, object]:
+    return AdminService().output_storage(session)
+
+
+@router.delete(
+    "/output-storage/workspaces/{application}/{workspace_key}",
+    response_model=AdminActionResponse,
+)
+def delete_orphan_workspace(
+    application: str,
+    workspace_key: str,
+    _: Annotated[User, Depends(get_current_admin)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> dict[str, object]:
+    try:
+        result = AdminService().delete_orphan_workspace(
+            session,
+            application,
+            workspace_key,
+        )
+        return {"message": "游离 workspace 已删除", "result": result}
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except OSError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error),
+        ) from error
 
 
 @router.get("/users", response_model=AdminUserListResponse)

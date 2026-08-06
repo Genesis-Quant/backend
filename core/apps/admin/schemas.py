@@ -98,6 +98,40 @@ class AdminOverviewResponse(BaseModel):
     scheduler: AdminSchedulerOverview
 
 
+class AdminOutputWorkspace(BaseModel):
+    application: str
+    workspace_key: str
+    path: str
+    storage: str
+    file_count: int
+    size_bytes: int
+    modified_at: datetime | None
+    orphaned: bool
+    workflow_run_id: int | None = None
+    project_id: int | None = None
+    project_title: str | None = None
+
+
+class AdminOutputApplicationSummary(BaseModel):
+    application: str
+    workspace_count: int
+    file_count: int
+    total_bytes: int
+
+
+class AdminOutputStorageResponse(BaseModel):
+    available: bool
+    error: str | None = None
+    mode: str
+    root: str
+    workspace_count: int
+    orphan_workspace_count: int
+    file_count: int
+    total_bytes: int
+    applications: list[AdminOutputApplicationSummary] = Field(default_factory=list)
+    workspaces: list[AdminOutputWorkspace] = Field(default_factory=list)
+
+
 class AdminActionResponse(BaseModel):
     message: str
     result: Any
