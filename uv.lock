@@ -120,7 +120,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14,<2" },
     { name = "apache-dolphinscheduler", specifier = "==4.1.0" },
-    { name = "arena-runtime", directory = "../runtime" },
+    { name = "arena-runtime", editable = "../runtime" },
     { name = "bcrypt", specifier = ">=4.3,<5" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
@@ -137,7 +137,7 @@ dev = [{ name = "pytest", specifier = ">=8.4,<9" }]
 [[package]]
 name = "arena-runtime"
 version = "0.1.0"
-source = { directory = "../runtime" }
+source = { editable = "../runtime" }
 dependencies = [
     { name = "boto3" },
     { name = "dolphindb" },

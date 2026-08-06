@@ -5,8 +5,9 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from core.apps.workflows.models import WorkflowRun, utc_now
+from core.apps.workflows.models import WorkflowRun
 from core.database.base import Base
+from core.utils.time import utc_now
 
 
 class QueryProject(Base):

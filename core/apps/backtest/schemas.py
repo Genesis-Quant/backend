@@ -6,23 +6,27 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime import BacktestParameters
 
-from core.utils.results import ResultFile
-from core.utils.validation import normalize_text, validate_outputs
+from core.apps.schemas import WorkflowSummary
+from core.utils.validation import (
+    normalize_text,
+    strip_text,
+    validate_outputs,
+)
+
+type BacktestOutput = Literal[
+    "trade_details",
+    "daily_positions",
+    "daily_portfolios",
+    "return_summary",
+    "daily_trading_statistics",
+    "engine_stat",
+]
 
 
 class BacktestWorkflowCreate(BacktestParameters):
-    output: list[Literal["trade_details", "daily_positions", "daily_portfolios", "return_summary", "daily_trading_statistics", "engine_stat"]] = Field(min_length=1)
+    output: list[BacktestOutput] = Field(min_length=1)
 
     validate_output = field_validator("output")(validate_outputs)
-
-
-class BacktestWorkflowSubmitted(BaseModel):
-    record_id: int
-    workflow_instance_id: int
-
-
-class BacktestResultFile(ResultFile):
-    name: Literal["trade_details", "daily_positions", "daily_portfolios", "return_summary", "daily_trading_statistics", "engine_stat"]
 
 
 class BacktestProjectCreate(BaseModel):
@@ -36,30 +40,21 @@ class BacktestProjectUpdate(BacktestProjectCreate):
     pass
 
 
-class BacktestWorkflowSummary(BaseModel):
-    record_id: int
-    workflow_instance_id: int | None
-    state: str
-    error: str | None
-    parameters: dict[str, Any]
-    updated_at: datetime
-
-
 class BacktestProjectItem(BaseModel):
     id: int
     title: str
     latest_version: int | None
-    latest_summary: dict[str, float | int | None] | None
-    draft: BacktestWorkflowSummary | None
+    draft: WorkflowSummary[dict[str, Any]] | None
     created_at: datetime
     updated_at: datetime
 
 
-class BacktestProjectPage(BaseModel):
-    items: list[BacktestProjectItem]
-    page: int
-    page_size: int
-    total: int
+class BacktestProjectListItem(BaseModel):
+    id: int
+    title: str
+    latest_version: int | None
+    latest_summary: dict[str, float | int | None] | None
+    updated_at: datetime
 
 
 class BacktestVersionCreate(BaseModel):
@@ -69,10 +64,7 @@ class BacktestVersionCreate(BaseModel):
     remark: str = Field(default="", max_length=512)
     summary: dict[str, float | int | None] = Field(min_length=1)
 
-    @field_validator("remark")
-    @classmethod
-    def normalize_remark(cls, value: str) -> str:
-        return value.strip()
+    validate_remark = field_validator("remark")(strip_text)
 
 
 class BacktestVersionResponse(BaseModel):
@@ -83,4 +75,11 @@ class BacktestVersionResponse(BaseModel):
     remark: str
     parameters: dict[str, Any]
     summary: dict[str, float | int | None]
+    created_at: datetime
+
+
+class BacktestVersionListItem(BaseModel):
+    id: int
+    version: int
+    remark: str
     created_at: datetime

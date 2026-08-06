@@ -1,8 +1,9 @@
 """Shared DolphinScheduler application and execution-state constants."""
 
-from typing import Literal, TypeAlias
+from typing import Literal
 
-ApplicationName: TypeAlias = Literal["query", "factor", "backtest"]
+type ApplicationName = Literal["query", "factor", "backtest"]
+type RunApplication = Literal["query", "factor", "backtest", "incremental"]
 APPLICATIONS: tuple[ApplicationName, ...] = ("query", "factor", "backtest")
 APPLICATION_START_PARAMETERS = (
     "input_file",

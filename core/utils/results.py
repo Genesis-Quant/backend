@@ -9,9 +9,9 @@ from fastapi import Response
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from runtime.utils.storage import (
+    PARQUET_CONTENT_TYPE,
     ObjectStorage,
     ObjectStorageConfigurationError,
-    PARQUET_CONTENT_TYPE,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,8 +24,8 @@ from core.apps.workflows.artifacts import (
 from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 
 
-class ResultFile(BaseModel):
-    name: str
+class ResultFile[Name: str](BaseModel):
+    name: Name
     filename: str
     size: int
     modified_at: datetime
@@ -37,25 +37,24 @@ def owned_result_run(
     workflow_instance_id: int,
     application: str,
 ) -> WorkflowRun:
-    run = session.scalar(
-        select(WorkflowRun)
+    row = session.execute(
+        select(WorkflowRun, WorkflowInstance)
         .join(WorkflowInstance, WorkflowInstance.workflow_run_id == WorkflowRun.id)
         .where(
             WorkflowInstance.workflow_instance_id == workflow_instance_id,
             WorkflowRun.user_id == user_id,
             WorkflowRun.application == application,
         )
-    )
-    if run is None:
+    ).one_or_none()
+    if row is None:
         raise FileNotFoundError(f"工作流实例不存在: {workflow_instance_id}")
-    workflow = session.get(WorkflowInstance, workflow_instance_id)
-    if workflow is not None and not workflow.is_current:
+    run, workflow = row
+    if not workflow.is_current:
         raise RuntimeError(
             f"工作流 {workflow_instance_id} 不是当前实例，结果目录已由后续运行接管"
         )
-    if workflow is None or workflow.state != "SUCCESS":
-        state = workflow.state if workflow is not None else "UNKNOWN"
-        raise RuntimeError(f"工作流 {workflow_instance_id} 当前状态为 {state}，成功后才能获取结果")
+    if workflow.state != "SUCCESS":
+        raise RuntimeError(f"工作流 {workflow_instance_id} 当前状态为 {workflow.state}，成功后才能获取结果")
     return run
 
 
@@ -68,14 +67,14 @@ def result_files(
 ) -> list[dict[str, Any]]:
     run = owned_result_run(session, user_id, workflow_instance_id, application)
     if uses_cloud_output(run.application):
-        storage, output_key = _cloud_storage(run.application, run.workspace_key)
+        storage, output_key = cloud_storage(run.application, run.workspace_key)
         try:
             return [
-                _cloud_result_file(
+                cloud_result_file(
                     storage,
                     output_key,
                     name,
-                    _result_filename(workflow_instance_id, name, output_files),
+                    result_filename(workflow_instance_id, name, output_files),
                 )
                 for name in run.requested_outputs
             ]
@@ -86,11 +85,11 @@ def result_files(
 
     output_dir = workspace_output_directory(run.application, run.workspace_key)
     return [
-        _local_result_file(
+        local_result_file(
             workflow_instance_id,
             output_dir,
             name,
-            _result_filename(workflow_instance_id, name, output_files),
+            result_filename(workflow_instance_id, name, output_files),
         )
         for name in run.requested_outputs
     ]
@@ -111,7 +110,7 @@ def result_response(
         raise FileNotFoundError(f"工作流未请求结果: {name}")
     filename = output_files[name]
     if uses_cloud_output(run.application):
-        storage, output_key = _cloud_storage(run.application, run.workspace_key)
+        storage, output_key = cloud_storage(run.application, run.workspace_key)
         key = f"{output_key}/{filename}"
         try:
             storage.object_info(key)
@@ -138,7 +137,7 @@ def delete_result_objects(application: str, workspace_key: str) -> None:
 
 def delete_cloud_result_objects(application: str, workspace_key: str) -> None:
     """删除当前对象存储中的指定 workspace 输出前缀。"""
-    storage, output_key = _cloud_storage(application, workspace_key)
+    storage, output_key = cloud_storage(application, workspace_key)
     try:
         storage.delete_prefix(output_key)
     except (BotoCoreError, ClientError, ObjectStorageConfigurationError) as error:
@@ -149,7 +148,7 @@ def delete_cloud_result_objects(application: str, workspace_key: str) -> None:
         storage.close()
 
 
-def _result_filename(
+def result_filename(
     workflow_instance_id: int,
     name: str,
     output_files: dict[str, str],
@@ -160,7 +159,7 @@ def _result_filename(
     return filename
 
 
-def _local_result_file(
+def local_result_file(
     workflow_instance_id: int,
     output_dir: Path,
     name: str,
@@ -178,7 +177,7 @@ def _local_result_file(
     }
 
 
-def _cloud_result_file(
+def cloud_result_file(
     storage: ObjectStorage,
     output_key: str,
     name: str,
@@ -193,7 +192,7 @@ def _cloud_result_file(
     }
 
 
-def _cloud_storage(application: str, workspace_key: str) -> tuple[ObjectStorage, str]:
+def cloud_storage(application: str, workspace_key: str) -> tuple[ObjectStorage, str]:
     storage: ObjectStorage | None = None
     try:
         storage = ObjectStorage.from_env()

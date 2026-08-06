@@ -1,9 +1,10 @@
 """Backtest workflow submission, strategy projects, versions, and results."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.models import (
@@ -11,17 +12,17 @@ from core.apps.backtest.models import (
     BacktestVersion,
     BacktestWorkflowRun,
 )
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
+from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.apps.workflows.services import (
     WorkflowExecutionService,
-    current_workflow_instance,
     remove_run_artifacts,
     resolve_run_artifacts,
     workflow_input_json,
+    workflow_run_state,
 )
 from core.scheduler.domain import TERMINAL_STATES
-from core.utils.dsl import build_dsl_catalog
 from core.utils.results import result_files, result_response
+from core.utils.time import utc_now
 
 OUTPUT_FILES = {
     "trade_details": "trade_details.parquet",
@@ -38,6 +39,7 @@ PROJECT_OUTPUTS = [
     "daily_trading_statistics",
 ]
 INTERNAL_PARAMETER_NAMES = frozenset({"name", "source_ref", "message_ref"})
+PROJECT_SUMMARY_FIELDS = ("totalReturn", "annualReturn", "sharpeRatio", "annualVolatility", "maxDrawdown", "dailyWinningRate")
 
 
 def submit_backtest_workflow(session: Session, user_id: int, payload: dict[str, Any], outputs: list[str]) -> WorkflowRun:
@@ -56,7 +58,7 @@ def list_backtest_projects(session: Session, user_id: int, page: int, page_size:
     statement = select(BacktestProject).where(BacktestProject.user_id == user_id)
     total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
     projects = session.scalars(statement.order_by(BacktestProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-    return {"items": [serialize_project(session, project) for project in projects], "page": page, "page_size": page_size, "total": total}
+    return {"items": project_summaries(session, projects), "page": page, "page_size": page_size, "total": total}
 
 
 def create_backtest_project(session: Session, user_id: int, title: str) -> dict[str, Any]:
@@ -81,7 +83,7 @@ def update_backtest_project(session: Session, user_id: int, project_id: int, tit
 def delete_backtest_project(session: Session, user_id: int, project_id: int) -> int:
     project = owned_project(session, user_id, project_id)
     runs = list(session.scalars(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id)))
-    running = [run_state(session, run) for run in runs if run_state(session, run) not in TERMINAL_STATES]
+    running = [state for run in runs if (state := workflow_run_state(session, run)) not in TERMINAL_STATES]
     if running:
         raise RuntimeError(f"项目仍有运行中的回测工作流: {sorted(set(running))}")
     artifacts = [
@@ -103,8 +105,9 @@ def submit_project_backtest(session: Session, user_id: int, project_id: int, pay
     if project is None:
         raise FileNotFoundError(f"回测项目不存在: {project_id}")
     draft = session.scalar(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id, BacktestWorkflowRun.saved.is_(False)).with_for_update())
-    if draft is not None and run_state(session, draft) not in TERMINAL_STATES:
-        raise RuntimeError(f"项目已有 {run_state(session, draft)} 状态的回测工作流")
+    state = workflow_run_state(session, draft) if draft is not None else None
+    if state is not None and state not in TERMINAL_STATES:
+        raise RuntimeError(f"项目已有 {state} 状态的回测工作流")
     executor = WorkflowExecutionService("backtest", BacktestWorkflowRun)
     if draft is None:
         run = BacktestWorkflowRun(
@@ -160,8 +163,12 @@ def create_backtest_version(session: Session, user_id: int, project_id: int, wor
 
 def list_backtest_versions(session: Session, user_id: int, project_id: int) -> list[dict[str, Any]]:
     project = owned_project(session, user_id, project_id)
-    versions = session.scalars(select(BacktestVersion).where(BacktestVersion.project_id == project.id).order_by(BacktestVersion.version.desc())).all()
-    return [serialize_version(version) for version in versions]
+    rows = session.execute(
+        select(BacktestVersion.id, BacktestVersion.version, BacktestVersion.remark, BacktestVersion.created_at)
+        .where(BacktestVersion.project_id == project.id)
+        .order_by(BacktestVersion.version.desc())
+    ).mappings()
+    return [dict(row) for row in rows]
 
 
 def get_backtest_version(session: Session, user_id: int, project_id: int, version_number: int) -> dict[str, Any]:
@@ -172,10 +179,6 @@ def get_backtest_version(session: Session, user_id: int, project_id: int, versio
     return serialize_version(version)
 
 
-def dsl_catalog() -> dict[str, Any]:
-    return build_dsl_catalog()
-
-
 def owned_project(session: Session, user_id: int, project_id: int) -> BacktestProject:
     project = session.scalar(select(BacktestProject).where(BacktestProject.id == project_id, BacktestProject.user_id == user_id))
     if project is None:
@@ -183,15 +186,58 @@ def owned_project(session: Session, user_id: int, project_id: int) -> BacktestPr
     return project
 
 
-def run_state(session: Session, run: WorkflowRun) -> str:
-    workflow = current_workflow_instance(session, run.id)
-    return workflow.state if workflow is not None else run.submission_state
-
-
 def serialize_project(session: Session, project: BacktestProject) -> dict[str, Any]:
-    latest = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == project.id).order_by(BacktestVersion.version.desc()).limit(1))
+    latest_version = session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id))
     draft = session.scalar(select(BacktestWorkflowRun).where(BacktestWorkflowRun.project_id == project.id, BacktestWorkflowRun.saved.is_(False)))
-    workflow = current_workflow_instance(session, draft.id) if draft is not None else None
+    workflow = session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_run_id == draft.id, WorkflowInstance.is_current.is_(True))) if draft is not None else None
+    return project_information(project, latest_version, draft, workflow)
+
+
+def project_summaries(
+    session: Session,
+    projects: Sequence[BacktestProject],
+) -> list[dict[str, Any]]:
+    project_ids = [project.id for project in projects]
+    if not project_ids:
+        return []
+    latest_numbers = (
+        select(
+            BacktestVersion.project_id,
+            func.max(BacktestVersion.version).label("version"),
+        )
+        .where(BacktestVersion.project_id.in_(project_ids))
+        .group_by(BacktestVersion.project_id)
+        .subquery()
+    )
+    latest_versions = session.execute(
+        select(
+            BacktestVersion.project_id,
+            BacktestVersion.version,
+            *(BacktestVersion.summary[name].as_float().label(name) for name in PROJECT_SUMMARY_FIELDS),
+        ).join(
+            latest_numbers,
+            and_(BacktestVersion.project_id == latest_numbers.c.project_id, BacktestVersion.version == latest_numbers.c.version),
+        )
+    ).mappings()
+    latest_by_project = {row["project_id"]: (row["version"], {name: row[name] for name in PROJECT_SUMMARY_FIELDS}) for row in latest_versions}
+    return [
+        {
+            "id": project.id,
+            "title": project.title,
+            "latest_version": latest_by_project[project.id][0] if project.id in latest_by_project else None,
+            "latest_summary": latest_by_project[project.id][1] if project.id in latest_by_project else None,
+            "updated_at": project.updated_at,
+        }
+        for project in projects
+    ]
+
+
+def project_information(
+    project: BacktestProject,
+    latest_version: int | None,
+    draft: BacktestWorkflowRun | None,
+    workflow: WorkflowInstance | None,
+) -> dict[str, Any]:
     draft_data = None if draft is None else {
         "record_id": draft.id,
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
@@ -200,7 +246,7 @@ def serialize_project(session: Session, project: BacktestProject) -> dict[str, A
         "parameters": public_parameters(workflow_input_json(draft)),
         "updated_at": draft.updated_at,
     }
-    return {"id": project.id, "title": project.title, "latest_version": latest.version if latest else None, "latest_summary": latest.summary if latest else None, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
+    return {"id": project.id, "title": project.title, "latest_version": latest_version, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
 
 
 def serialize_version(version: BacktestVersion) -> dict[str, Any]:

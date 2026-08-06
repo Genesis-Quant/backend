@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import ArenaSettings
+from core.apps.admin.services import AdminService
 from core.apps.admin.views import router as admin_router
 from core.apps.backtest.views import router as backtest_router
 from core.apps.factor.views import router as factor_router
@@ -18,14 +19,15 @@ from core.apps.users.views import router as users_router
 from core.apps.workflows.services import poll_workflow_statuses
 from core.apps.workflows.views import router as workflows_router
 from core.database.health import DatabaseError, check_database
-from core.scheduler.workflows import ensure_all_workflows
+from core.utils.dsl import initialize_dsl_catalog
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     validate_security_configuration()
     ArenaSettings.validate()
-    application.state.workflows = ensure_all_workflows()
+    application.state.dsl_catalog = initialize_dsl_catalog()
+    application.state.workflows = AdminService.ensure_workflows()
     stop_poller = asyncio.Event()
     workflow_poller = asyncio.create_task(poll_workflow_statuses(stop_poller))
     application.state.workflow_poller = workflow_poller
@@ -40,7 +42,7 @@ app = FastAPI(title="Arena Backend", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

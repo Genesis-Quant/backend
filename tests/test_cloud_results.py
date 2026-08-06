@@ -21,7 +21,6 @@ from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.database.base import Base
 from core.utils import results
 
-
 WORKSPACE_KEY = "3a809554ba8f4c75a5cf46ec441994af"
 
 

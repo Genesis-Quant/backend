@@ -7,15 +7,15 @@ from runtime import BacktestParameters
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.schemas import (
+    BacktestOutput,
     BacktestProjectCreate,
     BacktestProjectItem,
-    BacktestProjectPage,
+    BacktestProjectListItem,
     BacktestProjectUpdate,
-    BacktestResultFile,
     BacktestVersionCreate,
+    BacktestVersionListItem,
     BacktestVersionResponse,
     BacktestWorkflowCreate,
-    BacktestWorkflowSubmitted,
 )
 from core.apps.backtest.services import (
     backtest_result_files,
@@ -23,7 +23,6 @@ from core.apps.backtest.services import (
     create_backtest_project,
     create_backtest_version,
     delete_backtest_project,
-    dsl_catalog,
     get_backtest_project,
     get_backtest_version,
     list_backtest_projects,
@@ -32,33 +31,35 @@ from core.apps.backtest.services import (
     submit_project_backtest,
     update_backtest_project,
 )
+from core.apps.schemas import ProjectPage, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
-from core.utils.dsl import DslCatalog
+from core.utils.dsl import DslCatalog, dsl_catalog
 from core.utils.http import raise_api_http_error
+from core.utils.results import ResultFile
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
 
 
-@router.post("/workflows", response_model=BacktestWorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def create_backtest_workflow(request: BacktestWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BacktestWorkflowSubmitted:
+@router.post("/workflows", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
+def create_backtest_workflow(request: BacktestWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
     try:
         run = submit_backtest_workflow(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return BacktestWorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
+        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, OSError, ValueError) as error:
         raise_api_http_error(error)
 
 
-@router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[BacktestResultFile])
-def list_backtest_results(workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BacktestResultFile]:
+@router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[ResultFile[BacktestOutput]])
+def list_backtest_results(workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[ResultFile[BacktestOutput]]:
     try:
-        return backtest_result_files(session, user.id, workflow_instance_id)
+        return [ResultFile[BacktestOutput].model_validate(item) for item in backtest_result_files(session, user.id, workflow_instance_id)]
     except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
@@ -71,9 +72,9 @@ def download_backtest_result(workflow_instance_id: int, name: str, user: Annotat
         raise_api_http_error(error)
 
 
-@router.get("/projects", response_model=BacktestProjectPage)
-def projects(user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> BacktestProjectPage:
-    return BacktestProjectPage.model_validate(list_backtest_projects(session, user.id, page, page_size))
+@router.get("/projects", response_model=ProjectPage[BacktestProjectListItem])
+def projects(user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> ProjectPage[BacktestProjectListItem]:
+    return ProjectPage[BacktestProjectListItem].model_validate(list_backtest_projects(session, user.id, page, page_size))
 
 
 @router.post("/projects", response_model=BacktestProjectItem, status_code=status.HTTP_201_CREATED)
@@ -105,22 +106,22 @@ def delete_project(project_id: int, user: Annotated[User, Depends(get_current_us
         raise_api_http_error(error)
 
 
-@router.post("/projects/{project_id}/runs", response_model=BacktestWorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def run_project(project_id: int, request: BacktestParameters, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BacktestWorkflowSubmitted:
+@router.post("/projects/{project_id}/runs", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
+def run_project(project_id: int, request: BacktestParameters, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
     try:
         run = submit_project_backtest(session, user.id, project_id, request.model_dump(mode="json"))
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return BacktestWorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
+        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 
 
-@router.get("/projects/{project_id}/versions", response_model=list[BacktestVersionResponse])
-def versions(project_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BacktestVersionResponse]:
+@router.get("/projects/{project_id}/versions", response_model=list[BacktestVersionListItem])
+def versions(project_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BacktestVersionListItem]:
     try:
-        return [BacktestVersionResponse.model_validate(item) for item in list_backtest_versions(session, user.id, project_id)]
+        return [BacktestVersionListItem.model_validate(item) for item in list_backtest_versions(session, user.id, project_id)]
     except (FileNotFoundError, RuntimeError) as error:
         raise_api_http_error(error)
 
@@ -142,6 +143,6 @@ def version(project_id: int, version_number: int, user: Annotated[User, Depends(
         raise_api_http_error(error)
 
 
-@router.get("/dsl/catalog", response_model=DslCatalog)
-def catalog(user: Annotated[User, Depends(get_current_user)]) -> DslCatalog:
-    return DslCatalog.model_validate(dsl_catalog())
+@router.get("/dsl/catalog", response_model=DslCatalog, dependencies=[Depends(get_current_user)])
+def catalog() -> DslCatalog:
+    return dsl_catalog()

@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from core.apps.admin.schemas import (
     AdminActionResponse,
-    AdminOverviewResponse,
     AdminOutputStorageResponse,
+    AdminOverviewResponse,
     AdminUserListResponse,
     AdminUserUpdate,
     IncrementalUpdateRunCreate,
@@ -29,15 +29,15 @@ def overview(
     _: Annotated[User, Depends(get_current_admin)],
     session: Annotated[Session, Depends(get_database_session)],
 ) -> AdminOverviewResponse:
-    return AdminService().overview(session)
+    return AdminOverviewResponse.model_validate(AdminService().overview(session))
 
 
 @router.get("/output-storage", response_model=AdminOutputStorageResponse)
 def output_storage(
     _: Annotated[User, Depends(get_current_admin)],
     session: Annotated[Session, Depends(get_database_session)],
-) -> dict[str, object]:
-    return AdminService().output_storage(session)
+) -> AdminOutputStorageResponse:
+    return AdminOutputStorageResponse.model_validate(AdminService().output_storage(session))
 
 
 @router.delete(

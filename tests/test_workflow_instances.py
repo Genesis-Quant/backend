@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from config import ArenaSettings
+from core.apps.admin.models import IncrementalWorkflowRun
 from core.apps.backtest.models import BacktestVersion
 from core.apps.factor.models import FactorVersion, FactorWorkflowRun
-from core.apps.incremental.models import IncrementalWorkflowRun
 from core.apps.query.models import QueryWorkflowRun
 from core.apps.tasks.services import TaskGatewayService
 from core.apps.users.models import User
@@ -24,16 +23,16 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     WorkflowGatewayService,
     resolve_run_directory,
-    workflow_task_information,
     workflow_list_item,
+    workflow_task_information,
 )
 from core.database.base import Base
-from core.scheduler.errors import DolphinSchedulerError
-from core.scheduler.incremental import (
+from core.scheduler.applications.incremental import (
     incremental_message_task_definition,
     incremental_worker_options,
     normalize_incremental_workers,
 )
+from core.scheduler.errors import DolphinSchedulerError
 from core.utils.results import owned_result_run
 
 
@@ -182,10 +181,14 @@ def test_status_refreshes_requested_workflow_instead_of_current(
         def process_instance_tasks(self, **ignored: object):
             return []
 
-        def process_definition_details(self, *ignored: object):
-            return {"taskDefinitionList": [], "processTaskRelationList": []}
-
     monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", Client)
+    monkeypatch.setattr(
+        "core.apps.workflows.services.workflow_definition_details",
+        lambda definition_code: {
+            "taskDefinitionList": [],
+            "processTaskRelationList": [],
+        },
+    )
 
     information = WorkflowGatewayService().status(session, owner, 100)
 

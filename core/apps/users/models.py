@@ -1,15 +1,12 @@
 """SQLAlchemy models for Arena users."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database.base import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from core.utils.time import utc_now
 
 
 class User(Base):

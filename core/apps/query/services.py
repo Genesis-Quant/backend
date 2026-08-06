@@ -1,24 +1,25 @@
 """Query projects, workflow submissions, and result access."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import Response
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from core.apps.query.models import QueryProject, QueryWorkflowRun
 from core.apps.users.models import User
-from core.apps.workflows.models import WorkflowRun, utc_now
+from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.apps.workflows.services import (
     WorkflowExecutionService,
-    current_workflow_instance,
     remove_run_artifacts,
     resolve_run_artifacts,
     workflow_input_json,
+    workflow_run_state,
 )
 from core.scheduler.domain import TERMINAL_STATES
-from core.utils.dsl import build_dsl_catalog
 from core.utils.results import result_files, result_response
+from core.utils.time import utc_now
 
 OUTPUT_FILES = {
     "source_data": "source_data.parquet",
@@ -50,7 +51,7 @@ def list_query_projects(session: Session, user_id: int, page: int, page_size: in
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
-    return {"items": [serialize_project(session, project) for project in projects], "page": page, "page_size": page_size, "total": total, "limit": PROJECT_LIMIT}
+    return {"items": project_summaries(session, projects), "page": page, "page_size": page_size, "total": total, "limit": PROJECT_LIMIT}
 
 
 def create_query_project(session: Session, user_id: int, title: str) -> dict[str, Any]:
@@ -71,8 +72,9 @@ def get_query_project(session: Session, user_id: int, project_id: int) -> dict[s
 def delete_query_project(session: Session, user_id: int, project_id: int) -> int:
     project = owned_project(session, user_id, project_id)
     run = session.scalar(select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id))
-    if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
-        raise RuntimeError(f"项目仍有 {workflow_state(session, run)} 状态的查询工作流")
+    state = workflow_run_state(session, run) if run is not None else None
+    if state is not None and state not in TERMINAL_STATES:
+        raise RuntimeError(f"项目仍有 {state} 状态的查询工作流")
     artifacts = (
         resolve_run_artifacts(run)
         if run is not None
@@ -104,8 +106,9 @@ def submit_project_query(
     run = session.scalar(
         select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id).with_for_update()
     )
-    if run is not None and workflow_state(session, run) not in TERMINAL_STATES:
-        raise RuntimeError(f"项目已有 {workflow_state(session, run)} 状态的查询工作流")
+    state = workflow_run_state(session, run) if run is not None else None
+    if state is not None and state not in TERMINAL_STATES:
+        raise RuntimeError(f"项目已有 {state} 状态的查询工作流")
     executor = WorkflowExecutionService("query", QueryWorkflowRun)
     if run is None:
         run = QueryWorkflowRun(
@@ -128,10 +131,6 @@ def submit_project_query(
     return run
 
 
-def query_dsl_catalog() -> dict[str, Any]:
-    return build_dsl_catalog()
-
-
 def owned_project(session: Session, user_id: int, project_id: int) -> QueryProject:
     project = session.scalar(select(QueryProject).where(QueryProject.id == project_id, QueryProject.user_id == user_id))
     if project is None:
@@ -139,14 +138,9 @@ def owned_project(session: Session, user_id: int, project_id: int) -> QueryProje
     return project
 
 
-def workflow_state(session: Session, run: WorkflowRun) -> str:
-    workflow = current_workflow_instance(session, run.id)
-    return workflow.state if workflow is not None else run.submission_state
-
-
 def serialize_project(session: Session, project: QueryProject) -> dict[str, Any]:
     run = session.scalar(select(QueryWorkflowRun).where(QueryWorkflowRun.project_id == project.id))
-    workflow = current_workflow_instance(session, run.id) if run is not None else None
+    workflow = session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_run_id == run.id, WorkflowInstance.is_current.is_(True))) if run is not None else None
     current = None if run is None else {
         "record_id": run.id,
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
@@ -156,3 +150,48 @@ def serialize_project(session: Session, project: QueryProject) -> dict[str, Any]
         "updated_at": run.updated_at,
     }
     return {"id": project.id, "title": project.title, "current": current, "created_at": project.created_at, "updated_at": project.updated_at}
+
+
+def project_summaries(
+    session: Session,
+    projects: Sequence[QueryProject],
+) -> list[dict[str, Any]]:
+    project_ids = [project.id for project in projects]
+    runs = list(
+        session.scalars(
+            select(QueryWorkflowRun)
+            .options(load_only(QueryWorkflowRun.id, QueryWorkflowRun.project_id, QueryWorkflowRun.submission_state))
+            .where(QueryWorkflowRun.project_id.in_(project_ids))
+        )
+    ) if project_ids else []
+    workflows = list(
+        session.scalars(
+            select(WorkflowInstance).where(
+                WorkflowInstance.workflow_run_id.in_([run.id for run in runs]),
+                WorkflowInstance.is_current.is_(True),
+            )
+        )
+    ) if runs else []
+    runs_by_project = {run.project_id: run for run in runs}
+    workflows_by_run = {workflow.workflow_run_id: workflow for workflow in workflows}
+    return [
+        project_summary(
+            project,
+            runs_by_project.get(project.id),
+            workflows_by_run,
+        )
+        for project in projects
+    ]
+
+
+def project_summary(
+    project: QueryProject,
+    run: QueryWorkflowRun | None,
+    workflows_by_run: dict[int, WorkflowInstance],
+) -> dict[str, Any]:
+    workflow = workflows_by_run.get(run.id) if run is not None else None
+    current = None if run is None else {
+        "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
+        "state": workflow.state if workflow is not None else run.submission_state,
+    }
+    return {"id": project.id, "title": project.title, "current": current, "updated_at": project.updated_at}

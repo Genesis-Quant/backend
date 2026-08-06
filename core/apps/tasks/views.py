@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 @router.get("/{task_instance_id}/logs", response_model=TaskLogResponse)
 def get_task_log(task_instance_id: int, workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], skip_line_num: int = Query(0, ge=0), limit: int = Query(1000, ge=1, le=10000)) -> TaskLogResponse:
     try:
-        return TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit)
+        return TaskLogResponse.model_validate(TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit))
     except (DolphinSchedulerError, FileNotFoundError) as error:
         raise_api_http_error(error)
 
@@ -37,6 +37,6 @@ def download_task_log(task_instance_id: int, workflow_instance_id: int, user: An
 @router.post("/{task_instance_id}/actions/{action}", response_model=TaskActionResponse)
 def control_task(task_instance_id: int, workflow_instance_id: int, action: TaskAction, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> TaskActionResponse:
     try:
-        return TaskGatewayService().control(session, user, workflow_instance_id, task_instance_id, action)
+        return TaskActionResponse.model_validate(TaskGatewayService().control(session, user, workflow_instance_id, task_instance_id, action))
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError) as error:
         raise_api_http_error(error)

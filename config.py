@@ -3,6 +3,7 @@
 import os
 import warnings
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -68,7 +69,7 @@ class DatabaseSettings:
 class AuthenticationSettings:
     """用户认证配置。"""
 
-    JWT_SECRET = os.getenv("ARENA_JWT_SECRET")
+    JWT_SECRET = os.getenv("ARENA_JWT_SECRET", "")
     JWT_EXPIRE_DAYS = int(os.getenv("ARENA_JWT_EXPIRE_DAYS", "30"))
 
 
@@ -78,9 +79,9 @@ class DolphinSchedulerSettings:
     HOST = os.getenv("DOLPHINSCHEDULER_HOST", "127.0.0.1")
     BASE_URL = f"http://{HOST}:12345/dolphinscheduler"
     PYTHON_GATEWAY_PORT = 25333
-    PYTHON_GATEWAY_AUTH_TOKEN = os.getenv("DOLPHINSCHEDULER_PYTHON_GATEWAY_TOKEN")
+    PYTHON_GATEWAY_AUTH_TOKEN = os.getenv("DOLPHINSCHEDULER_PYTHON_GATEWAY_TOKEN", "")
     USERNAME = os.getenv("DOLPHINSCHEDULER_USERNAME", "arena-scheduler")
-    PASSWORD = os.getenv("DOLPHINSCHEDULER_PASSWORD")
+    PASSWORD = os.getenv("DOLPHINSCHEDULER_PASSWORD", "")
     PROJECT_NAME = os.getenv("DOLPHINSCHEDULER_PROJECT_NAME", "arena-runtime")
     WORKFLOW_NAME = "incremental-update"
     INCREMENTAL_TASK_GROUP_NAME = "tushare-api"
@@ -89,17 +90,17 @@ class DolphinSchedulerSettings:
     RUNTIME_COMMAND = "/opt/arena-runtime/.venv/bin/core-manage"
     POLL_INTERVAL_SECONDS = float(os.getenv("DOLPHINSCHEDULER_POLL_INTERVAL_SECONDS", "5"))
     POLL_BATCH_SIZE = int(os.getenv("DOLPHINSCHEDULER_POLL_BATCH_SIZE", "100"))
-    APPLICATION_WORKFLOW_NAMES = {
+    APPLICATION_WORKFLOW_NAMES: ClassVar[dict[str, str]] = {
         "query": "query",
         "factor": "factor",
         "backtest": "backtest",
     }
-    APPLICATION_TASK_GROUP_NAMES = {
+    APPLICATION_TASK_GROUP_NAMES: ClassVar[dict[str, str]] = {
         "query": "query-tasks",
         "factor": "factor-tasks",
         "backtest": "backtest-tasks",
     }
-    APPLICATION_TASK_GROUP_SIZES = {
+    APPLICATION_TASK_GROUP_SIZES: ClassVar[dict[str, int]] = {
         "query": positive_integer_environment("DOLPHINSCHEDULER_QUERY_TASK_GROUP_SIZE", 1),
         "factor": positive_integer_environment("DOLPHINSCHEDULER_FACTOR_TASK_GROUP_SIZE", 1),
         "backtest": positive_integer_environment("DOLPHINSCHEDULER_BACKTEST_TASK_GROUP_SIZE", 1),

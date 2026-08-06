@@ -6,23 +6,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.factor.schema import FactorAnalysisParameters
 
-from core.utils.results import ResultFile
-from core.utils.validation import normalize_text, validate_outputs
+from core.apps.schemas import WorkflowSummary
+from core.utils.validation import (
+    normalize_text,
+    strip_text,
+    validate_outputs,
+)
+
+type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns"]
 
 
 class FactorWorkflowCreate(FactorAnalysisParameters):
-    output: list[Literal["processed_data", "information_coefficient", "group_returns"]] = Field(min_length=1)
+    output: list[FactorOutput] = Field(min_length=1)
 
     validate_output = field_validator("output")(validate_outputs)
-
-
-class FactorWorkflowSubmitted(BaseModel):
-    record_id: int
-    workflow_instance_id: int
-
-
-class FactorResultFile(ResultFile):
-    name: Literal["processed_data", "information_coefficient", "group_returns"]
 
 
 class FactorProjectCreate(BaseModel):
@@ -36,30 +33,13 @@ class FactorProjectUpdate(FactorProjectCreate):
     pass
 
 
-class FactorWorkflowSummary(BaseModel):
-    record_id: int
-    workflow_instance_id: int | None
-    state: str
-    error: str | None
-    parameters: dict[str, Any]
-    updated_at: datetime
-
-
 class FactorProjectItem(BaseModel):
     id: int
     title: str
     latest_version: int | None
-    latest_metrics: dict[str, Any] | None
-    draft: FactorWorkflowSummary | None
+    draft: WorkflowSummary[dict[str, Any]] | None
     created_at: datetime
     updated_at: datetime
-
-
-class FactorProjectPage(BaseModel):
-    items: list[FactorProjectItem]
-    page: int
-    page_size: int
-    total: int
 
 
 class FactorMetricSummary(BaseModel):
@@ -84,6 +64,14 @@ class FactorMetricSummary(BaseModel):
 FactorMetrics = dict[str, dict[str, FactorMetricSummary]]
 
 
+class FactorProjectListItem(BaseModel):
+    id: int
+    title: str
+    latest_version: int | None
+    latest_metric: FactorMetricSummary | None
+    updated_at: datetime
+
+
 class FactorVersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -91,10 +79,7 @@ class FactorVersionCreate(BaseModel):
     remark: str = Field(default="", max_length=512)
     metrics: FactorMetrics
 
-    @field_validator("remark")
-    @classmethod
-    def normalize_remark(cls, value: str) -> str:
-        return value.strip()
+    validate_remark = field_validator("remark")(strip_text)
 
 
 class FactorVersionResponse(BaseModel):
@@ -105,4 +90,11 @@ class FactorVersionResponse(BaseModel):
     remark: str
     parameters: dict[str, Any]
     metrics: FactorMetrics
+    created_at: datetime
+
+
+class FactorVersionListItem(BaseModel):
+    id: int
+    version: int
+    remark: str
     created_at: datetime

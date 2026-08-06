@@ -46,7 +46,6 @@ class DolphinSchedulerClient:
         self.timeout = timeout
         self.session = self.create_session()
         self.logged_in = False
-        self._process_definition_details: dict[tuple[int, int], dict[str, Any]] = {}
 
     def __enter__(self) -> Self:
         self.login()
@@ -115,17 +114,11 @@ class DolphinSchedulerClient:
         process_definition_code: int,
     ) -> dict[str, Any]:
         """Return the current definition together with its tasks and relations."""
-        cache_key = (project_code, process_definition_code)
-        cached = self._process_definition_details.get(cache_key)
-        if cached is not None:
-            return cached
         result = self.request(
             "GET",
             f"/projects/{project_code}/process-definition/{process_definition_code}",
         )
-        details = dict(result or {})
-        self._process_definition_details[cache_key] = details
-        return details
+        return dict(result or {})
 
     def start_process_instance(
         self,

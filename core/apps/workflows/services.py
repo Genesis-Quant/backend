@@ -7,8 +7,8 @@ import json
 import logging
 import shutil
 import time
-from copy import deepcopy
 from collections.abc import Sequence
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,9 +18,9 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from config import DolphinSchedulerSettings
+from core.apps.admin.models import IncrementalWorkflowRun
 from core.apps.backtest.models import BacktestWorkflowRun
 from core.apps.factor.models import FactorWorkflowRun
-from core.apps.incremental.models import IncrementalWorkflowRun
 from core.apps.query.models import QueryWorkflowRun
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import (
@@ -30,33 +30,36 @@ from core.apps.workflows.artifacts import (
     workspace_input_file,
     workspace_output_directory,
 )
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun, utc_now
+from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.apps.workflows.schemas import WorkflowAction
 from core.database.session import database_engine, database_session_factory
+from core.scheduler.applications.incremental import (
+    ensure_incremental_workflow_definition,
+    normalize_incremental_channel,
+    normalize_incremental_workers,
+)
 from core.scheduler.client import DolphinSchedulerClient
 from core.scheduler.domain import (
     APPLICATION_START_PARAMETERS,
     FAILURE_STATES,
     INCREMENTAL_START_PARAMETERS,
     TERMINAL_STATES,
+    RunApplication,
     validate_start_parameters,
 )
 from core.scheduler.errors import DolphinSchedulerError
-from core.scheduler.incremental import (
-    normalize_incremental_channel,
-    normalize_incremental_workers,
-)
+from core.scheduler.metadata import workflow_definition_details
 from core.scheduler.workflows import (
-    ensure_incremental_workflow_definition,
     ensure_workflow_definition,
 )
 from core.utils.results import delete_result_objects
+from core.utils.time import utc_now
 
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
 POLLER_LOCK_ID = 280284398913
 SUBMISSION_ACTIVE_STATES = frozenset({"CREATED", "SUBMITTING", "SUBMITTED"})
-RUN_MODELS = {
+RUN_MODELS: dict[RunApplication, type[WorkflowRun]] = {
     "query": QueryWorkflowRun,
     "factor": FactorWorkflowRun,
     "backtest": BacktestWorkflowRun,
@@ -141,7 +144,7 @@ def prepare_run_workspace(
 class WorkflowExecutionService:
     def __init__(
         self,
-        application: str,
+        application: RunApplication,
         model: type[WorkflowRun],
         submission_attempts: int = 40,
         submission_interval: float = 0.25,
@@ -221,10 +224,13 @@ class WorkflowExecutionService:
                 raise RuntimeError(
                     f"{self.application} 工作流缺少运行所需的输入或输出路径"
                 )
+            if self.application == "incremental":
+                raise RuntimeError("增量更新必须使用专用提交方法")
 
             project_code, definition = ensure_workflow_definition(self.application)
+            definition_code = int(definition["code"])
             run.project_code = project_code
-            run.workflow_definition_code = int(definition["code"])
+            run.workflow_definition_code = definition_code
             run.workflow_name = str(definition["name"])
             start_parameters = validate_start_parameters(
                 {
@@ -255,7 +261,7 @@ class WorkflowExecutionService:
             with DolphinSchedulerClient() as client:
                 client.start_process_instance(
                     project_code=project_code,
-                    process_definition_code=run.workflow_definition_code,
+                    process_definition_code=definition_code,
                     start_params=start_parameters,
                 )
                 set_submission_state(run, "SUBMITTED")
@@ -412,13 +418,15 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
         session.flush()
         run_id = run.id
         submission: Any = None
+        run_directory: Path | None = None
         try:
             run_directory = workspace_directory("incremental", run.workspace_key)
             output_dir = workspace_output_directory("incremental", run.workspace_key)
             output_dir.mkdir(parents=True, exist_ok=False)
             project_code, definition = ensure_incremental_workflow_definition()
+            definition_code = int(definition["code"])
             run.project_code = project_code
-            run.workflow_definition_code = int(definition["code"])
+            run.workflow_definition_code = definition_code
             run.workflow_name = str(definition["name"])
             start_parameters = validate_start_parameters(
                 {
@@ -435,7 +443,7 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
             with DolphinSchedulerClient() as client:
                 submission = client.start_process_instance(
                     project_code=project_code,
-                    process_definition_code=run.workflow_definition_code,
+                    process_definition_code=definition_code,
                     start_params=start_parameters,
                     failure_strategy="CONTINUE",
                 )
@@ -452,7 +460,7 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
                     set_submission_state(failed_run, "SUBMIT_FAILED")
                 failed_run.error = str(error)
                 session.commit()
-            elif run_directory.exists():
+            elif run_directory is not None and run_directory.exists():
                 shutil.rmtree(run_directory)
             raise
 
@@ -499,7 +507,26 @@ class WorkflowGatewayService:
             )
             synchronize_workflow_state(client, run, workflow, scheduler_instance)
             session.commit()
-            return workflow_information(client, run, workflow)
+            return workflow_status_information(run, workflow)
+
+    def detail(
+        self,
+        session: Session,
+        user: User,
+        workflow_instance_id: int,
+    ) -> dict[str, Any]:
+        workflow, run = self.find_accessible_workflow(session, user, workflow_instance_id)
+        return workflow_information(run, workflow)
+
+    def tasks(
+        self,
+        session: Session,
+        user: User,
+        workflow_instance_id: int,
+    ) -> dict[str, Any]:
+        workflow, run = self.find_accessible_workflow(session, user, workflow_instance_id)
+        with DolphinSchedulerClient() as client:
+            return workflow_tasks(client, run, workflow)
 
     def list(
         self,
@@ -575,12 +602,12 @@ class WorkflowGatewayService:
             synchronization_error = None
             try:
                 synchronized = self.executors[run.application].synchronize(session, run, client=client)
-                information = workflow_information(client, run, synchronized or workflow)
+                information = workflow_status_information(run, synchronized or workflow)
             except DolphinSchedulerError as error:
                 synchronization_error = str(error)
                 session.rollback()
                 workflow, run = self.find_accessible_workflow(session, user, workflow_instance_id)
-                information = workflow_information(None, run, workflow)
+                information = workflow_status_information(run, workflow)
         return {
             "action": action,
             "scheduler_submission": submission,
@@ -700,7 +727,7 @@ class WorkflowGatewayService:
                     if failed_run is not None:
                         failed_run.error = str(error)
                         session.commit()
-                    LOGGER.exception("同步 %s workflow run %s 失败: %s", run.application, run_id, error)
+                    LOGGER.exception("同步 %s workflow run %s 失败", run.application, run_id)
         return synchronized
 
 
@@ -729,31 +756,56 @@ def current_workflow_instance(session: Session, run_id: int) -> WorkflowInstance
     )
 
 
-def workflow_information(
-    client: DolphinSchedulerClient | None,
+def workflow_run_state(session: Session, run: WorkflowRun) -> str:
+    workflow = current_workflow_instance(session, run.id)
+    return workflow.state if workflow is not None else run.submission_state
+
+
+def workflow_status_information(
     run: WorkflowRun,
     workflow: WorkflowInstance,
 ) -> dict[str, Any]:
-    tasks = live_workflow_tasks(client, run, workflow) if client is not None else []
     return {
-        "application": run.application,
-        "record_id": run.id,
-        "user_id": run.user_id,
         "workflow_instance_id": workflow.workflow_instance_id,
-        "project_code": int(run.project_code or 0),
-        "workflow_definition_code": int(run.workflow_definition_code or 0),
-        "workflow_name": str(run.workflow_name or ""),
         "state": workflow.state,
-        "tasks": tasks,
         "error": workflow.error or (run.error if workflow.is_current else None),
         "started_at": workflow.started_at,
         "finished_at": workflow.finished_at,
         "duration_seconds": workflow.duration_seconds,
         "last_synced_at": workflow.last_synced_at,
+    }
+
+
+def workflow_information(run: WorkflowRun, workflow: WorkflowInstance) -> dict[str, Any]:
+    definition = workflow_definition_details(int(run.workflow_definition_code or 0))
+    return {
+        **workflow_status_information(run, workflow),
+        "application": run.application,
+        "record_id": run.id,
+        "user_id": run.user_id,
+        "project_code": int(run.project_code or 0),
+        "workflow_definition_code": int(run.workflow_definition_code or 0),
+        "workflow_name": str(run.workflow_name or ""),
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
+        "task_count": len(definition.get("taskDefinitionList") or []),
+        "payload": workflow.payload_snapshot if isinstance(workflow.payload_snapshot, dict) else run.payload,
+        "requested_outputs": workflow.requested_outputs_snapshot if isinstance(workflow.requested_outputs_snapshot, list) else run.requested_outputs or [],
         "state_history": workflow.state_history or [],
         "events": run.events or [],
+    }
+
+
+def workflow_tasks(
+    client: DolphinSchedulerClient,
+    run: WorkflowRun,
+    workflow: WorkflowInstance,
+) -> dict[str, Any]:
+    return {
+        "workflow_instance_id": workflow.workflow_instance_id,
+        "state": workflow.state,
+        "error": workflow.error or (run.error if workflow.is_current else None),
+        "tasks": live_workflow_tasks(client, run, workflow),
     }
 
 
@@ -765,19 +817,21 @@ def workflow_list_item(
     tasks_error: str | None = None,
 ) -> dict[str, Any]:
     return {
-        **workflow_information(client, run, workflow),
+        "application": run.application,
+        "record_id": run.id,
+        "user_id": run.user_id,
+        "workflow_instance_id": workflow.workflow_instance_id,
+        "workflow_definition_code": int(run.workflow_definition_code or 0),
+        "workflow_name": str(run.workflow_name or ""),
+        "state": workflow.state,
+        "tasks": live_workflow_tasks(client, run, workflow) if client is not None else [],
+        "error": workflow.error or (run.error if workflow.is_current else None),
+        "started_at": workflow.started_at,
+        "finished_at": workflow.finished_at,
+        "duration_seconds": workflow.duration_seconds,
+        "created_at": workflow.created_at,
         "project_id": run.source_project_id,
         "owner_username": username,
-        "payload": (
-            workflow.payload_snapshot
-            if isinstance(workflow.payload_snapshot, dict)
-            else run.payload
-        ),
-        "requested_outputs": (
-            workflow.requested_outputs_snapshot
-            if isinstance(workflow.requested_outputs_snapshot, list)
-            else run.requested_outputs or []
-        ),
         "tasks_error": tasks_error,
     }
 
@@ -791,9 +845,8 @@ def live_workflow_tasks(
         project_code=int(run.project_code or 0),
         process_instance_id=workflow.workflow_instance_id,
     )
-    definition = client.process_definition_details(
-        int(run.project_code or 0),
-        int(run.workflow_definition_code or 0),
+    definition = workflow_definition_details(
+        int(run.workflow_definition_code or 0)
     )
     return workflow_task_information(instances, definition)
 

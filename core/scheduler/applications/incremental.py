@@ -1,4 +1,4 @@
-"""Incremental data update workflow definition."""
+"""Incremental data-update workflow definition and input normalization."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from runtime.workers.registry import (
 from config import DolphinSchedulerSettings
 from core.scheduler.domain import INCREMENTAL_START_PARAMETERS
 from core.scheduler.errors import DolphinSchedulerError
+from core.scheduler.metadata import workflow_definition
 from core.scheduler.task_groups import ensure_incremental_task_group
 
 INCREMENTAL_WORKERS = WORKER_ORDER
@@ -39,6 +40,11 @@ def create_incremental_update_workflow() -> dict[str, Any]:
     }
 
 
+def ensure_incremental_workflow_definition() -> tuple[int, dict[str, Any]]:
+    """Return the incremental definition loaded during backend startup."""
+    return workflow_definition(DolphinSchedulerSettings.WORKFLOW_NAME)
+
+
 def submit_incremental_update_workflow(
     *,
     task_group_id: int,
@@ -51,7 +57,10 @@ def submit_incremental_update_workflow(
         from pydolphinscheduler.tasks.condition import SUCCESS, And, Condition
         from pydolphinscheduler.tasks.python import Python
         from pydolphinscheduler.tasks.shell import Shell
+    except (ImportError, OSError) as error:
+        raise DolphinSchedulerError(str(error)) from error
 
+    try:
         workflow = Workflow(
             name=DolphinSchedulerSettings.WORKFLOW_NAME,
             description="Arena Runtime 全量增量更新任务",

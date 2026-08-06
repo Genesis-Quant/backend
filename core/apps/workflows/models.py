@@ -1,6 +1,6 @@
 """Application runs and their DolphinScheduler workflow instances."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -20,12 +20,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from core.apps.workflows.artifacts import new_workspace_key
 from core.database.base import Base
+from core.utils.time import utc_now
 
 JSON_VALUE = JSON().with_variant(JSONB(), "postgresql")
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 class WorkflowRun(Base):

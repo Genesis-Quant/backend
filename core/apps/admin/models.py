@@ -1,4 +1,4 @@
-"""Incremental-update workflow submissions."""
+"""Administrator-owned workflow models."""
 
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column

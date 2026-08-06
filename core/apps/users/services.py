@@ -10,8 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 
-from core.apps.users.models import User
 from config import AuthenticationSettings
+from core.apps.users.models import User
 from core.database.session import get_database_session
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -28,19 +28,25 @@ def verify_password(password: str, password_hash: str) -> bool:
 def create_access_token(user: User) -> str:
     now = datetime.now(UTC)
     expires = now + timedelta(days=AuthenticationSettings.JWT_EXPIRE_DAYS)
-    return jwt.encode({"sub": str(user.id), "username": user.username, "iat": now, "exp": expires}, AuthenticationSettings.JWT_SECRET, algorithm="HS256")
+    return jwt.encode({"sub": str(user.id), "username": user.username, "iat": now, "exp": expires}, jwt_secret(), algorithm="HS256")
 
 
 def validate_security_configuration() -> None:
-    if not AuthenticationSettings.JWT_SECRET or len(AuthenticationSettings.JWT_SECRET) < 32:
-        raise ValueError("ARENA_JWT_SECRET 必须至少包含 32 个字符")
+    jwt_secret()
     if AuthenticationSettings.JWT_EXPIRE_DAYS <= 0:
         raise ValueError("ARENA_JWT_EXPIRE_DAYS 必须是正整数")
 
 
+def jwt_secret() -> str:
+    secret = AuthenticationSettings.JWT_SECRET
+    if not secret or len(secret) < 32:
+        raise ValueError("ARENA_JWT_SECRET 必须至少包含 32 个字符")
+    return secret
+
+
 def decode_user_id(token: str) -> int:
     try:
-        payload = jwt.decode(token, AuthenticationSettings.JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, jwt_secret(), algorithms=["HS256"])
         return int(payload["sub"])
     except (InvalidTokenError, KeyError, TypeError, ValueError) as error:
         raise authentication_error() from error

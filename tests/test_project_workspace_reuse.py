@@ -15,14 +15,22 @@ from core.apps.backtest.models import (
 )
 from core.apps.backtest.services import (
     OUTPUT_FILES as BACKTEST_OUTPUT_FILES,
+)
+from core.apps.backtest.services import (
     PROJECT_OUTPUTS as BACKTEST_PROJECT_OUTPUTS,
+)
+from core.apps.backtest.services import (
     create_backtest_version,
     submit_project_backtest,
 )
 from core.apps.factor.models import FactorProject, FactorVersion, FactorWorkflowRun
 from core.apps.factor.services import (
     OUTPUT_FILES as FACTOR_OUTPUT_FILES,
+)
+from core.apps.factor.services import (
     PROJECT_OUTPUTS as FACTOR_PROJECT_OUTPUTS,
+)
+from core.apps.factor.services import (
     create_factor_version,
     submit_project_analysis,
 )

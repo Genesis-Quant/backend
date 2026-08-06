@@ -7,7 +7,6 @@ from runtime import BacktestParameters
 from core.apps.backtest.schemas import BacktestWorkflowCreate
 from core.apps.backtest.services import public_parameters
 
-
 CALLBACKS = {
     "initialize": "def initialize(mutable context) { return NULL }",
     "beforeTrading": "def beforeTrading(mutable context) { return NULL }",

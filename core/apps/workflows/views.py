@@ -13,6 +13,8 @@ from core.apps.workflows.schemas import (
     WorkflowDeletedResponse,
     WorkflowInformation,
     WorkflowListResponse,
+    WorkflowStatusInformation,
+    WorkflowTasks,
 )
 from core.apps.workflows.services import WorkflowGatewayService
 from core.database.session import get_database_session
@@ -31,7 +33,7 @@ def list_workflows(
     application: Literal["query", "factor", "backtest", "incremental"] | None = None,
     state: Literal["active", "success", "failure"] | None = None,
 ) -> WorkflowListResponse:
-    return WorkflowGatewayService().list(session, user, page, page_size, application, state)
+    return WorkflowListResponse.model_validate(WorkflowGatewayService().list(session, user, page, page_size, application, state))
 
 
 @router.get("/{workflow_instance_id}", response_model=WorkflowInformation)
@@ -41,7 +43,31 @@ def get_workflow(
     session: Annotated[Session, Depends(get_database_session)],
 ) -> WorkflowInformation:
     try:
-        return WorkflowGatewayService().status(session, user, workflow_instance_id)
+        return WorkflowInformation.model_validate(WorkflowGatewayService().detail(session, user, workflow_instance_id))
+    except (DolphinSchedulerError, FileNotFoundError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/{workflow_instance_id}/status", response_model=WorkflowStatusInformation)
+def get_workflow_status(
+    workflow_instance_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> WorkflowStatusInformation:
+    try:
+        return WorkflowStatusInformation.model_validate(WorkflowGatewayService().status(session, user, workflow_instance_id))
+    except (DolphinSchedulerError, FileNotFoundError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/{workflow_instance_id}/tasks", response_model=WorkflowTasks)
+def get_workflow_tasks(
+    workflow_instance_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> WorkflowTasks:
+    try:
+        return WorkflowTasks.model_validate(WorkflowGatewayService().tasks(session, user, workflow_instance_id))
     except (DolphinSchedulerError, FileNotFoundError) as error:
         raise_api_http_error(error)
 
@@ -57,7 +83,7 @@ def control_workflow(
     session: Annotated[Session, Depends(get_database_session)],
 ) -> WorkflowActionResponse:
     try:
-        return WorkflowGatewayService().control(session, user, workflow_instance_id, action)
+        return WorkflowActionResponse.model_validate(WorkflowGatewayService().control(session, user, workflow_instance_id, action))
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError) as error:
         raise_api_http_error(error)
 
@@ -69,6 +95,6 @@ def delete_workflow(
     session: Annotated[Session, Depends(get_database_session)],
 ) -> WorkflowDeletedResponse:
     try:
-        return WorkflowGatewayService().delete(session, user, workflow_instance_id)
+        return WorkflowDeletedResponse.model_validate(WorkflowGatewayService().delete(session, user, workflow_instance_id))
     except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)

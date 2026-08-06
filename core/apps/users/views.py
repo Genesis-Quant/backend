@@ -7,10 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from core.database.session import get_database_session
 from core.apps.users.models import User
 from core.apps.users.schemas import AuthenticationResponse, Credentials, UserResponse
-from core.apps.users.services import create_access_token, get_current_user, hash_password, verify_password
+from core.apps.users.services import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    verify_password,
+)
+from core.database.session import get_database_session
 
 router = APIRouter(prefix="/api/v1")
 

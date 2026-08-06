@@ -39,6 +39,23 @@ class WorkflowInputPayload(WorkflowStartPayload):
     input_json: dict[str, Any]
 
 
+class WorkflowStatusInformation(BaseModel):
+    workflow_instance_id: int
+    state: str
+    error: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: float | None
+    last_synced_at: datetime | None
+
+
+class WorkflowTasks(BaseModel):
+    workflow_instance_id: int
+    state: str
+    error: str | None
+    tasks: list[WorkflowTaskInformation]
+
+
 class WorkflowInformation(BaseModel):
     application: Literal["query", "factor", "backtest", "incremental"]
     record_id: int
@@ -48,7 +65,6 @@ class WorkflowInformation(BaseModel):
     workflow_definition_code: int
     workflow_name: str
     state: str
-    tasks: list[WorkflowTaskInformation]
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -56,15 +72,29 @@ class WorkflowInformation(BaseModel):
     last_synced_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    task_count: int
+    payload: WorkflowInputPayload | WorkflowStartPayload
+    requested_outputs: list[str]
     state_history: list[dict[str, Any]]
     events: list[dict[str, Any]]
 
 
-class WorkflowListItem(WorkflowInformation):
+class WorkflowListItem(BaseModel):
+    application: Literal["query", "factor", "backtest", "incremental"]
+    record_id: int
+    user_id: int
+    workflow_instance_id: int
+    workflow_definition_code: int
+    workflow_name: str
+    state: str
+    tasks: list[WorkflowTaskInformation]
+    error: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: float | None
+    created_at: datetime
     project_id: int | None
     owner_username: str
-    payload: WorkflowInputPayload | WorkflowStartPayload
-    requested_outputs: list[str]
     tasks_error: str | None = None
 
 
@@ -79,7 +109,7 @@ class WorkflowActionResponse(BaseModel):
     action: WorkflowAction
     scheduler_submission: Any
     synchronization_error: str | None = None
-    workflow: WorkflowInformation
+    workflow: WorkflowStatusInformation
 
 
 class WorkflowDeletedResponse(BaseModel):

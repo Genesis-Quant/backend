@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 from botocore.exceptions import BotoCoreError, ClientError
 from runtime.utils.storage import ObjectStorage, ObjectStorageConfigurationError
@@ -25,7 +25,6 @@ from core.apps.workflows.artifacts import (
     uses_cloud_output,
     validate_workspace_key,
     workspace_directory,
-    workspace_output_prefix,
 )
 from core.apps.workflows.models import WorkflowInstance, WorkflowRun
 from core.apps.workflows.services import (
@@ -33,12 +32,43 @@ from core.apps.workflows.services import (
     current_workflow_instance,
     workflow_start_parameters,
 )
+from core.scheduler.applications import create_application_workflows
+from core.scheduler.applications.incremental import (
+    create_incremental_update_workflow,
+    incremental_worker_options,
+)
 from core.scheduler.client import DolphinSchedulerClient
 from core.scheduler.domain import FAILURE_STATES, TERMINAL_STATES
 from core.scheduler.errors import DolphinSchedulerError
-from core.scheduler.incremental import incremental_worker_options
-from core.scheduler.workflows import ensure_all_workflows
+from core.scheduler.metadata import (
+    initialize_workflow_metadata,
+    scheduler_project_code,
+    workflow_definitions,
+)
+from core.scheduler.workflows import WORKFLOW_LOCK
 from core.utils.results import delete_cloud_result_objects
+
+
+class WorkspaceUsage(TypedDict):
+    application: str
+    workspace_key: str
+    path: str
+    file_count: int
+    size_bytes: int
+    modified_at: datetime | None
+    storage_modes: NotRequired[set[str]]
+    storage: NotRequired[str]
+    orphaned: NotRequired[bool]
+    workflow_run_id: NotRequired[int | None]
+    project_id: NotRequired[int | None]
+    project_title: NotRequired[str | None]
+
+
+class ApplicationUsage(TypedDict):
+    application: str
+    workspace_count: int
+    file_count: int
+    total_bytes: int
 
 
 class AdminService:
@@ -57,9 +87,9 @@ class AdminService:
         except (BotoCoreError, ClientError, ObjectStorageConfigurationError, OSError, ValueError) as error:
             return empty_output_storage(mode, output_storage_root(mode), str(error))
         enriched = enrich_workspace_ownership(session, workspaces)
-        applications: dict[str, dict[str, object]] = {}
+        applications: dict[str, ApplicationUsage] = {}
         for workspace in enriched:
-            application = str(workspace["application"])
+            application = workspace["application"]
             summary = applications.setdefault(
                 application,
                 {
@@ -69,9 +99,9 @@ class AdminService:
                     "total_bytes": 0,
                 },
             )
-            summary["workspace_count"] = int(summary["workspace_count"]) + 1
-            summary["file_count"] = int(summary["file_count"]) + int(workspace["file_count"])
-            summary["total_bytes"] = int(summary["total_bytes"]) + int(workspace["size_bytes"])
+            summary["workspace_count"] += 1
+            summary["file_count"] += workspace["file_count"]
+            summary["total_bytes"] += workspace["size_bytes"]
         return {
             "available": True,
             "error": None,
@@ -79,18 +109,18 @@ class AdminService:
             "root": root,
             "workspace_count": len(enriched),
             "orphan_workspace_count": sum(bool(item["orphaned"]) for item in enriched),
-            "file_count": sum(int(item["file_count"]) for item in enriched),
-            "total_bytes": sum(int(item["size_bytes"]) for item in enriched),
+            "file_count": sum(item["file_count"] for item in enriched),
+            "total_bytes": sum(item["size_bytes"] for item in enriched),
             "applications": sorted(
                 applications.values(),
-                key=lambda item: (-int(item["total_bytes"]), str(item["application"])),
+                key=lambda item: (-item["total_bytes"], item["application"]),
             ),
             "workspaces": sorted(
                 enriched,
                 key=lambda item: (
                     not bool(item["orphaned"]),
-                    -int(item["size_bytes"]),
-                    str(item["path"]),
+                    -item["size_bytes"],
+                    item["path"],
                 ),
             ),
         }
@@ -137,7 +167,24 @@ class AdminService:
 
     @staticmethod
     def ensure_workflows() -> dict[str, Any]:
-        return ensure_all_workflows()
+        with WORKFLOW_LOCK:
+            application_result = create_application_workflows()
+            incremental_result = create_incremental_update_workflow()
+            initialize_workflow_metadata()
+        return {
+            "project_name": DolphinSchedulerSettings.PROJECT_NAME,
+            "workflows": {
+                **application_result["workflows"],
+                "incremental-update": {
+                    "name": incremental_result["name"],
+                    "code": incremental_result["workflow_code"],
+                    "worker_task_count": incremental_result["worker_task_count"],
+                    "control_task_count": incremental_result["control_task_count"],
+                    "task_count": incremental_result["task_count"],
+                    "task_group": incremental_result["task_group"],
+                },
+            },
+        }
 
     @staticmethod
     def run_incremental_update(
@@ -170,18 +217,38 @@ class AdminService:
 
     @staticmethod
     def user_summary(session: Session) -> dict[str, int]:
+        total, administrators = session.execute(
+            select(
+                func.count(User.id),
+                func.count(User.id).filter(User.is_admin.is_(True)),
+            )
+        ).one()
         return {
-            "total": int(session.scalar(select(func.count()).select_from(User)) or 0),
-            "administrators": int(session.scalar(select(func.count()).select_from(User).where(User.is_admin.is_(True))) or 0),
+            "total": int(total),
+            "administrators": int(administrators),
         }
 
     @staticmethod
     def workflow_summary(session: Session) -> dict[str, int]:
+        total, active, success, failure = session.execute(
+            select(
+                func.count(WorkflowInstance.workflow_instance_id),
+                func.count(WorkflowInstance.workflow_instance_id).filter(
+                    WorkflowInstance.state.not_in(TERMINAL_STATES)
+                ),
+                func.count(WorkflowInstance.workflow_instance_id).filter(
+                    WorkflowInstance.state.in_(("SUCCESS", "FORCED_SUCCESS"))
+                ),
+                func.count(WorkflowInstance.workflow_instance_id).filter(
+                    WorkflowInstance.state.in_(FAILURE_STATES)
+                ),
+            )
+        ).one()
         return {
-            "total": count_workflows(session),
-            "active": count_workflows(session, WorkflowInstance.state.not_in(TERMINAL_STATES)),
-            "success": count_workflows(session, WorkflowInstance.state.in_(("SUCCESS", "FORCED_SUCCESS"))),
-            "failure": count_workflows(session, WorkflowInstance.state.in_(FAILURE_STATES)),
+            "total": int(total),
+            "active": int(active),
+            "success": int(success),
+            "failure": int(failure),
         }
 
     @staticmethod
@@ -198,22 +265,11 @@ class AdminService:
         }
         try:
             with DolphinSchedulerClient() as client:
-                project_code = client.project_code(DolphinSchedulerSettings.PROJECT_NAME)
-                if project_code is None:
-                    raise DolphinSchedulerError(f"DolphinScheduler 项目不存在: {DolphinSchedulerSettings.PROJECT_NAME}")
-                workflow_names = [
-                    *DolphinSchedulerSettings.APPLICATION_WORKFLOW_NAMES.values(),
-                    DolphinSchedulerSettings.WORKFLOW_NAME,
-                ]
-                definitions = [
-                    definition
-                    for name in workflow_names
-                    if (definition := client.process_definition(project_code, name)) is not None
-                ]
+                project_code = scheduler_project_code()
                 base.update({
                     "available": True,
                     "project_code": project_code,
-                    "workflows": [workflow_definition_information(item) for item in definitions],
+                    "workflows": [workflow_definition_information(item) for item in workflow_definitions()],
                     "task_groups": [task_group_information(item) for item in client.task_groups(project_code=project_code)],
                     "worker_groups": client.worker_groups(),
                     "workers": [worker_information(item) for item in client.workers()],
@@ -222,13 +278,6 @@ class AdminService:
         except DolphinSchedulerError as error:
             base["error"] = str(error)
         return base
-
-
-def count_workflows(session: Session, *conditions: Any) -> int:
-    statement = select(func.count()).select_from(WorkflowInstance)
-    if conditions:
-        statement = statement.where(*conditions)
-    return int(session.scalar(statement) or 0)
 
 
 def workflow_definition_information(definition: dict[str, Any]) -> dict[str, Any]:
@@ -292,7 +341,7 @@ def optional_float(value: Any) -> float | None:
     return float(value) if value is not None else None
 
 
-def output_workspaces() -> tuple[str, list[dict[str, object]]]:
+def output_workspaces() -> tuple[str, list[WorkspaceUsage]]:
     local_root, local = local_output_workspaces()
     if not ArenaSettings.SHARED_CLOUD:
         return local_root, finalize_workspace_storage(local)
@@ -300,11 +349,11 @@ def output_workspaces() -> tuple[str, list[dict[str, object]]]:
     return cloud_root, finalize_workspace_storage(merge_workspace_usage(local, cloud))
 
 
-def local_output_workspaces() -> tuple[str, list[dict[str, object]]]:
+def local_output_workspaces() -> tuple[str, list[WorkspaceUsage]]:
     root = ArenaSettings.SHARED_DIR.resolve()
     if not root.is_dir():
         raise OSError(f"共享输出目录不存在: {root}")
-    workspaces: list[dict[str, object]] = []
+    workspaces: list[WorkspaceUsage] = []
     for application in sorted(WORKSPACE_APPLICATIONS):
         application_directory = root / application
         if application_directory.is_symlink() or not application_directory.is_dir():
@@ -327,7 +376,7 @@ def local_output_workspaces() -> tuple[str, list[dict[str, object]]]:
                 "file_count": file_count,
                 "size_bytes": size_bytes,
                 "modified_at": modified_at,
-                "_storage_modes": {"local"} if output_directory.is_dir() else set(),
+                "storage_modes": {"local"} if output_directory.is_dir() else set(),
             })
     return str(root), workspaces
 
@@ -361,10 +410,10 @@ def directory_output_usage(
     return file_count, size_bytes, modified_at
 
 
-def cloud_output_workspaces() -> tuple[str, list[dict[str, object]]]:
+def cloud_output_workspaces() -> tuple[str, list[WorkspaceUsage]]:
     storage = ObjectStorage.from_env()
     prefix = f"{storage.root_folder}/" if storage.root_folder else ""
-    workspaces: dict[tuple[str, str], dict[str, object]] = {}
+    workspaces: dict[tuple[str, str], WorkspaceUsage] = {}
     try:
         paginator = storage.client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=storage.bucket, Prefix=prefix):
@@ -395,12 +444,10 @@ def cloud_output_workspaces() -> tuple[str, list[dict[str, object]]]:
                     "file_count": 0,
                     "size_bytes": 0,
                     "modified_at": None,
-                    "_storage_modes": {"cloud"},
+                    "storage_modes": {"cloud"},
                 })
-                workspace["file_count"] = int(workspace["file_count"]) + 1
-                workspace["size_bytes"] = int(workspace["size_bytes"]) + int(
-                    item.get("Size") or 0
-                )
+                workspace["file_count"] += 1
+                workspace["size_bytes"] += int(item.get("Size") or 0)
                 workspace["modified_at"] = latest_datetime(
                     workspace["modified_at"],
                     modified_at,
@@ -411,36 +458,35 @@ def cloud_output_workspaces() -> tuple[str, list[dict[str, object]]]:
 
 
 def merge_workspace_usage(
-    *collections: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    merged: dict[tuple[str, str], dict[str, object]] = {}
+    *collections: list[WorkspaceUsage],
+) -> list[WorkspaceUsage]:
+    merged: dict[tuple[str, str], WorkspaceUsage] = {}
     for collection in collections:
         for item in collection:
             identity = (str(item["application"]), str(item["workspace_key"]))
             current = merged.get(identity)
             if current is None:
-                merged[identity] = {
-                    **item,
-                    "_storage_modes": set(item["_storage_modes"]),
-                }
+                copied = item.copy()
+                copied["storage_modes"] = set(item.get("storage_modes", set()))
+                merged[identity] = copied
                 continue
-            current["file_count"] = int(current["file_count"]) + int(item["file_count"])
-            current["size_bytes"] = int(current["size_bytes"]) + int(item["size_bytes"])
+            current["file_count"] += item["file_count"]
+            current["size_bytes"] += item["size_bytes"]
             current["modified_at"] = latest_datetime(
                 current["modified_at"],
                 item["modified_at"],
             )
-            current["_storage_modes"] = set(current["_storage_modes"]) | set(
-                item["_storage_modes"]
+            current["storage_modes"] = set(current.get("storage_modes", set())) | set(
+                item.get("storage_modes", set())
             )
     return list(merged.values())
 
 
 def finalize_workspace_storage(
-    workspaces: list[dict[str, object]],
-) -> list[dict[str, object]]:
+    workspaces: list[WorkspaceUsage],
+) -> list[WorkspaceUsage]:
     for workspace in workspaces:
-        modes = set(workspace.pop("_storage_modes"))
+        modes = workspace.pop("storage_modes", set())
         if not modes:
             modes.add(
                 "cloud"
@@ -453,8 +499,8 @@ def finalize_workspace_storage(
 
 def enrich_workspace_ownership(
     session: Session,
-    workspaces: list[dict[str, object]],
-) -> list[dict[str, object]]:
+    workspaces: list[WorkspaceUsage],
+) -> list[WorkspaceUsage]:
     keys = [str(item["workspace_key"]) for item in workspaces]
     runs = (
         list(session.scalars(select(WorkflowRun).where(WorkflowRun.workspace_key.in_(keys))))
@@ -466,7 +512,7 @@ def enrich_workspace_ownership(
         for run in runs
     }
     project_titles = source_project_titles(session, runs)
-    enriched: list[dict[str, object]] = []
+    enriched: list[WorkspaceUsage] = []
     for workspace in workspaces:
         identity = (
             str(workspace["application"]),
@@ -474,17 +520,16 @@ def enrich_workspace_ownership(
         )
         run = run_by_workspace.get(identity)
         project_id = run.source_project_id if run is not None else None
-        enriched.append({
-            **workspace,
-            "orphaned": run is None,
-            "workflow_run_id": run.id if run is not None else None,
-            "project_id": project_id,
-            "project_title": (
-                project_titles.get((run.application, project_id))
-                if run is not None and project_id is not None
-                else None
-            ),
-        })
+        item = workspace.copy()
+        item["orphaned"] = run is None
+        item["workflow_run_id"] = run.id if run is not None else None
+        item["project_id"] = project_id
+        item["project_title"] = (
+            project_titles.get((run.application, project_id))
+            if run is not None and project_id is not None
+            else None
+        )
+        enriched.append(item)
     return enriched
 
 

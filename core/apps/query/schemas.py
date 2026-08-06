@@ -6,28 +6,19 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.query.schema import FactorQuery
 
-from core.utils.results import ResultFile
+from core.apps.schemas import WorkflowReference, WorkflowSummary
 from core.utils.validation import normalize_text, validate_outputs
+
+type QueryOutput = Literal["source_data", "computed_data", "filtered_data", "data"]
 
 
 class QueryWorkflowCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_query: FactorQuery
-    output: list[Literal["source_data", "computed_data", "filtered_data", "data"]] = (
-        Field(min_length=1)
-    )
+    output: list[QueryOutput] = Field(min_length=1)
 
     validate_output = field_validator("output")(validate_outputs)
-
-
-class QueryWorkflowSubmitted(BaseModel):
-    record_id: int
-    workflow_instance_id: int
-
-
-class QueryResultFile(ResultFile):
-    name: Literal["source_data", "computed_data", "filtered_data", "data"]
 
 
 class QueryProjectCreate(BaseModel):
@@ -37,26 +28,16 @@ class QueryProjectCreate(BaseModel):
     validate_title = field_validator("title")(normalize_text)
 
 
-class QueryWorkflowSummary(BaseModel):
-    record_id: int
-    workflow_instance_id: int | None
-    state: str
-    error: str | None
-    parameters: FactorQuery
-    updated_at: datetime
-
-
 class QueryProjectItem(BaseModel):
     id: int
     title: str
-    current: QueryWorkflowSummary | None
+    current: WorkflowSummary[FactorQuery] | None
     created_at: datetime
     updated_at: datetime
 
 
-class QueryProjectPage(BaseModel):
-    items: list[QueryProjectItem]
-    page: int
-    page_size: int
-    total: int
-    limit: int
+class QueryProjectListItem(BaseModel):
+    id: int
+    title: str
+    current: WorkflowReference | None
+    updated_at: datetime

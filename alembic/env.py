@@ -8,9 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
+import core.apps.admin.models  # noqa: F401 -- register tables in Base.metadata
 import core.apps.backtest.models  # noqa: F401 -- register tables in Base.metadata
 import core.apps.factor.models  # noqa: F401 -- register tables in Base.metadata
-import core.apps.incremental.models  # noqa: F401 -- register tables in Base.metadata
 import core.apps.query.models  # noqa: F401 -- register tables in Base.metadata
 import core.apps.users.models  # noqa: F401 -- register tables in Base.metadata
 import core.apps.workflows.models  # noqa: F401 -- register tables in Base.metadata

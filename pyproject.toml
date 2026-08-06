@@ -21,7 +21,7 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-arena-runtime = { path = "../runtime" }
+arena-runtime = { path = "../runtime", editable = true }
 
 [dependency-groups]
 dev = [

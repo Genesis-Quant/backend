@@ -18,7 +18,10 @@ class DslCatalog(BaseModel):
     operators: list[DslOperator]
 
 
-def build_dsl_catalog() -> dict[str, Any]:
+DSL_CATALOG: DslCatalog | None = None
+
+
+def initialize_dsl_catalog() -> DslCatalog:
     from runtime.apps.query.schema import Derivative
     from runtime.workers import available_factors
 
@@ -37,4 +40,14 @@ def build_dsl_catalog() -> dict[str, Any]:
             "description": str(schema.get("description") or model.__doc__ or operation).strip(),
             "definition": schema,
         })
-    return {"factors": list(available_factors()), "operators": operators}
+    global DSL_CATALOG
+    DSL_CATALOG = DslCatalog.model_validate(
+        {"factors": list(available_factors()), "operators": operators}
+    )
+    return DSL_CATALOG
+
+
+def dsl_catalog() -> DslCatalog:
+    if DSL_CATALOG is None:
+        raise RuntimeError("DSL Catalog 尚未初始化")
+    return DSL_CATALOG

@@ -1,0 +1,7 @@
+"""Backtest workflow definition."""
+
+from core.scheduler.applications.common import submit_application_workflow
+
+
+def create_backtest_workflow(*, task_group_id: int) -> int:
+    return submit_application_workflow("backtest", task_group_id=task_group_id)

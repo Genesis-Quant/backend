@@ -6,13 +6,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.apps.users.schemas import UserResponse
-from core.scheduler.incremental import (
+from core.scheduler.applications.incremental import (
     normalize_incremental_channel,
     normalize_incremental_workers,
 )
 
 
 class AdminUserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     is_admin: bool
 
 

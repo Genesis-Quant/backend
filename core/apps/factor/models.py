@@ -16,8 +16,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from core.apps.workflows.models import JSON_VALUE, WorkflowRun, utc_now
+from core.apps.workflows.models import JSON_VALUE, WorkflowRun
 from core.database.base import Base
+from core.utils.time import utc_now
 
 
 class FactorProject(Base):
