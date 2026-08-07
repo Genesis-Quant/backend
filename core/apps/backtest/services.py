@@ -38,7 +38,6 @@ PROJECT_OUTPUTS = [
     "daily_portfolios",
     "daily_trading_statistics",
 ]
-INTERNAL_PARAMETER_NAMES = frozenset({"name", "source_ref", "message_ref"})
 PROJECT_SUMMARY_FIELDS = ("totalReturn", "annualReturn", "sharpeRatio", "annualVolatility", "maxDrawdown", "dailyWinningRate")
 
 
@@ -153,7 +152,7 @@ def create_backtest_version(session: Session, user_id: int, project_id: int, wor
         raise RuntimeError(f"工作流状态为 {workflow.state}，成功后才能保存版本")
     backtest_result_files(session, user_id, workflow_instance_id)
     next_version = (session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id)) or 0) + 1
-    version = BacktestVersion(project_id=project.id, workflow_instance_id=workflow.workflow_instance_id, version=next_version, remark=remark, parameters=public_parameters(workflow_input_json(run)), summary=summary)
+    version = BacktestVersion(project_id=project.id, workflow_instance_id=workflow.workflow_instance_id, version=next_version, remark=remark, parameters=workflow_input_json(run), summary=summary)
     session.add(version)
     run.saved = True
     project.updated_at = utc_now()
@@ -250,9 +249,4 @@ def project_information(
 
 
 def serialize_version(version: BacktestVersion) -> dict[str, Any]:
-    return {"id": version.id, "project_id": version.project_id, "workflow_instance_id": version.workflow_instance_id, "version": version.version, "remark": version.remark, "parameters": public_parameters(version.parameters), "summary": version.summary, "created_at": version.created_at}
-
-
-def public_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
-    """Hide obsolete runtime-only values retained in historical JSON records."""
-    return {name: value for name, value in parameters.items() if name not in INTERNAL_PARAMETER_NAMES}
+    return {"id": version.id, "project_id": version.project_id, "workflow_instance_id": version.workflow_instance_id, "version": version.version, "remark": version.remark, "parameters": version.parameters, "summary": version.summary, "created_at": version.created_at}
