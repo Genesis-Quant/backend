@@ -1,6 +1,7 @@
 """Backtest workflow, strategy project, and version schemas."""
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -83,3 +84,74 @@ class BacktestVersionListItem(BaseModel):
     version: int
     remark: str
     created_at: datetime
+
+
+class BatchAnalysisType(StrEnum):
+    FEE_ANALYSIS = "fee_analysis"
+    SENSITIVITY = "sensitivity"
+
+
+class BatchResearchItemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    parameters: dict[str, Any]
+
+
+class BatchResearchCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    analysis_type: BatchAnalysisType
+    project_id: int = Field(gt=0)
+    version: int = Field(gt=0)
+    description: str = Field(default="", max_length=512)
+    items: list[BatchResearchItemCreate] = Field(min_length=1, max_length=100)
+
+class FeeAnalysisCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    rates: list[float] = Field(min_length=1, max_length=100)
+
+    @field_validator("rates")
+    @classmethod
+    def normalize_rates(cls, value: list[float]) -> list[float]:
+        if any(rate < 0 or rate > 1 for rate in value):
+            raise ValueError("手续费率必须位于 0 到 1 之间")
+        rates = sorted(set(value))
+        if not rates:
+            raise ValueError("至少提供一个手续费率")
+        return rates
+
+
+class BatchResearchItemResponse(BaseModel):
+    id: int
+    workflow_run_id: int
+    workflow_instance_id: int | None
+    state: str
+    parameters: dict[str, Any]
+    error: str | None
+
+
+class BatchResearchListItem(BaseModel):
+    id: int
+    analysis_type: BatchAnalysisType
+    analysis_type_label: str
+    project_id: int
+    version: int
+    description: str
+    state: str
+    requested_count: int
+    completed_count: int
+    failed_count: int
+    created_at: datetime
+
+
+class BatchResearchListResponse(BaseModel):
+    items: list[BatchResearchListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class BatchResearchResponse(BatchResearchListItem):
+    error: str | None
+    items: list[BatchResearchItemResponse]

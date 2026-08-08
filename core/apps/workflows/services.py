@@ -58,7 +58,7 @@ from core.utils.time import utc_now
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
 POLLER_LOCK_ID = 280284398913
-SUBMISSION_ACTIVE_STATES = frozenset({"CREATED", "SUBMITTING", "SUBMITTED"})
+SUBMISSION_ACTIVE_STATES = frozenset({"QUEUED", "CREATED", "SUBMITTING", "SUBMITTED"})
 RUN_MODELS: dict[RunApplication, type[WorkflowRun]] = {
     "query": QueryWorkflowRun,
     "factor": FactorWorkflowRun,
@@ -205,6 +205,7 @@ class WorkflowExecutionService:
         run: WorkflowRun,
         *,
         create_directory: bool,
+        wait_for_workflow: bool = True,
     ) -> WorkflowRun:
         run_id = run.id
         run_directory = workspace_directory(
@@ -267,9 +268,10 @@ class WorkflowExecutionService:
                 set_submission_state(run, "SUBMITTED")
                 run.error = None
                 session.commit()
-                self.wait_for_workflow_instance(session, run, client)
+                if wait_for_workflow:
+                    self.wait_for_workflow_instance(session, run, client)
             return run
-        except (DolphinSchedulerError, OSError, ValueError) as error:
+        except (DolphinSchedulerError, OSError, RuntimeError, ValueError) as error:
             session.rollback()
             failed_run = session.get(WorkflowRun, run_id)
             if failed_run is not None:
@@ -716,7 +718,16 @@ class WorkflowGatewayService:
             )
             for run in session.scalars(statement):
                 try:
-                    self.executors[run.application].synchronize(session, run, client=client)
+                    executor = self.executors[run.application]
+                    if run.submission_state == "QUEUED":
+                        executor.submit_run(
+                            session,
+                            run,
+                            create_directory=True,
+                            wait_for_workflow=False,
+                        )
+                    else:
+                        executor.synchronize(session, run, client=client)
                     synchronized += 1
                 except DolphinSchedulerError:
                     continue

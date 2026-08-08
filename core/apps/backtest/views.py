@@ -16,15 +16,24 @@ from core.apps.backtest.schemas import (
     BacktestVersionListItem,
     BacktestVersionResponse,
     BacktestWorkflowCreate,
+    BatchAnalysisType,
+    BatchResearchCreate,
+    BatchResearchListResponse,
+    BatchResearchResponse,
+    FeeAnalysisCreate,
 )
 from core.apps.backtest.services import (
     backtest_result_files,
     backtest_result_response,
+    create_batch_research,
     create_backtest_project,
     create_backtest_version,
+    create_fee_analysis,
     delete_backtest_project,
     get_backtest_project,
     get_backtest_version,
+    get_batch_research,
+    list_batch_research,
     list_backtest_projects,
     list_backtest_versions,
     submit_backtest_workflow,
@@ -140,6 +149,45 @@ def version(project_id: int, version_number: int, user: Annotated[User, Depends(
     try:
         return BacktestVersionResponse.model_validate(get_backtest_version(session, user.id, project_id, version_number))
     except (FileNotFoundError, RuntimeError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/batch-research", response_model=BatchResearchListResponse)
+def batch_researches(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    project_id: int | None = Query(None, gt=0),
+    version: int | None = Query(None, gt=0),
+    analysis_type: BatchAnalysisType | None = Query(None),
+) -> BatchResearchListResponse:
+    return BatchResearchListResponse.model_validate(
+        list_batch_research(session, user, page, page_size, project_id=project_id, version=version, analysis_type=analysis_type)
+    )
+
+
+@router.post("/batch-research", response_model=BatchResearchResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_backtest_research(request: BatchResearchCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
+    try:
+        return BatchResearchResponse.model_validate(create_batch_research(session, user, request))
+    except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/batch-research/{research_id}", response_model=BatchResearchResponse)
+def backtest_research(research_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
+    try:
+        return BatchResearchResponse.model_validate(get_batch_research(session, user, research_id))
+    except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.post("/projects/{project_id}/versions/{version_number}/fee-analysis", response_model=BatchResearchResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_project_fee_analysis(project_id: int, version_number: int, request: FeeAnalysisCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
+    try:
+        return BatchResearchResponse.model_validate(create_fee_analysis(session, user, project_id, version_number, request))
+    except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 
 
