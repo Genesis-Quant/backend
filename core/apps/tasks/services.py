@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from core.apps.tasks.schemas import TaskAction
 from core.apps.users.models import User
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun
+from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
     WorkflowGatewayService,
     task_information,
@@ -25,7 +25,7 @@ class TaskGatewayService:
         limit: int,
     ) -> dict[str, Any]:
         with DolphinSchedulerClient() as client:
-            workflow, _, task = self.find_accessible_task(
+            workflow, _, _, task = self.find_accessible_task(
                 session,
                 user,
                 workflow_instance_id,
@@ -54,7 +54,7 @@ class TaskGatewayService:
         client = DolphinSchedulerClient()
         try:
             client.login()
-            _, run, _ = self.find_accessible_task(
+            _, attempt, _, _ = self.find_accessible_task(
                 session,
                 user,
                 workflow_instance_id,
@@ -62,7 +62,7 @@ class TaskGatewayService:
                 client=client,
             )
             return client.stream_task_log(
-                project_code=int(run.project_code or 0),
+                project_code=int(attempt.project_code or 0),
                 task_instance_id=task_instance_id,
             )
         except Exception:
@@ -78,7 +78,7 @@ class TaskGatewayService:
         action: TaskAction,
     ) -> dict[str, Any]:
         with DolphinSchedulerClient() as client:
-            _, run, task = self.find_accessible_task(
+            _, attempt, _, task = self.find_accessible_task(
                 session,
                 user,
                 workflow_instance_id,
@@ -86,7 +86,7 @@ class TaskGatewayService:
                 client=client,
             )
             submission = client.execute_task_instance(
-                int(run.project_code or 0),
+                int(attempt.project_code or 0),
                 task_instance_id,
                 action.value,
             )
@@ -105,8 +105,8 @@ class TaskGatewayService:
         workflow_instance_id: int,
         task_instance_id: int,
         client: DolphinSchedulerClient | None = None,
-    ) -> tuple[WorkflowInstance, WorkflowRun, dict[str, Any]]:
-        workflow, run = WorkflowGatewayService.find_accessible_workflow(
+    ) -> tuple[WorkflowInstance, WorkflowAttempt, WorkflowWorkspace, dict[str, Any]]:
+        workflow, attempt, workspace = WorkflowGatewayService.find_accessible_workflow(
             session,
             user,
             workflow_instance_id,
@@ -121,7 +121,7 @@ class TaskGatewayService:
                     client=active_client,
                 )
         instances = client.process_instance_tasks(
-            project_code=int(run.project_code or 0),
+            project_code=int(attempt.project_code or 0),
             process_instance_id=workflow.workflow_instance_id,
         )
         instance = next(
@@ -136,4 +136,4 @@ class TaskGatewayService:
             raise FileNotFoundError(
                 f"工作流 {workflow_instance_id} 中不存在 task instance: {task_instance_id}"
             )
-        return workflow, run, task_information({}, instance)
+        return workflow, attempt, workspace, task_information({}, instance)

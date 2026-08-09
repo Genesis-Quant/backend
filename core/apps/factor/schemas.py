@@ -4,22 +4,13 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from runtime.apps.factor.schema import FactorAnalysisParameters
-
-from core.apps.schemas import WorkflowSummary
+from core.apps.schemas import DraftVersionSummary
 from core.utils.validation import (
     normalize_text,
     strip_text,
-    validate_outputs,
 )
 
 type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns"]
-
-
-class FactorWorkflowCreate(FactorAnalysisParameters):
-    output: list[FactorOutput] = Field(min_length=1)
-
-    validate_output = field_validator("output")(validate_outputs)
 
 
 class FactorProjectCreate(BaseModel):
@@ -37,7 +28,7 @@ class FactorProjectItem(BaseModel):
     id: int
     title: str
     latest_version: int | None
-    draft: WorkflowSummary[dict[str, Any]] | None
+    draft: DraftVersionSummary[dict[str, Any]]
     created_at: datetime
     updated_at: datetime
 
@@ -77,24 +68,37 @@ class FactorVersionCreate(BaseModel):
 
     workflow_instance_id: int = Field(gt=0)
     remark: str = Field(default="", max_length=512)
-    metrics: FactorMetrics
 
     validate_remark = field_validator("remark")(strip_text)
+
+
+class FactorVersionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    remark: str = Field(min_length=1, max_length=512)
+    validate_remark = field_validator("remark")(normalize_text)
 
 
 class FactorVersionResponse(BaseModel):
     id: int
     project_id: int
-    workflow_instance_id: int
+    workflow_workspace_id: int
+    workflow_instance_id: int | None
     version: int
+    saved: bool
+    is_current: bool
     remark: str
     parameters: dict[str, Any]
-    metrics: FactorMetrics
+    metrics: FactorMetrics | None
     created_at: datetime
+    updated_at: datetime
 
 
 class FactorVersionListItem(BaseModel):
     id: int
     version: int
+    saved: bool
+    is_current: bool
     remark: str
+    workflow_instance_id: int | None
     created_at: datetime

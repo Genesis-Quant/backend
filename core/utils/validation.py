@@ -1,7 +1,5 @@
 """应用请求字段的公共校验。"""
 
-from runtime.utils import normalize_str_list
-
 
 def normalize_text(value: str) -> str:
     normalized = value.strip()
@@ -12,7 +10,3 @@ def normalize_text(value: str) -> str:
 
 def strip_text(value: str) -> str:
     return value.strip()
-
-
-def validate_outputs(value: list[str]) -> list[str]:
-    return normalize_str_list(value, "output", reject_duplicates=True)

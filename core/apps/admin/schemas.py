@@ -109,7 +109,7 @@ class AdminOutputWorkspace(BaseModel):
     size_bytes: int
     modified_at: datetime | None
     orphaned: bool
-    workflow_run_id: int | None = None
+    workflow_workspace_id: int | None = None
     project_id: int | None = None
     project_title: str | None = None
 
@@ -163,7 +163,7 @@ class IncrementalUpdateRunResponse(BaseModel):
     job_id: str
     workers: list[str]
     channel: str
-    record_id: int
+    workspace_id: int
     workflow_instance_id: int
     project_code: int
     workflow_definition_code: int

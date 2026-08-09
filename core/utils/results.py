@@ -1,12 +1,14 @@
 """Result-file access keyed by DolphinScheduler workflow instance ID."""
 
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Response
 from fastapi.responses import FileResponse, RedirectResponse
+import pandas as pd
 from pydantic import BaseModel
 from runtime.utils.storage import (
     PARQUET_CONTENT_TYPE,
@@ -21,7 +23,7 @@ from core.apps.workflows.artifacts import (
     workspace_output_directory,
     workspace_output_prefix,
 )
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun
+from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 
 
 class ResultFile[Name: str](BaseModel):
@@ -31,31 +33,32 @@ class ResultFile[Name: str](BaseModel):
     modified_at: datetime
 
 
-def owned_result_run(
+def owned_result_workspace(
     session: Session,
     user_id: int,
     workflow_instance_id: int,
     application: str,
-) -> WorkflowRun:
+) -> tuple[WorkflowWorkspace, WorkflowAttempt]:
     row = session.execute(
-        select(WorkflowRun, WorkflowInstance)
-        .join(WorkflowInstance, WorkflowInstance.workflow_run_id == WorkflowRun.id)
+        select(WorkflowWorkspace, WorkflowAttempt, WorkflowInstance)
+        .join(WorkflowAttempt, WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id)
+        .join(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
         .where(
             WorkflowInstance.workflow_instance_id == workflow_instance_id,
-            WorkflowRun.user_id == user_id,
-            WorkflowRun.application == application,
+            WorkflowWorkspace.user_id == user_id,
+            WorkflowWorkspace.application == application,
         )
     ).one_or_none()
     if row is None:
         raise FileNotFoundError(f"工作流实例不存在: {workflow_instance_id}")
-    run, workflow = row
-    if not workflow.is_current:
+    workspace, attempt, workflow = row
+    if not attempt.is_current:
         raise RuntimeError(
             f"工作流 {workflow_instance_id} 不是当前实例，结果目录已由后续运行接管"
         )
     if workflow.state != "SUCCESS":
         raise RuntimeError(f"工作流 {workflow_instance_id} 当前状态为 {workflow.state}，成功后才能获取结果")
-    return run
+    return workspace, attempt
 
 
 def result_files(
@@ -65,9 +68,9 @@ def result_files(
     application: str,
     output_files: dict[str, str],
 ) -> list[dict[str, Any]]:
-    run = owned_result_run(session, user_id, workflow_instance_id, application)
-    if uses_cloud_output(run.application):
-        storage, output_key = cloud_storage(run.application, run.workspace_key)
+    workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
+    if uses_cloud_output(workspace.application):
+        storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         try:
             return [
                 cloud_result_file(
@@ -76,14 +79,14 @@ def result_files(
                     name,
                     result_filename(workflow_instance_id, name, output_files),
                 )
-                for name in run.requested_outputs
+                for name in attempt.requested_outputs
             ]
         except (BotoCoreError, ClientError) as error:
             raise OSError(f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}") from error
         finally:
             storage.close()
 
-    output_dir = workspace_output_directory(run.application, run.workspace_key)
+    output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
     return [
         local_result_file(
             workflow_instance_id,
@@ -91,7 +94,7 @@ def result_files(
             name,
             result_filename(workflow_instance_id, name, output_files),
         )
-        for name in run.requested_outputs
+        for name in attempt.requested_outputs
     ]
 
 
@@ -105,12 +108,12 @@ def result_response(
 ) -> Response:
     if name not in output_files:
         raise FileNotFoundError(f"未知结果: {name}")
-    run = owned_result_run(session, user_id, workflow_instance_id, application)
-    if name not in run.requested_outputs:
+    workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
+    if name not in attempt.requested_outputs:
         raise FileNotFoundError(f"工作流未请求结果: {name}")
     filename = output_files[name]
-    if uses_cloud_output(run.application):
-        storage, output_key = cloud_storage(run.application, run.workspace_key)
+    if uses_cloud_output(workspace.application):
+        storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         key = f"{output_key}/{filename}"
         try:
             storage.object_info(key)
@@ -121,11 +124,44 @@ def result_response(
             storage.close()
         return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
-    output_dir = workspace_output_directory(run.application, run.workspace_key)
+    output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
     path = (output_dir / filename).resolve()
     if path.parent != output_dir or not path.is_file():
         raise OSError(f"工作流 {workflow_instance_id} 成功但缺少结果: {name}")
     return FileResponse(path, filename=filename, media_type=PARQUET_CONTENT_TYPE)
+
+
+def result_dataframe(
+    session: Session,
+    user_id: int,
+    workflow_instance_id: int,
+    application: str,
+    name: str,
+    output_files: dict[str, str],
+) -> pd.DataFrame:
+    """读取一个已成功工作流的 Parquet 结果，用于后端生成版本摘要。"""
+    workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
+    if name not in attempt.requested_outputs:
+        raise FileNotFoundError(f"工作流未请求结果: {name}")
+    return read_result_dataframe(workspace.application, workspace.workspace_key, workflow_instance_id, name, output_files)
+
+
+def read_result_dataframe(application: str, workspace_key: str, workflow_instance_id: int, name: str, output_files: dict[str, str]) -> pd.DataFrame:
+    """从工作流结果目录读取 Parquet，不执行数据库查询。"""
+    filename = result_filename(workflow_instance_id, name, output_files)
+    if uses_cloud_output(application):
+        storage, output_key = cloud_storage(application, workspace_key)
+        try:
+            response = storage.client.get_object(Bucket=storage.bucket, Key=f"{output_key}/{filename}")
+            return pd.read_parquet(BytesIO(response["Body"].read()))
+        except (BotoCoreError, ClientError) as error:
+            raise OSError(f"工作流 {workflow_instance_id} 无法读取对象存储结果 {name}: {error}") from error
+        finally:
+            storage.close()
+    path = workspace_output_directory(application, workspace_key) / filename
+    if not path.is_file():
+        raise OSError(f"工作流 {workflow_instance_id} 成功但缺少结果: {name}")
+    return pd.read_parquet(path)
 
 
 def delete_result_objects(application: str, workspace_key: str) -> None:

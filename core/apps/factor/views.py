@@ -15,23 +15,25 @@ from core.apps.factor.schemas import (
     FactorVersionCreate,
     FactorVersionListItem,
     FactorVersionResponse,
-    FactorWorkflowCreate,
+    FactorVersionUpdate,
 )
 from core.apps.factor.services import (
     create_factor_project,
     create_factor_version,
     delete_factor_project,
+    delete_factor_version,
     factor_result_files,
     factor_result_response,
     get_factor_project,
     get_factor_version,
     list_factor_projects,
     list_factor_versions,
-    submit_factor_workflow,
+    submit_factor_batch,
     submit_project_analysis,
     update_factor_project,
+    update_factor_version,
 )
-from core.apps.schemas import ProjectPage, WorkflowSubmitted
+from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
@@ -42,18 +44,6 @@ from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
 router = APIRouter(prefix="/api/v1/factor", tags=["factor"])
-
-
-@router.post("/workflows", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def create_factor_workflow(request: FactorWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
-    try:
-        run = submit_factor_workflow(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
-        workflow = current_workflow_instance(session, run.id)
-        if workflow is None:
-            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
-    except (DolphinSchedulerError, OSError, ValueError) as error:
-        raise_api_http_error(error)
 
 
 @router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[ResultFile[FactorOutput]])
@@ -113,7 +103,7 @@ def analyze_project(project_id: int, request: FactorAnalysisParameters, user: An
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
+        return WorkflowSubmitted(workspace_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 
@@ -129,7 +119,7 @@ def versions(project_id: int, user: Annotated[User, Depends(get_current_user)], 
 @router.post("/projects/{project_id}/versions", response_model=FactorVersionResponse, status_code=status.HTTP_201_CREATED)
 def save_version(project_id: int, request: FactorVersionCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FactorVersionResponse:
     try:
-        result = create_factor_version(session, user.id, project_id, request.workflow_instance_id, request.remark, request.model_dump(mode="json")["metrics"])
+        result = create_factor_version(session, user.id, project_id, request.workflow_instance_id, request.remark)
         return FactorVersionResponse.model_validate(result)
     except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
@@ -140,6 +130,30 @@ def version(project_id: int, version_number: int, user: Annotated[User, Depends(
     try:
         return FactorVersionResponse.model_validate(get_factor_version(session, user.id, project_id, version_number))
     except (FileNotFoundError, RuntimeError) as error:
+        raise_api_http_error(error)
+
+
+@router.post("/projects/{project_id}/batch-runs", response_model=list[BatchRunAccepted], status_code=status.HTTP_202_ACCEPTED)
+def execute_batch(project_id: int, request: BatchRunRequest[FactorAnalysisParameters], user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BatchRunAccepted]:
+    try:
+        return [BatchRunAccepted.model_validate(item) for item in submit_factor_batch(session, user.id, project_id, request.items)]
+    except (FileNotFoundError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.patch("/projects/{project_id}/versions/{version_number}", response_model=FactorVersionResponse)
+def update_version(project_id: int, version_number: int, request: FactorVersionUpdate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FactorVersionResponse:
+    try:
+        return FactorVersionResponse.model_validate(update_factor_version(session, user.id, project_id, version_number, request.remark))
+    except FileNotFoundError as error:
+        raise_api_http_error(error)
+
+
+@router.delete("/projects/{project_id}/versions/{version_number}")
+def delete_version(project_id: int, version_number: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> dict[str, int]:
+    try:
+        return {"version": delete_factor_version(session, user.id, project_id, version_number)}
+    except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
 

@@ -14,10 +14,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from config import ArenaSettings
-from core.apps.query.models import QueryWorkflowRun
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import workspace_output_directory
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun
+from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.database.base import Base
 from core.utils import results
 
@@ -31,8 +30,8 @@ def session() -> Session:
         engine,
         tables=[
             User.__table__,
-            WorkflowRun.__table__,
-            QueryWorkflowRun.__table__,
+            WorkflowWorkspace.__table__,
+            WorkflowAttempt.__table__,
             WorkflowInstance.__table__,
         ],
     )
@@ -42,27 +41,33 @@ def session() -> Session:
 
 def successful_run(
     session: Session,
-) -> tuple[User, QueryWorkflowRun]:
+) -> tuple[User, WorkflowWorkspace]:
     user = User(username="owner", password_hash="test")
     session.add(user)
     session.flush()
-    run = QueryWorkflowRun(
+    run = WorkflowWorkspace(
         user_id=user.id,
         application="query",
         workspace_key=WORKSPACE_KEY,
-        submission_state="SUBMITTED",
-        payload={},
+    )
+    session.add(run)
+    session.flush()
+    attempt = WorkflowAttempt(
+        workflow_workspace_id=run.id,
+        is_current=True,
+        submission_state="WORKFLOW_CREATED",
+        input_json={},
+        start_parameters={},
         requested_outputs=["data"],
         events=[],
     )
-    session.add(run)
+    session.add(attempt)
     session.flush()
     session.add(
         WorkflowInstance(
             workflow_instance_id=101,
-            workflow_run_id=run.id,
+            workflow_attempt_id=attempt.id,
             state="SUCCESS",
-            is_current=True,
             state_history=[],
         )
     )

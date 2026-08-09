@@ -49,6 +49,16 @@ class WorkflowStatusInformation(BaseModel):
     last_synced_at: datetime | None
 
 
+class WorkflowWorkspaceStatus(BaseModel):
+    application: Literal["query", "factor", "backtest", "incremental"]
+    workspace_id: int
+    workflow_instance_id: int | None
+    state: str
+    error: str | None
+    events: list[dict[str, Any]]
+    updated_at: datetime
+
+
 class WorkflowTasks(BaseModel):
     workflow_instance_id: int
     state: str
@@ -58,7 +68,7 @@ class WorkflowTasks(BaseModel):
 
 class WorkflowInformation(BaseModel):
     application: Literal["query", "factor", "backtest", "incremental"]
-    record_id: int
+    workspace_id: int
     user_id: int
     workflow_instance_id: int
     project_code: int
@@ -79,30 +89,80 @@ class WorkflowInformation(BaseModel):
     events: list[dict[str, Any]]
 
 
-class WorkflowListItem(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
-    record_id: int
-    user_id: int
-    workflow_instance_id: int
-    workflow_definition_code: int
-    workflow_name: str
+class WorkflowAttemptSummary(BaseModel):
+    attempt_id: int
+    attempt_number: int
+    is_current: bool
+    submission_state: str
+    workflow_instance_id: int | None
+    workflow_definition_code: int | None
+    workflow_name: str | None
     state: str
     tasks: list[WorkflowTaskInformation]
+    tasks_error: str | None = None
+    error: str | None
+    requested_outputs: list[str]
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: float | None
+
+
+class WorkflowWorkspaceListItem(BaseModel):
+    application: Literal["query", "factor", "backtest", "incremental"]
+    workspace_id: int
+    user_id: int
+    project_id: int | None
+    project_title: str | None
+    owner_username: str
+    attempt_count: int
+    current_attempt: WorkflowAttemptSummary
+
+
+class WorkflowWorkspaceListResponse(BaseModel):
+    items: list[WorkflowWorkspaceListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class WorkflowAttemptListResponse(BaseModel):
+    items: list[WorkflowAttemptSummary]
+    total: int
+    page: int
+    page_size: int
+
+
+class WorkflowAttemptInformation(BaseModel):
+    application: Literal["query", "factor", "backtest", "incremental"]
+    workspace_id: int
+    user_id: int
+    project_id: int | None
+    project_title: str | None
+    attempt_id: int
+    attempt_number: int
+    is_current: bool
+    submission_state: str
+    workflow_instance_id: int | None
+    project_code: int | None
+    workflow_definition_code: int | None
+    workflow_name: str | None
+    state: str
     error: str | None
     started_at: datetime | None
     finished_at: datetime | None
     duration_seconds: float | None
-    created_at: datetime
-    project_id: int | None
-    owner_username: str
-    tasks_error: str | None = None
-
-
-class WorkflowListResponse(BaseModel):
-    items: list[WorkflowListItem]
-    total: int
-    page: int
-    page_size: int
+    last_synced_at: datetime | None
+    attempt_created_at: datetime
+    attempt_updated_at: datetime
+    workflow_created_at: datetime | None
+    workflow_updated_at: datetime | None
+    task_count: int
+    payload: WorkflowInputPayload
+    requested_outputs: list[str]
+    state_history: list[dict[str, Any]]
+    events: list[dict[str, Any]]
 
 
 class WorkflowActionResponse(BaseModel):
@@ -114,5 +174,5 @@ class WorkflowActionResponse(BaseModel):
 
 class WorkflowDeletedResponse(BaseModel):
     application: Literal["query", "factor", "backtest", "incremental"]
-    record_id: int
+    workspace_id: int
     workflow_instance_id: int

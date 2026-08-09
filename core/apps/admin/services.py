@@ -16,9 +16,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config import ArenaSettings, DolphinSchedulerSettings
-from core.apps.backtest.models import BacktestProject
-from core.apps.factor.models import FactorProject
-from core.apps.query.models import QueryProject
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import (
     WORKSPACE_APPLICATIONS,
@@ -26,11 +23,12 @@ from core.apps.workflows.artifacts import (
     validate_workspace_key,
     workspace_directory,
 )
-from core.apps.workflows.models import WorkflowInstance, WorkflowRun
+from core.apps.workflows.models import WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
     WorkflowGatewayService,
     current_workflow_instance,
-    workflow_start_parameters,
+    require_current_workflow_attempt,
+    workspace_project_references,
 )
 from core.scheduler.applications import create_application_workflows
 from core.scheduler.applications.incremental import (
@@ -59,7 +57,7 @@ class WorkspaceUsage(TypedDict):
     storage_modes: NotRequired[set[str]]
     storage: NotRequired[str]
     orphaned: NotRequired[bool]
-    workflow_run_id: NotRequired[int | None]
+    workflow_workspace_id: NotRequired[int | None]
     project_id: NotRequired[int | None]
     project_title: NotRequired[str | None]
 
@@ -135,13 +133,13 @@ class AdminService:
         if application not in WORKSPACE_APPLICATIONS:
             raise ValueError(f"无效的 workspace application: {application}")
         owner = session.scalar(
-            select(WorkflowRun.id).where(
-                WorkflowRun.application == application,
-                WorkflowRun.workspace_key == key,
+            select(WorkflowWorkspace.id).where(
+                WorkflowWorkspace.application == application,
+                WorkflowWorkspace.workspace_key == key,
             )
         )
         if owner is not None:
-            raise RuntimeError(f"workspace 仍归属于 workflow run #{owner}，不能删除")
+            raise RuntimeError(f"workspace 仍归属于工作流工作空间 #{owner}，不能删除")
         if ArenaSettings.SHARED_CLOUD:
             delete_cloud_result_objects(application, key)
         directory = workspace_directory(application, key)
@@ -202,16 +200,17 @@ class AdminService:
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        start_parameters = workflow_start_parameters(run)
+        attempt = require_current_workflow_attempt(session, run.id)
+        start_parameters = attempt.start_parameters
         return {
             "message": "增量更新工作流已提交",
             "job_id": start_parameters["job_id"],
             "workers": start_parameters["workers"].split(","),
             "channel": start_parameters["channel"],
-            "record_id": run.id,
+            "workspace_id": run.id,
             "workflow_instance_id": workflow.workflow_instance_id,
-            "project_code": int(run.project_code or 0),
-            "workflow_definition_code": int(run.workflow_definition_code or 0),
+            "project_code": int(attempt.project_code or 0),
+            "workflow_definition_code": int(attempt.workflow_definition_code or 0),
             "scheduler_submission": submission,
         }
 
@@ -502,60 +501,31 @@ def enrich_workspace_ownership(
     workspaces: list[WorkspaceUsage],
 ) -> list[WorkspaceUsage]:
     keys = [str(item["workspace_key"]) for item in workspaces]
-    runs = (
-        list(session.scalars(select(WorkflowRun).where(WorkflowRun.workspace_key.in_(keys))))
+    workflow_workspaces = (
+        list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.workspace_key.in_(keys))))
         if keys
         else []
     )
-    run_by_workspace = {
-        (run.application, run.workspace_key): run
-        for run in runs
+    workspace_by_identity = {
+        (workspace.application, workspace.workspace_key): workspace
+        for workspace in workflow_workspaces
     }
-    project_titles = source_project_titles(session, runs)
+    project_references = workspace_project_references(session, workflow_workspaces)
     enriched: list[WorkspaceUsage] = []
     for workspace in workspaces:
         identity = (
             str(workspace["application"]),
             str(workspace["workspace_key"]),
         )
-        run = run_by_workspace.get(identity)
-        project_id = run.source_project_id if run is not None else None
+        workflow_workspace = workspace_by_identity.get(identity)
+        project_reference = project_references.get(workflow_workspace.id) if workflow_workspace is not None else None
         item = workspace.copy()
-        item["orphaned"] = run is None
-        item["workflow_run_id"] = run.id if run is not None else None
-        item["project_id"] = project_id
-        item["project_title"] = (
-            project_titles.get((run.application, project_id))
-            if run is not None and project_id is not None
-            else None
-        )
+        item["orphaned"] = workflow_workspace is None
+        item["workflow_workspace_id"] = workflow_workspace.id if workflow_workspace is not None else None
+        item["project_id"] = project_reference[0] if project_reference is not None else None
+        item["project_title"] = project_reference[1] if project_reference is not None else None
         enriched.append(item)
     return enriched
-
-
-def source_project_titles(
-    session: Session,
-    runs: Sequence[WorkflowRun],
-) -> dict[tuple[str, int], str]:
-    project_models = {
-        "query": QueryProject,
-        "factor": FactorProject,
-        "backtest": BacktestProject,
-    }
-    titles: dict[tuple[str, int], str] = {}
-    for application, model in project_models.items():
-        project_ids = {
-            int(run.source_project_id)
-            for run in runs
-            if run.application == application and run.source_project_id is not None
-        }
-        if not project_ids:
-            continue
-        for project_id, title in session.execute(
-            select(model.id, model.title).where(model.id.in_(project_ids))
-        ):
-            titles[(application, int(project_id))] = str(title)
-    return titles
 
 
 def latest_datetime(

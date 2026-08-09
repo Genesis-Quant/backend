@@ -10,9 +10,12 @@ from core.apps.users.services import get_current_user
 from core.apps.workflows.schemas import (
     WorkflowAction,
     WorkflowActionResponse,
+    WorkflowAttemptInformation,
+    WorkflowAttemptListResponse,
     WorkflowDeletedResponse,
     WorkflowInformation,
-    WorkflowListResponse,
+    WorkflowWorkspaceListResponse,
+    WorkflowWorkspaceStatus,
     WorkflowStatusInformation,
     WorkflowTasks,
 )
@@ -24,7 +27,7 @@ from core.utils.http import raise_api_http_error
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
 
 
-@router.get("", response_model=WorkflowListResponse)
+@router.get("", response_model=WorkflowWorkspaceListResponse)
 def list_workflows(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_database_session)],
@@ -32,8 +35,46 @@ def list_workflows(
     page_size: int = Query(20, ge=1, le=100),
     application: Literal["query", "factor", "backtest", "incremental"] | None = None,
     state: Literal["active", "success", "failure"] | None = None,
-) -> WorkflowListResponse:
-    return WorkflowListResponse.model_validate(WorkflowGatewayService().list(session, user, page, page_size, application, state))
+) -> WorkflowWorkspaceListResponse:
+    return WorkflowWorkspaceListResponse.model_validate(WorkflowGatewayService().list(session, user, page, page_size, application, state))
+
+
+@router.get("/workspaces/{workspace_id}/attempts", response_model=WorkflowAttemptListResponse)
+def list_workflow_attempts(
+    workspace_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+) -> WorkflowAttemptListResponse:
+    try:
+        return WorkflowAttemptListResponse.model_validate(WorkflowGatewayService().attempts(session, user, workspace_id, page, page_size))
+    except (DolphinSchedulerError, FileNotFoundError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/attempts/{attempt_id}", response_model=WorkflowAttemptInformation)
+def get_workflow_attempt(
+    attempt_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> WorkflowAttemptInformation:
+    try:
+        return WorkflowAttemptInformation.model_validate(WorkflowGatewayService().attempt_detail(session, user, attempt_id))
+    except (DolphinSchedulerError, FileNotFoundError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/workspaces/{workspace_id}/status", response_model=WorkflowWorkspaceStatus)
+def get_workflow_workspace_status(
+    workspace_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> WorkflowWorkspaceStatus:
+    try:
+        return WorkflowWorkspaceStatus.model_validate(WorkflowGatewayService().workspace_status(session, user, workspace_id))
+    except FileNotFoundError as error:
+        raise_api_http_error(error)
 
 
 @router.get("/{workflow_instance_id}", response_model=WorkflowInformation)

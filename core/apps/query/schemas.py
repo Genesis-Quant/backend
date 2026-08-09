@@ -7,18 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime.apps.query.schema import FactorQuery
 
 from core.apps.schemas import WorkflowReference, WorkflowSummary
-from core.utils.validation import normalize_text, validate_outputs
+from core.utils.validation import normalize_text
 
 type QueryOutput = Literal["source_data", "computed_data", "filtered_data", "data"]
-
-
-class QueryWorkflowCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    dataset_query: FactorQuery
-    output: list[QueryOutput] = Field(min_length=1)
-
-    validate_output = field_validator("output")(validate_outputs)
 
 
 class QueryProjectCreate(BaseModel):

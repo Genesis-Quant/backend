@@ -26,12 +26,13 @@ core/
 
 ## 数据模型
 
-Backend 只持久化应用提交和 DolphinScheduler workflow instance，不保存 Task 快照：
+Backend 按工作空间、提交尝试和 DolphinScheduler 实例三层持久化，不保存 Task 快照：
 
-- `workflow_runs`：提交参数、请求输出、共享目录、工作流定义编码和提交状态。
-- `workflow_instances`：以 `workflow_instance_id` 为主键，保存工作流状态、时间、错误和状态历史。
-- `<application>_workflow_runs`：Query、Factor、Backtest、Incremental 的应用扩展信息。
-- `factor_versions`、`backtest_versions`：直接关联保存结果对应的 `workflow_instance_id`。
+- `workflow_workspaces`：保存用户、应用和可复用共享目录；不保存单次提交状态。
+- `workflow_attempts`：保存每次提交的输入、请求输出、调度参数、提交状态和事件；每个工作空间只有一个当前 Attempt。
+- `workflow_instances`：以 `workflow_instance_id` 为主键，每个 Attempt 至多关联一个实例，保存执行状态、时间、错误和状态历史。
+- `query_projects`、`factor_versions`、`backtest_versions`、`backtest_research_items` 和 `incremental_workflow_workspaces`：分别与通用 Workspace 一对一，并共同覆盖全部 Workspace。
+- `factor_versions`、`backtest_versions`：每个版本独占一个 Workspace；未保存版本可反复产生 Attempt，保存后固定绑定采用结果的 `workflow_instance_id`。
 
 一个工作流可以包含多个 DolphinScheduler Task。工作流详情和列表展示的 Task 定义、Task
 instance 状态、Worker、重试次数与耗时均在请求时实时从 DolphinScheduler 查询。Task ID
@@ -49,18 +50,16 @@ Backend 进程时，同一轮只有一个轮询器执行。
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
-| `POST` | `/api/v1/query/workflows` | 提交一次 Query 工作流 |
+| `POST` | `/api/v1/query/projects/{project_id}/queries` | 在查询项目的 Workspace 中提交 Query |
 | `GET` | `/api/v1/query/workflows/{workflow_instance_id}/outputs` | 列出 Query 结果 |
 | `GET` | `/api/v1/query/workflows/{workflow_instance_id}/outputs/{name}` | 下载 Query Parquet 结果 |
 
-Factor 和 Backtest 的一次性工作流使用相同结构，将路径中的 `query` 替换为 `factor` 或
-`backtest`。提交参数为对应 Runtime 参数并增加必填 `output`；调用方不能指定
-`output_dir`。
+Factor 和 Backtest 分别通过 `/api/v1/factor/projects/{project_id}/analyses` 和
+`/api/v1/backtest/projects/{project_id}/runs` 提交，不提供脱离项目或版本的一次性工作流。
 
-每条 `workflow_runs.payload` 按用途拆分：`start_parameters` 是实际提交给
-DolphinScheduler 的字符串参数；Query、Factor 和 Backtest 另外保存
-`input_json`，内容与写入共享目录的 `input.json` 一致。Incremental 没有应用输入
-JSON，因此只保存 `start_parameters`。这两类参数在工作流详情中独立展示。
+每条 `workflow_attempts` 分别保存 `start_parameters` 和 `input_json`：前者是实际提交给
+DolphinScheduler 的字符串参数，后者与写入共享目录的 `input.json` 一致。Incremental
+没有应用输入 JSON，因此 `input_json` 为空对象。这两类参数在工作流详情中独立展示。
 
 工作流输入 JSON 始终写入 `ARENA_SHARED_DIR`，供 DolphinScheduler Worker 读取。默认情况下 Parquet
 结果也写入该共享目录；设置 `ARENA_SHARED_CLOUD=True` 后，Backend 会向 Runtime 传入
@@ -68,11 +67,11 @@ JSON，因此只保存 `start_parameters`。这两类参数在工作流详情中
 结果列表和下载接口根据工作流记录中的本地路径或 `s3://` URI 自动选择本地文件或对象存储，
 因此切换配置不会破坏已有任务的结果读取。
 
-提交响应同时包含内部提交记录 ID 和作为后续查询主键的 workflow instance ID：
+提交响应同时包含工作空间 ID 和作为后续查询主键的 workflow instance ID：
 
 ```json
 {
-  "record_id": 42,
+  "workspace_id": 42,
   "workflow_instance_id": 123
 }
 ```
@@ -86,9 +85,10 @@ HTTP 404。
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
 | `GET` | `/api/v1/workflows` | 分页查询工作流，并实时附带各 Task 状态 |
+| `GET` | `/api/v1/workflows/workspaces/{workspace_id}/status` | 查询工作空间当前 Attempt 的提交或执行状态 |
 | `GET` | `/api/v1/workflows/{workflow_instance_id}` | 同步并读取指定工作流及其 Tasks |
 | `POST` | `/api/v1/workflows/{workflow_instance_id}/actions/{action}` | 控制工作流 |
-| `DELETE` | `/api/v1/workflows/{workflow_instance_id}` | 删除终态工作流记录 |
+| `DELETE` | `/api/v1/workflows/{workflow_instance_id}` | 删除终态实例及其 Attempt；业务 Workspace 保留并恢复为草稿状态 |
 
 工作流 action 包括 `stop`、`pause`、`resume`、`rerun` 和 `retry-failed`。重新运行只允许
 当前且未保存为研究版本的工作流。
@@ -134,8 +134,9 @@ Task API 必须同时传入 `workflow_instance_id`，Backend 会实时确认 Tas
 | `GET/POST` | `/api/v1/<factor|backtest>/projects/{project_id}/versions` | 查询或保存版本 |
 | `GET` | `/api/v1/<factor|backtest>/projects/{project_id}/versions/{version}` | 读取指定版本 |
 
-保存的 Factor/Backtest 版本直接绑定产生结果的 workflow instance，后续读取结果不会因同一
-项目再次运行而改变。
+创建 Factor/Backtest 项目时会同时创建 `v1` 未保存版本及其 Workspace。当前版本可以反复
+运行并参与版本对比；保存时原地标记为已保存、固定绑定产生结果的 workflow instance，随后
+立即创建下一个未保存版本。已保存版本的输入和结果不会因项目后续运行而改变。
 
 ## 共享目录
 

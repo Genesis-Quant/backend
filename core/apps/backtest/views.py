@@ -15,7 +15,7 @@ from core.apps.backtest.schemas import (
     BacktestVersionCreate,
     BacktestVersionListItem,
     BacktestVersionResponse,
-    BacktestWorkflowCreate,
+    BacktestVersionUpdate,
     BatchAnalysisType,
     BatchResearchCreate,
     BatchResearchListResponse,
@@ -25,22 +25,25 @@ from core.apps.backtest.schemas import (
 from core.apps.backtest.services import (
     backtest_result_files,
     backtest_result_response,
+    calculate_batch_research_results,
     create_batch_research,
     create_backtest_project,
     create_backtest_version,
     create_fee_analysis,
     delete_backtest_project,
+    delete_backtest_version,
     get_backtest_project,
     get_backtest_version,
     get_batch_research,
     list_batch_research,
     list_backtest_projects,
     list_backtest_versions,
-    submit_backtest_workflow,
+    submit_backtest_batch,
     submit_project_backtest,
     update_backtest_project,
+    update_backtest_version,
 )
-from core.apps.schemas import ProjectPage, WorkflowSubmitted
+from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
@@ -51,18 +54,6 @@ from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
-
-
-@router.post("/workflows", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def create_backtest_workflow(request: BacktestWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
-    try:
-        run = submit_backtest_workflow(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
-        workflow = current_workflow_instance(session, run.id)
-        if workflow is None:
-            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
-    except (DolphinSchedulerError, OSError, ValueError) as error:
-        raise_api_http_error(error)
 
 
 @router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[ResultFile[BacktestOutput]])
@@ -122,7 +113,7 @@ def run_project(project_id: int, request: BacktestParameters, user: Annotated[Us
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
+        return WorkflowSubmitted(workspace_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 
@@ -138,7 +129,7 @@ def versions(project_id: int, user: Annotated[User, Depends(get_current_user)], 
 @router.post("/projects/{project_id}/versions", response_model=BacktestVersionResponse, status_code=status.HTTP_201_CREATED)
 def save_version(project_id: int, request: BacktestVersionCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BacktestVersionResponse:
     try:
-        result = create_backtest_version(session, user.id, project_id, request.workflow_instance_id, request.remark, request.model_dump(mode="json")["summary"])
+        result = create_backtest_version(session, user.id, project_id, request.workflow_instance_id, request.remark)
         return BacktestVersionResponse.model_validate(result)
     except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
@@ -149,6 +140,30 @@ def version(project_id: int, version_number: int, user: Annotated[User, Depends(
     try:
         return BacktestVersionResponse.model_validate(get_backtest_version(session, user.id, project_id, version_number))
     except (FileNotFoundError, RuntimeError) as error:
+        raise_api_http_error(error)
+
+
+@router.post("/projects/{project_id}/batch-runs", response_model=list[BatchRunAccepted], status_code=status.HTTP_202_ACCEPTED)
+def execute_batch(project_id: int, request: BatchRunRequest[BacktestParameters], user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BatchRunAccepted]:
+    try:
+        return [BatchRunAccepted.model_validate(item) for item in submit_backtest_batch(session, user.id, project_id, request.items)]
+    except (FileNotFoundError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.patch("/projects/{project_id}/versions/{version_number}", response_model=BacktestVersionResponse)
+def update_version(project_id: int, version_number: int, request: BacktestVersionUpdate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BacktestVersionResponse:
+    try:
+        return BacktestVersionResponse.model_validate(update_backtest_version(session, user.id, project_id, version_number, request.remark))
+    except FileNotFoundError as error:
+        raise_api_http_error(error)
+
+
+@router.delete("/projects/{project_id}/versions/{version_number}")
+def delete_version(project_id: int, version_number: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> dict[str, int]:
+    try:
+        return {"version": delete_backtest_version(session, user.id, project_id, version_number)}
+    except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
 
@@ -179,6 +194,14 @@ def create_backtest_research(request: BatchResearchCreate, user: Annotated[User,
 def backtest_research(research_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
     try:
         return BatchResearchResponse.model_validate(get_batch_research(session, user, research_id))
+    except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.post("/batch-research/{research_id}/results", response_model=BatchResearchResponse)
+def calculate_backtest_research_results(research_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
+    try:
+        return BatchResearchResponse.model_validate(calculate_batch_research_results(session, user, research_id))
     except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 

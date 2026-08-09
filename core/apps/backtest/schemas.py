@@ -5,13 +5,10 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from runtime import BacktestParameters
-
-from core.apps.schemas import WorkflowSummary
+from core.apps.schemas import DraftVersionSummary
 from core.utils.validation import (
     normalize_text,
     strip_text,
-    validate_outputs,
 )
 
 type BacktestOutput = Literal[
@@ -22,12 +19,6 @@ type BacktestOutput = Literal[
     "daily_trading_statistics",
     "engine_stat",
 ]
-
-
-class BacktestWorkflowCreate(BacktestParameters):
-    output: list[BacktestOutput] = Field(min_length=1)
-
-    validate_output = field_validator("output")(validate_outputs)
 
 
 class BacktestProjectCreate(BaseModel):
@@ -45,7 +36,7 @@ class BacktestProjectItem(BaseModel):
     id: int
     title: str
     latest_version: int | None
-    draft: WorkflowSummary[dict[str, Any]] | None
+    draft: DraftVersionSummary[dict[str, Any]]
     created_at: datetime
     updated_at: datetime
 
@@ -63,26 +54,39 @@ class BacktestVersionCreate(BaseModel):
 
     workflow_instance_id: int = Field(gt=0)
     remark: str = Field(default="", max_length=512)
-    summary: dict[str, float | int | None] = Field(min_length=1)
 
     validate_remark = field_validator("remark")(strip_text)
+
+
+class BacktestVersionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    remark: str = Field(min_length=1, max_length=512)
+    validate_remark = field_validator("remark")(normalize_text)
 
 
 class BacktestVersionResponse(BaseModel):
     id: int
     project_id: int
-    workflow_instance_id: int
+    workflow_workspace_id: int
+    workflow_instance_id: int | None
     version: int
+    saved: bool
+    is_current: bool
     remark: str
     parameters: dict[str, Any]
-    summary: dict[str, float | int | None]
+    summary: dict[str, float | int | None] | None
     created_at: datetime
+    updated_at: datetime
 
 
 class BacktestVersionListItem(BaseModel):
     id: int
     version: int
+    saved: bool
+    is_current: bool
     remark: str
+    workflow_instance_id: int | None
     created_at: datetime
 
 
@@ -124,11 +128,13 @@ class FeeAnalysisCreate(BaseModel):
 
 class BatchResearchItemResponse(BaseModel):
     id: int
-    workflow_run_id: int
+    workflow_workspace_id: int
     workflow_instance_id: int | None
     state: str
     parameters: dict[str, Any]
     error: str | None
+    metrics: dict[str, float | None] | None
+    result_error: str | None
 
 
 class BatchResearchListItem(BaseModel):

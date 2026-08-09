@@ -11,7 +11,6 @@ from core.apps.query.schemas import (
     QueryProjectCreate,
     QueryProjectItem,
     QueryProjectListItem,
-    QueryWorkflowCreate,
 )
 from core.apps.query.services import (
     create_query_project,
@@ -21,7 +20,6 @@ from core.apps.query.services import (
     query_result_files,
     query_result_response,
     submit_project_query,
-    submit_query_workflow,
 )
 from core.apps.schemas import ProjectPage, WorkflowSubmitted
 from core.apps.users.models import User
@@ -34,18 +32,6 @@ from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
 router = APIRouter(prefix="/api/v1/query", tags=["query"])
-
-
-@router.post("/workflows", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def create_query_workflow(request: QueryWorkflowCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
-    try:
-        run = submit_query_workflow(session, user.id, request.model_dump(exclude={"output"}, mode="json"), list(request.output))
-        workflow = current_workflow_instance(session, run.id)
-        if workflow is None:
-            raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
-    except (DolphinSchedulerError, OSError, ValueError) as error:
-        raise_api_http_error(error)
 
 
 @router.get("/workflows/{workflow_instance_id}/outputs", response_model=list[ResultFile[QueryOutput]])
@@ -100,7 +86,7 @@ def run_project_query(project_id: int, request: FactorQuery, user: Annotated[Use
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
-        return WorkflowSubmitted(record_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
+        return WorkflowSubmitted(workspace_id=run.id, workflow_instance_id=workflow.workflow_instance_id)
     except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
         raise_api_http_error(error)
 

@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 from config import ArenaSettings
 from core.apps.admin import services
 from core.apps.admin.services import AdminService
-from core.apps.query.models import QueryProject, QueryWorkflowRun
+from core.apps.query.models import QueryProject
 from core.apps.users.models import User
+from core.apps.workflows.models import WorkflowWorkspace
 from core.database.base import Base
 
 OWNED_KEY = "3a809554ba8f4c75a5cf46ec441994af"
@@ -31,27 +32,21 @@ def write_bytes(path: Path, size: int) -> None:
     path.write_bytes(b"x" * size)
 
 
-def owned_query_run(session: Session) -> QueryWorkflowRun:
+def owned_query_run(session: Session) -> tuple[WorkflowWorkspace, QueryProject]:
     user = User(username="owner", password_hash="test")
     session.add(user)
     session.flush()
-    project = QueryProject(user_id=user.id, title="价格查询")
-    session.add(project)
-    session.flush()
-    run = QueryWorkflowRun(
+    run = WorkflowWorkspace(
         user_id=user.id,
         application="query",
         workspace_key=OWNED_KEY,
-        source_project_id=project.id,
-        project_id=project.id,
-        submission_state="SUBMITTED",
-        payload={},
-        requested_outputs=["data"],
-        events=[],
     )
     session.add(run)
+    session.flush()
+    project = QueryProject(user_id=user.id, workflow_workspace_id=run.id, title="价格查询")
+    session.add(project)
     session.commit()
-    return run
+    return run, project
 
 
 def test_local_output_storage_groups_by_workspace_and_resolves_owner(
@@ -59,7 +54,7 @@ def test_local_output_storage_groups_by_workspace_and_resolves_owner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run = owned_query_run(session)
+    run, project = owned_query_run(session)
     monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", False)
     monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
     write_bytes(tmp_path / "query" / OWNED_KEY / "input.json", 100)
@@ -105,8 +100,8 @@ def test_local_output_storage_groups_by_workspace_and_resolves_owner(
         "file_count": 1,
         "size_bytes": 20,
         "orphaned": False,
-        "workflow_run_id": run.id,
-        "project_id": run.source_project_id,
+        "workflow_workspace_id": run.id,
+        "project_id": project.id,
         "project_title": "价格查询",
     }
 
@@ -164,7 +159,7 @@ def test_cloud_output_storage_groups_objects_by_workspace(
         "size_bytes": 42,
         "modified_at": datetime(2026, 8, 6, tzinfo=UTC),
         "orphaned": True,
-        "workflow_run_id": None,
+        "workflow_workspace_id": None,
         "project_id": None,
         "project_title": None,
     }]
@@ -197,7 +192,7 @@ def test_delete_owned_workspace_is_rejected(
     monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", False)
     monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
 
-    with pytest.raises(RuntimeError, match="仍归属于 workflow run"):
+    with pytest.raises(RuntimeError, match="仍归属于工作流工作空间"):
         AdminService.delete_orphan_workspace(session, "query", OWNED_KEY)
 
 
