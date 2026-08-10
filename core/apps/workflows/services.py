@@ -15,7 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select, text, union_all
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, load_only
 
 from config import DolphinSchedulerSettings
 from core.apps.admin.models import IncrementalWorkflowWorkspace
@@ -514,17 +514,47 @@ class WorkflowGatewayService:
         user: User,
         workspace_id: int,
     ) -> dict[str, Any]:
-        workspace = self.find_accessible_workspace(session, user, workspace_id)
-        attempt = require_current_workflow_attempt(session, workspace.id)
-        workflow = workflow_instance_for_attempt(session, attempt.id)
+        statement = (
+            select(
+                WorkflowAttempt.submission_state,
+                WorkflowAttempt.error.label("attempt_error"),
+                WorkflowAttempt.events,
+                WorkflowAttempt.updated_at.label("attempt_updated_at"),
+                WorkflowInstance.workflow_instance_id,
+                WorkflowInstance.state.label("workflow_state"),
+                WorkflowInstance.error.label("workflow_error"),
+                WorkflowInstance.updated_at.label("workflow_updated_at"),
+            )
+            .select_from(WorkflowWorkspace)
+            .join(
+                WorkflowAttempt,
+                and_(
+                    WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id,
+                    WorkflowAttempt.is_current.is_(True),
+                ),
+            )
+            .outerjoin(
+                WorkflowInstance,
+                WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id,
+            )
+            .where(WorkflowWorkspace.id == workspace_id)
+        )
+        if not user.is_admin:
+            statement = statement.where(WorkflowWorkspace.user_id == user.id)
+        row = session.execute(statement).one_or_none()
+        if row is None:
+            raise FileNotFoundError(f"工作流工作空间不存在: {workspace_id}")
+        state = (
+            row.submission_state
+            if row.submission_state in {AUTO_SAVE_PENDING_STATE, "AUTO_SAVE_FAILED"}
+            else row.workflow_state or row.submission_state
+        )
         return {
-            "application": workspace.application,
-            "workspace_id": workspace.id,
-            "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
-            "state": workflow_attempt_state(attempt, workflow),
-            "error": (workflow.error if workflow is not None else None) or attempt.error,
-            "events": attempt.events,
-            "updated_at": max(attempt.updated_at, workflow.updated_at) if workflow is not None else attempt.updated_at,
+            "workflow_instance_id": row.workflow_instance_id,
+            "state": state,
+            "error": row.workflow_error or row.attempt_error,
+            "events": row.events,
+            "updated_at": max(row.attempt_updated_at, row.workflow_updated_at) if row.workflow_updated_at is not None else row.attempt_updated_at,
         }
 
     def detail(
@@ -637,7 +667,33 @@ class WorkflowGatewayService:
         )
         total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
         rows = session.execute(
-            base.order_by(WorkflowAttempt.created_at.desc(), WorkflowAttempt.id.desc())
+            base.options(
+                load_only(
+                    WorkflowWorkspace.id,
+                    WorkflowWorkspace.user_id,
+                    WorkflowWorkspace.application,
+                ),
+                load_only(
+                    WorkflowAttempt.id,
+                    WorkflowAttempt.workflow_workspace_id,
+                    WorkflowAttempt.is_current,
+                    WorkflowAttempt.submission_state,
+                    WorkflowAttempt.project_code,
+                    WorkflowAttempt.workflow_definition_code,
+                    WorkflowAttempt.created_at,
+                    WorkflowAttempt.updated_at,
+                ),
+                load_only(
+                    WorkflowInstance.workflow_instance_id,
+                    WorkflowInstance.workflow_attempt_id,
+                    WorkflowInstance.state,
+                    WorkflowInstance.started_at,
+                    WorkflowInstance.finished_at,
+                    WorkflowInstance.duration_seconds,
+                    WorkflowInstance.updated_at,
+                ),
+            )
+            .order_by(WorkflowAttempt.created_at.desc(), WorkflowAttempt.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all()
@@ -711,6 +767,17 @@ class WorkflowGatewayService:
         attempts = list(
             session.scalars(
                 base
+                .options(
+                    load_only(
+                        WorkflowAttempt.id,
+                        WorkflowAttempt.workflow_workspace_id,
+                        WorkflowAttempt.is_current,
+                        WorkflowAttempt.submission_state,
+                        WorkflowAttempt.workflow_definition_code,
+                        WorkflowAttempt.created_at,
+                        WorkflowAttempt.updated_at,
+                    )
+                )
                 .order_by(WorkflowAttempt.created_at.desc(), WorkflowAttempt.id.desc())
                 .offset((page - 1) * page_size)
                 .limit(page_size)
@@ -721,11 +788,19 @@ class WorkflowGatewayService:
         workflows = {
             workflow.workflow_attempt_id: workflow
             for workflow in session.scalars(
-                select(WorkflowInstance).where(
-                    WorkflowInstance.workflow_attempt_id.in_(
-                        [attempt.id for attempt in attempts]
+                select(WorkflowInstance)
+                .options(
+                    load_only(
+                        WorkflowInstance.workflow_instance_id,
+                        WorkflowInstance.workflow_attempt_id,
+                        WorkflowInstance.state,
+                        WorkflowInstance.started_at,
+                        WorkflowInstance.finished_at,
+                        WorkflowInstance.duration_seconds,
+                        WorkflowInstance.updated_at,
                     )
                 )
+                .where(WorkflowInstance.workflow_attempt_id.in_([attempt.id for attempt in attempts]))
             )
         }
         numbered_attempts = [
@@ -759,6 +834,38 @@ class WorkflowGatewayService:
     ) -> dict[str, Any]:
         statement = (
             select(WorkflowAttempt, WorkflowWorkspace, WorkflowInstance)
+            .options(
+                load_only(
+                    WorkflowAttempt.id,
+                    WorkflowAttempt.workflow_workspace_id,
+                    WorkflowAttempt.submission_state,
+                    WorkflowAttempt.project_code,
+                    WorkflowAttempt.workflow_definition_code,
+                    WorkflowAttempt.workflow_name,
+                    WorkflowAttempt.input_json,
+                    WorkflowAttempt.start_parameters,
+                    WorkflowAttempt.requested_outputs,
+                    WorkflowAttempt.error,
+                    WorkflowAttempt.events,
+                    WorkflowAttempt.created_at,
+                    WorkflowAttempt.updated_at,
+                ),
+                load_only(
+                    WorkflowWorkspace.id,
+                    WorkflowWorkspace.application,
+                ),
+                load_only(
+                    WorkflowInstance.workflow_instance_id,
+                    WorkflowInstance.workflow_attempt_id,
+                    WorkflowInstance.state,
+                    WorkflowInstance.error,
+                    WorkflowInstance.started_at,
+                    WorkflowInstance.finished_at,
+                    WorkflowInstance.duration_seconds,
+                    WorkflowInstance.last_synced_at,
+                    WorkflowInstance.state_history,
+                ),
+            )
             .join(
                 WorkflowWorkspace,
                 WorkflowWorkspace.id == WorkflowAttempt.workflow_workspace_id,
@@ -804,13 +911,9 @@ class WorkflowGatewayService:
         return {
             "application": workspace.application,
             "workspace_id": workspace.id,
-            "user_id": workspace.user_id,
-            "project_id": reference[0] if reference is not None else None,
             "project_title": reference[1] if reference is not None else None,
             "attempt_id": attempt.id,
             "attempt_number": attempt_number,
-            "is_current": attempt.is_current,
-            "submission_state": attempt.submission_state,
             "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
             "project_code": attempt.project_code,
             "workflow_definition_code": attempt.workflow_definition_code,
@@ -823,8 +926,6 @@ class WorkflowGatewayService:
             "last_synced_at": workflow.last_synced_at if workflow is not None else None,
             "attempt_created_at": attempt.created_at,
             "attempt_updated_at": attempt.updated_at,
-            "workflow_created_at": workflow.created_at if workflow is not None else None,
-            "workflow_updated_at": workflow.updated_at if workflow is not None else None,
             "task_count": len(definition.get("taskDefinitionList") or []),
             "payload": {
                 "input_json": attempt.input_json,
@@ -850,7 +951,7 @@ class WorkflowGatewayService:
             if workspace_has_saved_version(session, workspace):
                 raise RuntimeError("已保存版本关联的 workflow instance 不能重新运行")
         with DolphinSchedulerClient() as client:
-            submission = client.execute_process_instance(
+            client.execute_process_instance(
                 int(attempt.project_code or 0),
                 workflow_instance_id,
                 PROCESS_ACTIONS[action],
@@ -870,21 +971,15 @@ class WorkflowGatewayService:
                 )
             record_event(attempt, "WORKFLOW_CONTROL_REQUESTED", action=action.value, workflow_instance_id=workflow_instance_id)
             session.commit()
-            synchronization_error = None
             try:
                 synchronized = self.executors[workspace.application].synchronize(session, workspace, client=client)
                 information = workflow_status_information(attempt, synchronized or workflow)
             except DolphinSchedulerError as error:
-                synchronization_error = str(error)
                 session.rollback()
                 workflow, attempt, workspace = self.find_accessible_workflow(session, user, workflow_instance_id)
                 information = workflow_status_information(attempt, workflow)
-        return {
-            "action": action,
-            "scheduler_submission": submission,
-            "synchronization_error": synchronization_error,
-            "workflow": information,
-        }
+                LOGGER.warning("执行工作流操作后同步状态失败: %s", error)
+        return {"workflow": information}
 
     def delete(
         self,
@@ -1120,26 +1215,27 @@ def workflow_status_information(
     workflow: WorkflowInstance,
 ) -> dict[str, Any]:
     return {
-        "workflow_instance_id": workflow.workflow_instance_id,
         "state": workflow.state,
         "error": workflow.error or attempt.error,
-        "started_at": workflow.started_at,
-        "finished_at": workflow.finished_at,
-        "duration_seconds": workflow.duration_seconds,
-        "last_synced_at": workflow.last_synced_at,
     }
 
 
 def workflow_information(workspace: WorkflowWorkspace, attempt: WorkflowAttempt, workflow: WorkflowInstance) -> dict[str, Any]:
     definition = workflow_definition_details(int(attempt.workflow_definition_code or 0))
     return {
-        **workflow_status_information(attempt, workflow),
         "application": workspace.application,
         "workspace_id": workspace.id,
         "user_id": workspace.user_id,
+        "workflow_instance_id": workflow.workflow_instance_id,
         "project_code": int(attempt.project_code or 0),
         "workflow_definition_code": int(attempt.workflow_definition_code or 0),
         "workflow_name": str(attempt.workflow_name or ""),
+        "state": workflow.state,
+        "error": workflow.error or attempt.error,
+        "started_at": workflow.started_at,
+        "finished_at": workflow.finished_at,
+        "duration_seconds": workflow.duration_seconds,
+        "last_synced_at": workflow.last_synced_at,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
         "task_count": len(definition.get("taskDefinitionList") or []),
@@ -1156,7 +1252,6 @@ def workflow_tasks(
     workflow: WorkflowInstance,
 ) -> dict[str, Any]:
     return {
-        "workflow_instance_id": workflow.workflow_instance_id,
         "state": workflow.state,
         "error": workflow.error or attempt.error,
         "tasks": live_workflow_tasks(client, attempt, workflow),
@@ -1180,7 +1275,7 @@ def workflow_attempt_summary(
     tasks_error: str | None = None,
 ) -> dict[str, Any]:
     tasks = (
-        live_workflow_tasks(client, attempt, workflow)
+        [workflow_task_summary(task) for task in live_workflow_tasks(client, attempt, workflow)]
         if client is not None and workflow is not None
         else []
     )
@@ -1193,15 +1288,11 @@ def workflow_attempt_summary(
         "attempt_id": attempt.id,
         "attempt_number": attempt_number,
         "is_current": attempt.is_current,
-        "submission_state": attempt.submission_state,
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "workflow_definition_code": attempt.workflow_definition_code,
-        "workflow_name": attempt.workflow_name,
         "state": workflow_attempt_state(attempt, workflow),
         "tasks": tasks,
         "tasks_error": tasks_error,
-        "error": (workflow.error if workflow is not None else None) or attempt.error,
-        "requested_outputs": attempt.requested_outputs,
         "created_at": attempt.created_at,
         "updated_at": updated_at,
         "started_at": workflow.started_at if workflow is not None else None,
@@ -1331,14 +1422,18 @@ def task_information(
         "task_code": task_code,
         "task_instance_id": integer_or_none((instance or {}).get("id")),
         "name": str((instance or {}).get("name") or definition.get("name") or f"Task {task_code}"),
-        "task_type": str((instance or {}).get("taskType") or definition.get("taskType") or "UNKNOWN"),
         "state": str((instance or {}).get("state") or "WAITING"),
         "host": (instance or {}).get("host"),
-        "retry_times": integer_or_none((instance or {}).get("retryTimes")),
-        "max_retry_times": integer_or_none((instance or {}).get("maxRetryTimes")),
-        "started_at": started_at,
-        "finished_at": finished_at,
         "duration_seconds": duration_seconds(started_at, finished_at),
+    }
+
+
+def workflow_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_code": task["task_code"],
+        "task_instance_id": task["task_instance_id"],
+        "name": task["name"],
+        "state": task["state"],
     }
 
 

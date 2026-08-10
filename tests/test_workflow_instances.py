@@ -244,7 +244,7 @@ def test_status_refreshes_requested_workflow_instead_of_current(
 
     information = WorkflowGatewayService().status(session, owner, 100)
 
-    assert information["workflow_instance_id"] == 100
+    assert set(information) == {"state", "error"}
     assert information["state"] == "SUCCESS"
     assert information["error"] is None
     assert current_attempt.error == "stale synchronization error"

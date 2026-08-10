@@ -16,17 +16,18 @@ class WorkflowAction(StrEnum):
 
 
 class WorkflowTaskInformation(BaseModel):
+    task_instance_id: int | None = None
+    name: str
+    state: str
+    host: str | None = None
+    duration_seconds: float | None = None
+
+
+class WorkflowTaskSummary(BaseModel):
     task_code: int | None = None
     task_instance_id: int | None = None
     name: str
-    task_type: str | None = None
     state: str
-    host: str | None = None
-    retry_times: int | None = None
-    max_retry_times: int | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    duration_seconds: float | None = None
 
 
 class WorkflowStartPayload(BaseModel):
@@ -40,18 +41,11 @@ class WorkflowInputPayload(WorkflowStartPayload):
 
 
 class WorkflowStatusInformation(BaseModel):
-    workflow_instance_id: int
     state: str
     error: str | None
-    started_at: datetime | None
-    finished_at: datetime | None
-    duration_seconds: float | None
-    last_synced_at: datetime | None
 
 
 class WorkflowWorkspaceStatus(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
-    workspace_id: int
     workflow_instance_id: int | None
     state: str
     error: str | None
@@ -60,7 +54,6 @@ class WorkflowWorkspaceStatus(BaseModel):
 
 
 class WorkflowTasks(BaseModel):
-    workflow_instance_id: int
     state: str
     error: str | None
     tasks: list[WorkflowTaskInformation]
@@ -93,15 +86,11 @@ class WorkflowAttemptSummary(BaseModel):
     attempt_id: int
     attempt_number: int
     is_current: bool
-    submission_state: str
     workflow_instance_id: int | None
     workflow_definition_code: int | None
-    workflow_name: str | None
     state: str
-    tasks: list[WorkflowTaskInformation]
+    tasks: list[WorkflowTaskSummary]
     tasks_error: str | None = None
-    error: str | None
-    requested_outputs: list[str]
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
@@ -137,13 +126,9 @@ class WorkflowAttemptListResponse(BaseModel):
 class WorkflowAttemptInformation(BaseModel):
     application: Literal["query", "factor", "backtest", "incremental"]
     workspace_id: int
-    user_id: int
-    project_id: int | None
     project_title: str | None
     attempt_id: int
     attempt_number: int
-    is_current: bool
-    submission_state: str
     workflow_instance_id: int | None
     project_code: int | None
     workflow_definition_code: int | None
@@ -156,8 +141,6 @@ class WorkflowAttemptInformation(BaseModel):
     last_synced_at: datetime | None
     attempt_created_at: datetime
     attempt_updated_at: datetime
-    workflow_created_at: datetime | None
-    workflow_updated_at: datetime | None
     task_count: int
     payload: WorkflowInputPayload
     requested_outputs: list[str]
@@ -166,9 +149,6 @@ class WorkflowAttemptInformation(BaseModel):
 
 
 class WorkflowActionResponse(BaseModel):
-    action: WorkflowAction
-    scheduler_submission: Any
-    synchronization_error: str | None = None
     workflow: WorkflowStatusInformation
 
 
