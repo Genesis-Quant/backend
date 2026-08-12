@@ -9,6 +9,7 @@ dependencies = [
     "arena-runtime>=0.1,<0.2",
     "bcrypt>=4.3,<5",
     "fastapi>=0.115,<1",
+    "mcp>=2,<3",
     "pandas>=2.2,<3",
     "psycopg[binary]>=3.2,<4",
     "pyarrow>=21",

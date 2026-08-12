@@ -4,7 +4,7 @@ import os
 import warnings
 from pathlib import Path
 from typing import ClassVar
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 from dotenv import load_dotenv
 
@@ -71,6 +71,37 @@ class AuthenticationSettings:
 
     JWT_SECRET = os.getenv("ARENA_JWT_SECRET", "")
     JWT_EXPIRE_DAYS = int(os.getenv("ARENA_JWT_EXPIRE_DAYS", "30"))
+
+
+class MCPSettings:
+    """MCP Streamable HTTP 对外地址与传输安全配置。"""
+
+    PUBLIC_URL = os.getenv("ARENA_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+    ENDPOINT_URL = f"{PUBLIC_URL}/mcp"
+
+    @classmethod
+    def validate(cls) -> None:
+        parsed = urlsplit(cls.PUBLIC_URL)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path not in {"", "/"}:
+            raise RuntimeError("ARENA_PUBLIC_URL 必须是只包含协议和主机的 HTTP(S) 地址")
+
+    @classmethod
+    def allowed_hosts(cls) -> list[str]:
+        cls.validate()
+        return [
+            urlsplit(cls.PUBLIC_URL).netloc,
+            "127.0.0.1",
+            "127.0.0.1:*",
+            "localhost",
+            "localhost:*",
+            "[::1]",
+            "[::1]:*",
+        ]
+
+    @classmethod
+    def allowed_origins(cls) -> list[str]:
+        cls.validate()
+        return [cls.PUBLIC_URL, "http://127.0.0.1:*", "http://localhost:*"]
 
 
 class DolphinSchedulerSettings:

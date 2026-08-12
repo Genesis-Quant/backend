@@ -284,7 +284,7 @@ def downgrade() -> None:
                 "completed_count": completed,
                 "failed_count": failed,
                 "request": json.dumps(request, ensure_ascii=False),
-                "error": "; ".join(dict.fromkeys(errors))[:4000] or None,
+                "error": "; ".join(dict.fromkeys(errors)) or None,
             },
         )
         for run, item in zip(run_rows, request_items, strict=True):

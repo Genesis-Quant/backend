@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from collections.abc import Sequence
@@ -1706,7 +1707,7 @@ def duration_seconds(started_at: datetime | None, finished_at: datetime | None) 
 
 def failure_message(client: DolphinSchedulerClient, task_instance_id: int, state: str) -> str:
     skip_line_num = 0
-    tail = ""
+    root_error = ""
     for _ in range(100):
         try:
             page = client.task_log(
@@ -1716,11 +1717,29 @@ def failure_message(client: DolphinSchedulerClient, task_instance_id: int, state
             )
         except DolphinSchedulerError:
             return f"DolphinScheduler task state: {state}"
-        tail = (tail + page["message"])[-4000:]
+        extracted = extract_root_error(page["message"])
+        if extracted:
+            root_error = extracted
         if not page["has_more"] or page["next_line_num"] == skip_line_num:
             break
         skip_line_num = page["next_line_num"]
-    return tail.strip() or f"DolphinScheduler task state: {state}"
+    return root_error or f"DolphinScheduler task state: {state}; call the task log API for the complete log"
+
+
+def extract_root_error(log: str) -> str:
+    """从完整任务日志提取根异常摘要；完整日志仍由分页日志接口保留。"""
+    server_responses = re.findall(
+        r"Server Response:\s*['\"](.*?)(?:['\"]\s+script:|['\"]\s*$)",
+        log,
+        flags=re.DOTALL,
+    )
+    if server_responses:
+        return server_responses[-1].strip()
+    exceptions = re.findall(
+        r"(?m)^\s*(?:RuntimeError|ValueError|TypeError|KeyError|FileNotFoundError|Exception):\s*(.+)$",
+        log,
+    )
+    return exceptions[-1].strip() if exceptions else ""
 
 
 def resolve_workspace_directory(workspace: WorkflowWorkspace) -> Path:

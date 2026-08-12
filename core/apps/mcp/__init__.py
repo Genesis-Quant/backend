@@ -1,0 +1,2 @@
+"""Arena MCP application."""
+

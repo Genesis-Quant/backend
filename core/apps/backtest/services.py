@@ -672,7 +672,7 @@ def calculate_batch_research_item(item: tuple[int, str, str, int, list[str], dic
         portfolios = read_result_dataframe(application, workspace_key, workflow_instance_id, "daily_portfolios", OUTPUT_FILES)
         return research_item_id, workflow_instance_id, backtest_metrics(parameters, portfolios), None
     except Exception as error:
-        return research_item_id, workflow_instance_id, None, str(error)[:4000]
+        return research_item_id, workflow_instance_id, None, str(error)
 
 
 def owned_batch_version(session: Session, user: User, project_id: int, version: int) -> BacktestVersion:
@@ -778,6 +778,6 @@ def serialize_batch_research(
     }
     if include_items:
         errors = [message for item in items for message in (item.get("error"), item.get("result_error")) if message]
-        result["error"] = "; ".join(dict.fromkeys(errors))[:4000] or None
+        result["error"] = "; ".join(dict.fromkeys(errors)) or None
         result["items"] = items
     return result

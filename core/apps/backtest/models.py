@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -100,5 +101,5 @@ class BacktestResearchItem(Base):
         comment="生成当前指标的工作流实例主键",
     )
     metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON_VALUE, comment="批量研究运行结果指标")
-    result_error: Mapped[str | None] = mapped_column(String(4000), comment="结果指标生成错误")
+    result_error: Mapped[str | None] = mapped_column(Text, comment="结果指标生成错误")
     research: Mapped[BacktestResearch] = relationship(back_populates="items")
