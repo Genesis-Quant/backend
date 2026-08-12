@@ -282,7 +282,49 @@ class DolphinSchedulerClient:
         limit: int = 1000,
     ) -> dict[str, Any]:
         """Read a page of a task log and return the next line cursor."""
-        result = self.request(
+        result = self.task_log_detail(task_instance_id, skip_line_num, limit)
+        if isinstance(result, dict):
+            message = str(result.get("message", ""))
+            # DolphinScheduler 3.2.2 reports lineNum=1 even when a request past
+            # the end of the log returns an empty message. An empty page must
+            # not advance the cursor or polling will invent one line per tick.
+            returned_lines = int(result.get("lineNum", 0)) if message else 0
+            next_line_num = skip_line_num + returned_lines
+            return {
+                "skip_line_num": skip_line_num,
+                "returned_lines": returned_lines,
+                "next_line_num": next_line_num,
+                "has_more": bool(
+                    message
+                    and self.task_log_message(
+                        self.task_log_detail(task_instance_id, next_line_num, 1)
+                    )
+                ),
+                "message": message,
+            }
+        message = str(result or "")
+        returned_lines = len(message.splitlines())
+        next_line_num = skip_line_num + returned_lines
+        return {
+            "skip_line_num": skip_line_num,
+            "returned_lines": returned_lines,
+            "next_line_num": next_line_num,
+            "has_more": bool(
+                message
+                and self.task_log_message(
+                    self.task_log_detail(task_instance_id, next_line_num, 1)
+                )
+            ),
+            "message": message,
+        }
+
+    def task_log_detail(
+        self,
+        task_instance_id: int,
+        skip_line_num: int,
+        limit: int,
+    ) -> Any:
+        return self.request(
             "GET",
             "/log/detail",
             params={
@@ -291,28 +333,12 @@ class DolphinSchedulerClient:
                 "limit": limit,
             },
         )
+
+    @staticmethod
+    def task_log_message(result: Any) -> str:
         if isinstance(result, dict):
-            message = str(result.get("message", ""))
-            # DolphinScheduler 3.2.2 reports lineNum=1 even when a request past
-            # the end of the log returns an empty message. An empty page must
-            # not advance the cursor or polling will invent one line per tick.
-            returned_lines = int(result.get("lineNum", 0)) if message else 0
-            return {
-                "skip_line_num": skip_line_num,
-                "returned_lines": returned_lines,
-                "next_line_num": skip_line_num + returned_lines,
-                "has_more": returned_lines == limit,
-                "message": message,
-            }
-        message = str(result or "")
-        returned_lines = len(message.splitlines())
-        return {
-            "skip_line_num": skip_line_num,
-            "returned_lines": returned_lines,
-            "next_line_num": skip_line_num + returned_lines,
-            "has_more": returned_lines == limit,
-            "message": message,
-        }
+            return str(result.get("message", ""))
+        return str(result or "")
 
     def stream_task_log(
         self,
