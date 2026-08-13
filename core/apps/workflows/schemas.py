@@ -76,6 +76,8 @@ class WorkflowInformation(BaseModel):
     created_at: datetime
     updated_at: datetime
     task_count: int
+    tasks: list[WorkflowTaskInformation]
+    tasks_error: str | None = None
     payload: WorkflowInputPayload | WorkflowStartPayload
     requested_outputs: list[str]
     state_history: list[dict[str, Any]]

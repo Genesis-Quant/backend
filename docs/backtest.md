@@ -1,251 +1,298 @@
-# Backtest MCP 业务契约
+# Backtest 请求
 
-Backtest 工作流先用 Factor Query 生成候选行情和策略数据，再把日频行情交给 DolphinDB Backtest
-插件执行八个固定生命周期回调。本文定义 MCP 请求；`message`、历史信号、订单、持仓、资金和
-事件字段见 `arena://docs/dolphindb-backtest`。
+Backtest 使用 Factor Query 准备候选代码和策略数据，将日线转换为开盘、收盘单档合成快照，并在
+DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓和
+事件接口见 `arena://docs/dolphindb-backtest`。
 
-## 1. 调用顺序
+## 调用
 
 ```text
 create_project(application="backtest", title=...)
-  -> result.id
-run_backtest(project_id=id, parameters=<BacktestParameters>)
-  -> 先在真实 DolphinDB 编译 utils + 8 callbacks
-  -> 编译成功后才创建 Workspace 并提交调度器
-get_workspace_status(workspace_id) 轮询到 SUCCESS
+run_backtest(project_id=result.id, parameters=<BacktestParameters>)
+get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="backtest", workflow_instance_id=...)
-可选 save_version(application="backtest", ...)
+save_version(application="backtest", project_id=..., workflow_instance_id=..., remark=...)
 ```
 
-`run_backtest` 的参数名是 `parameters`。调用前必须读取：
+`run_backtest` 会先连接 DolphinDB 编译 `utils` 和 callbacks。编译失败时不会创建 Workspace；编译
+成功后返回的 ID 只表示工作流已提交，仍需轮询。
 
-- `arena://schemas/backtest`：精确 JSON Schema；
-- `arena://docs/dsl`：两份 Factor Query 的构造；
-- `arena://docs/dolphindb-backtest`：Arena 适配后的回调输入和交易接口。
+## 顶层字段
 
-对不确定的通用 DolphinDB 内置函数调用 `describe_dolphindb_functions` 查询当前服务器
-`defs()`；不要按 Python、JavaScript 等其它语言的同名函数猜签名。
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `config` | object | 否 | 见下文 | 插件资金、费用和可开放选项 |
+| `params` | object | 否 | `{}` | 策略参数，通过 `getParams()` 读取 |
+| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询 |
+| `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询 |
+| `adj` | `hfq`、`qfq` 或 null | 否 | `null` | 合成快照价格复权方式 |
+| `annual_trading_days` | integer | 否 | `250` | 年化指标使用的交易日数，至少 1 |
+| `risk_free_rate` | finite number | 否 | `0.04` | Sharpe 年化无风险收益率 |
+| `utils` | string | 否 | `""` | 回调注册前原样执行的 DolphinDB 脚本 |
+| `callbacks` | object | 是 | — | 必须且只能包含八个固定回调 |
 
-## 2. BacktestParameters
+模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
 
-| 字段 | 类型 | 默认/要求 |
-| --- | --- | --- |
-| `config` | object | 资金、费用及插件选项；默认 cash=1000000、commission=0、tax=0、启用最低手续费 |
-| `params` | object | 策略参数字典；回调通过 `getParams()` 读取 |
-| `codes_query` | FactorQuery 或 null | 可选第一阶段候选股票查询 |
-| `dataset_query` | FactorQuery | 必填，生成回测行情范围和策略 DSL 数据 |
-| `adj` | `hfq`、`qfq` 或 null | 后复权、前复权或不复权 |
-| `annual_trading_days` | integer | 默认 250，至少 1，只用于结果年化 |
-| `risk_free_rate` | number | 默认 0.04，有限数，只用于 Sharpe 等结果指标 |
-| `utils` | string | 回调注册前原样执行的 DOS，可包含多个函数和全局初始化语句 |
-| `callbacks` | object | 必须且只能包含八个固定名称，每个值是完整 `def` |
+## 代码范围与两阶段查询
 
-禁止额外字段。`params` 与 `config` 是两套不同字典：前者属于策略，后者属于回测引擎。
+`codes_query=null` 时：
 
-## 3. 股票池与两阶段查询
+- `dataset_query.codes` 必须非空；
+- 当前股票回测只接受 `.SH` 和 `.SZ` 代码。
 
-### 静态股票池
+`codes_query` 非空时：
 
-设置 `codes_query=null`，且 `dataset_query.codes` 必须非空。当前股票回测只接受 `.SH`、`.SZ`
-代码。
+1. 执行第一阶段；
+2. 对过滤后结果的 `code` 取整个区间的去重并集；
+3. 用该并集覆盖 `dataset_query.codes`；
+4. 执行第二阶段完整查询。
 
-### 动态股票池
+第一阶段不是每日 join。若成员关系需要逐日生效，应在第二阶段再输出成员 BOOL derivative。为了
+让调出股票仍保留在当日 message 中并可卖出，通常不要把该成员条件放入第二阶段 `filters`，而在
+回调读取的前一交易日信号中判断。
 
-设置 `codes_query`。第一阶段结果 code 在整个期间取并集、去重，然后覆盖
-`dataset_query.codes`。它只限定候选集合，不自动保留每日 membership 语义。
+## `dataset_query`
 
-对于“调出指数后卖出”的策略，推荐：
+Runtime 自动补充合成快照需要的基础因子：
 
-- `codes_query.filters=["stock_pool_member"]`，缩小期间候选集合；
-- `dataset_query` 仍输出 `stock_pool_member`，但 `filters=[]`；
-- `onBar` 从上一可用截面选择 `stock_pool_member=true` 的目标；
-- 对不再入选但仍持有的候选股票把目标数量设为 0。
-
-若在第二阶段也过滤 membership，离开股票池的股票会从行情 message 消失，策略可能无法用当日
-价格平仓。
-
-## 4. dataset_query 与无未来数据
-
-Runtime 自动为行情构造读取 `open`、`low`、`high`、`close`、`vol`、`up_limit`、
-`down_limit`、`pre_close`；启用复权还会读取 `adj_factor`。这些列不必放入 factors，但
-FactorQuery 本身仍要求 `factors` 或 `derivatives` 至少一项。
-
-`symbol`、`tradeTime` 是框架生成列，不能作为 factor 或 derivative 名称。`adj` 非空时不能
-再定义名为 `adj_factor` 的 derivative。
-
-回调当天收到的 `message` 只含行情列，不含 DSL 自定义列。策略信号应调用：
-
-```dos
-signal = backtest::getLastData(context, message, false)
-history = backtest::getHistoryData(context, message, false)
+```text
+open, low, high, close, up_limit, down_limit, pre_close
 ```
 
-二者只返回严格早于当前 message 日期的数据。`false` 读取 dataset filters 前的数据，`true`
-读取 filters 后的数据。禁止直接从 context 内完整表读取当前日或未来行构造交易信号。
+`adj` 非 null 时还会读取 `adj_factor`。调用方不需要把这些列重复写入 `factors`，但
+`FactorQuery` 本身仍要求 `factors` 或 `derivatives` 至少一项非空。
 
-## 5. config
+保留规则：
 
-Runtime 固定并禁止用户传入：
+- `symbol`、`tradeTime` 由回测框架生成，不能作为 factor 或 derivative；
+- `adj` 非 null 时不能定义名为 `adj_factor` 的 derivative；
+- derivatives 存在于策略历史数据表，不会自动出现在快照 message；
+- 策略时序特征必须由 `lookback` 提供足够历史；
+- 未来收益、负 shift 等标签不能作为回测信号。
 
-| 字段 | Runtime 值 |
-| --- | --- |
-| `startDate`、`endDate` | 来自 dataset_query 输出区间 |
-| `strategyGroup` | Runtime 生成 |
-| `dataType` | 4，日频股票 |
-| `msgAsTable` | true |
-| `matchingMode` | 2 |
-
-`matchingMode` 不是策略可配置项。允许并由模型校验的常用配置：
-
-| 字段 | 类型/范围 |
-| --- | --- |
-| `cash` | 有限数且 >0 |
-| `commission`、`tax` | 有限数且 >=0 |
-| `matchingRatio`、`orderBookMatchingRatio` | 0..1 |
-| `frequency`、`latency` | 非负整数 |
-| `callbackForSnapshot`、`outputQueuePosition` | 0、1、2 |
-| `enableMinimumPerTransactionFee` 等布尔项 | 必须是 JSON boolean |
-
-其它插件配置可能通过 `config` 传入，但模型只对已知字段执行强校验。只有官方插件文档明确支持、
-且与 Arena 固定 dataType/matchingMode 兼容时才可使用。
-
-## 6. params、utils、callbacks 的职责
-
-- `params`：可变研究参数，例如窗口、持仓数、资金比例、手数；敏感性分析以 key 构造参数网格；
-- `utils`：可复用函数、优化器目标、代码转换、目标仓位计算，不要求“只能包含函数”；
-- `initialize`：一次性调用 `getParams()`，完成类型转换和 context 初始化；
-- `onBar`：编排信号、目标仓位、真实持仓、撤单/下单；
-- `onOrder`/`onTrade`：只在策略确实需要委托/成交状态时处理事件，不能用已发送订单代替真实持仓。
-
-八个回调及参数数量固定：
-
-| 名称 | 完整签名 |
-| --- | --- |
-| `initialize` | `def initialize(mutable context)` |
-| `beforeTrading` | `def beforeTrading(mutable context)` |
-| `onBar` | `def onBar(mutable context, message, indicator)` |
-| `onSnapshot` | `def onSnapshot(mutable context, message, indicator)` |
-| `onOrder` | `def onOrder(mutable context, events)` |
-| `onTrade` | `def onTrade(mutable context, events)` |
-| `afterTrading` | `def afterTrading(mutable context)` |
-| `finalize` | `def finalize(mutable context)` |
-
-未使用回调也必须提供并可 `return NULL`。函数名、大小写和参数数量不允许自定义。
-
-## 7. 完整请求示例
-
-以下示例演示动态股票池、参数化、复用 utils、上一截面信号、真实持仓、资金约束、先卖后买和
-事件计数。它是接口示例，不是对研究任务复杂度的上限，也不代表推荐策略。
+以下是可直接组成动态候选池和第二阶段信号表的两份完整查询：
 
 ```json
 {
-  "project_id": 24,
+  "codes_query": {
+    "start_date": "2020-01-01",
+    "end_date": "2025-12-31",
+    "lookback": "PT0S",
+    "codes": [],
+    "factors": ["weight_000300SH"],
+    "derivatives": {
+      "is_member": {
+        "type": "DIRECT",
+        "op": "binary.gt",
+        "fields": {"left": "weight_000300SH", "right": 0},
+        "params": {}
+      }
+    },
+    "filters": ["is_member"]
+  },
+  "dataset_query": {
+    "start_date": "2020-01-01",
+    "end_date": "2025-12-31",
+    "lookback": "P120D",
+    "codes": [],
+    "factors": ["weight_000300SH"],
+    "derivatives": {
+      "is_member": {
+        "type": "DIRECT",
+        "op": "binary.gt",
+        "fields": {"left": "weight_000300SH", "right": 0},
+        "params": {}
+      },
+      "momentum_20d": {
+        "type": "TS",
+        "op": "unary.pct_change",
+        "fields": {"col": "close"},
+        "params": {"periods": 20}
+      }
+    },
+    "filters": []
+  }
+}
+```
+
+第二阶段不按 `is_member` 删行；上文 utils 在前一截面显式检查该列，从而仍能对已调出成分下
+清仓目标。
+
+## `config`
+
+默认配置：
+
+```json
+{
+  "cash": 1000000,
+  "commission": 0,
+  "tax": 0,
+  "enableMinimumPerTransactionFee": true
+}
+```
+
+Runtime 允许并校验的常用字段：
+
+| 字段 | 类型与约束 | 说明 |
+| --- | --- | --- |
+| `cash` | finite number > 0 | 初始资金 |
+| `commission` | finite number >= 0 | 手续费率 |
+| `tax` | finite number >= 0 | 印花税率 |
+| `syntheticSpread` | finite number，`0 <= x < 1` | 合成盘口完整相对买卖价差 |
+| `latency` | integer >= 0 | 插件订单延时参数 |
+| `enableMinimumPerTransactionFee` | boolean | 最低单笔费用 |
+| `enableSellCloseRestrict` | boolean | 卖出可用量限制 |
+| `outputOrderInfo` | boolean | 输出订单风控信息 |
+| `outputQueuePosition` | 0、1 或 2 | 插件队列位置输出选项 |
+
+其余 Runtime 已声明的插件 boolean 选项也按 boolean 校验。`config` 是开放字典，能通过 JSON 校验
+不代表某个 DolphinDB 版本或当前快照模式一定支持该选项。
+
+以下字段由 Runtime 强制设置，用户传入会被拒绝：
+
+```text
+startDate, endDate, strategyGroup, dataType, msgAsTable, matchingMode,
+frequency, callbackForSnapshot, msgAsPiecesOnSnapshot,
+matchingRatio, orderBookMatchingRatio
+```
+
+实际固定值见 `arena://docs/dolphindb-backtest`。
+
+## `params`
+
+`params` 只上传给策略，不传给插件：
+
+```json
+{
+  "rebalanceDays": 20,
+  "capitalRatio": 0.9,
+  "minimumMomentum": 0.05
+}
+```
+
+在 `initialize` 中调用 `getParams()` 并进行 `long()`、`double()`、`bool()` 等明确类型转换。策略
+不得假定缺失 key 会自动获得默认值。需要参数敏感性分析的值应放在这里，而不是硬编码在 utils。
+
+## `utils`
+
+`utils` 是一个 DolphinDB 脚本字符串，在 callbacks 之前原样执行。它可以包含多个函数和确有需要
+的顶层语句，不是函数名到源码的字典。callbacks 引用的每个自定义函数必须在同一请求的 `utils`
+中定义。
+
+```dos
+def rebalanceEqualWeight(mutable context, message, signal) {
+    selected = select code
+               from signal
+               where is_member == true and momentum_20d > 0
+    selectedCodes = exec code from selected
+    for (rowIndex in 0..(message.rows() - 1)) {
+        stockCode = message.symbol[rowIndex]
+        if (!(stockCode in selectedCodes)) {
+            backtest::order_target(context, message, stockCode, 0l, "exit")
+        }
+    }
+    if (size(selectedCodes) == 0) return
+    portfolios = Backtest::getTotalPortfolios(context.engine)
+    targetValue = double(portfolios["totalEquity"]) *
+        context["capitalRatio"] / size(selectedCodes)
+    for (rowIndex in 0..(message.rows() - 1)) {
+        stockCode = message.symbol[rowIndex]
+        if (stockCode in selectedCodes) {
+            backtest::order_target_value(
+                context, message, stockCode, targetValue, "entry"
+            )
+        }
+    }
+}
+```
+
+## `callbacks`
+
+JSON 必须正好包含以下八个 key，且每个值必须是同名完整函数定义：
+
+```dos
+def initialize(mutable context)
+def beforeTrading(mutable context)
+def onBar(mutable context, message, indicator)
+def onSnapshot(mutable context, message, indicator)
+def onOrder(mutable context, orders)
+def onTrade(mutable context, trades)
+def afterTrading(mutable context)
+def finalize(mutable context)
+```
+
+未使用的回调仍要定义并可 `return NULL`。不能改变函数名、参数数量或只传函数体。当前固定模式在
+09:30 和 15:00 触发 `onSnapshot`，不触发 `onBar`；准确生命周期见运行契约。
+
+一个与上面 utils 配套的回调对象：
+
+```json
+{
+  "initialize": "def initialize(mutable context) { params = getParams(); context[\"rebalanceDays\"] = long(params[\"rebalanceDays\"]); context[\"capitalRatio\"] = double(params[\"capitalRatio\"]); context[\"tradingDays\"] = 0l; context[\"rejectedOrders\"] = 0l; context[\"filledShares\"] = 0l }",
+  "beforeTrading": "def beforeTrading(mutable context) { Backtest::cancelOrder(context.engine); return NULL }",
+  "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
+  "onSnapshot": "def onSnapshot(mutable context, message, indicator) { if (message.rows() == 0 || time(message.timestamp[0]) != 09:30:00.000) return; context[\"tradingDays\"] = context[\"tradingDays\"] + 1l; if ((context[\"tradingDays\"] - 1l) % context[\"rebalanceDays\"] != 0l) return; signal = backtest::getLastData(context, message, false); if (signal.rows() == 0) return; rebalanceEqualWeight(context, message, signal) }",
+  "onOrder": "def onOrder(mutable context, orders) { if (int(orders[5]) < 0) context[\"rejectedOrders\"] = context[\"rejectedOrders\"] + 1l }",
+  "onTrade": "def onTrade(mutable context, trades) { context[\"filledShares\"] = context[\"filledShares\"] + long(trades[3]) }",
+  "afterTrading": "def afterTrading(mutable context) { return NULL }",
+  "finalize": "def finalize(mutable context) { print(\"回测结束：拒单=\" + string(context[\"rejectedOrders\"]) + \"，成交股数=\" + string(context[\"filledShares\"])) }"
+}
+```
+
+该对象只是说明序列化格式和接口连接。策略的选股、组合、退出与风控由调用方定义，Arena 不规定
+策略类别或数量。
+
+## 完整参数外形
+
+以下省略 DSL 节点内部细节时不能直接提交；它用于展示顶层组合关系：
+
+```json
+{
+  "project_id": 9,
   "parameters": {
     "config": {
       "cash": 1000000,
       "commission": 0.0003,
       "tax": 0.001,
-      "enableMinimumPerTransactionFee": true
+      "syntheticSpread": 0.001,
+      "enableMinimumPerTransactionFee": true,
+      "outputOrderInfo": true
     },
-    "params": {
-      "rebalanceBars": 5,
-      "holdingCount": 10,
-      "capitalRatio": 0.95,
-      "lotSize": 100,
-      "minimumMomentum": 0.0
-    },
-    "codes_query": {
-      "start_date": "2020-01-01",
-      "end_date": "2026-01-01",
-      "lookback": "P0D",
-      "codes": [],
-      "factors": ["weight_000300SH"],
-      "derivatives": {
-        "stock_pool_member": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        }
-      },
-      "filters": ["stock_pool_member"]
-    },
-    "dataset_query": {
-      "start_date": "2020-01-01",
-      "end_date": "2026-01-01",
-      "lookback": "P240D",
-      "codes": [],
-      "factors": ["weight_000300SH"],
-      "derivatives": {
-        "stock_pool_member": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        },
-        "momentum_120d": {
-          "type": "TS",
-          "op": "unary.pct_change",
-          "fields": {"col": "close"},
-          "params": {"periods": 120}
-        }
-      },
-      "filters": []
-    },
+    "params": {"rebalanceDays": 20, "capitalRatio": 0.9},
+    "codes_query": "<完整 FactorQuery 或 null>",
+    "dataset_query": "<完整 FactorQuery>",
     "adj": "hfq",
     "annual_trading_days": 250,
-    "risk_free_rate": 0.04,
-    "utils": "def arenaCode(symbolValue) { return strReplace(strReplace(string(symbolValue), \".XSHE\", \".SZ\"), \".XSHG\", \".SH\") }\n\ndef currentLongQuantity(context, symbolValue) { position = Backtest::getPosition(context.engine, symbolValue, \"stock\")[\"longPosition\"]; if (count(position) == 0 || isNull(position[0])) return 0l; return long(position[0]) }\n\ndef roundToLot(value, lotSize) { if (value <= 0) return 0l; return long(floor(value / double(lotSize))) * lotSize }",
-    "callbacks": {
-      "initialize": "def initialize(mutable context) { strategyParams = getParams(); context[\"barCount\"] = 0l; context[\"orderEventCount\"] = 0l; context[\"tradeEventCount\"] = 0l; context[\"rebalanceBars\"] = long(strategyParams[\"rebalanceBars\"]); context[\"holdingCount\"] = long(strategyParams[\"holdingCount\"]); context[\"capitalRatio\"] = double(strategyParams[\"capitalRatio\"]); context[\"lotSize\"] = long(strategyParams[\"lotSize\"]); context[\"minimumMomentum\"] = double(strategyParams[\"minimumMomentum\"]) }",
-      "beforeTrading": "def beforeTrading(mutable context) { return NULL }",
-      "onBar": "def onBar(mutable context, message, indicator) { context[\"barCount\"] = context[\"barCount\"] + 1l; if ((context[\"barCount\"] - 1l) % context[\"rebalanceBars\"] != 0l) return; signal = backtest::getLastData(context, message, false); if (signal.rows() == 0) return; eligible = select code, momentum_120d from signal where stock_pool_member == true, not isNull(momentum_120d), momentum_120d > context[\"minimumMomentum\"]; selectedCount = min(context[\"holdingCount\"], long(eligible.rows())); selectedCodes = take(\"\", 0); if (selectedCount > 0) { selected = eligible[isort(eligible.momentum_120d, false)[0:selectedCount]]; selectedCodes = string(selected.code) }; rowCount = message.rows(); currentQuantities = take(0l, rowCount); targetQuantities = take(0l, rowCount); prices = double(message.open); equity = double(Backtest::getAvailableCash(context.engine, \"stock\")); for (index in 0..(rowCount - 1)) { currentQuantities[index] = currentLongQuantity(context, message.symbol[index]); equity = equity + double(currentQuantities[index]) * prices[index] }; if (selectedCount > 0) { allocation = equity * context[\"capitalRatio\"] / double(selectedCount); for (index in 0..(rowCount - 1)) { if (arenaCode(message.symbol[index]) in selectedCodes && prices[index] > 0) targetQuantities[index] = roundToLot(allocation / prices[index], context[\"lotSize\"]) } }; for (index in 0..(rowCount - 1)) { difference = targetQuantities[index] - currentQuantities[index]; if (difference < 0) Backtest::submitOrder(context.engine, (message.symbol[index], context.tradeTime, 5, prices[index], -difference, 3), \"rebalanceSell\") }; for (index in 0..(rowCount - 1)) { difference = targetQuantities[index] - currentQuantities[index]; if (difference > 0) Backtest::submitOrder(context.engine, (message.symbol[index], context.tradeTime, 5, prices[index], difference, 1), \"rebalanceBuy\") } }",
-      "onSnapshot": "def onSnapshot(mutable context, message, indicator) { return NULL }",
-      "onOrder": "def onOrder(mutable context, events) { context[\"orderEventCount\"] = context[\"orderEventCount\"] + long(count(events)) }",
-      "onTrade": "def onTrade(mutable context, events) { context[\"tradeEventCount\"] = context[\"tradeEventCount\"] + long(count(events)) }",
-      "afterTrading": "def afterTrading(mutable context) { return NULL }",
-      "finalize": "def finalize(mutable context) { print(\"bars=\" + string(context[\"barCount\"]) + \" orderEvents=\" + string(context[\"orderEventCount\"]) + \" tradeEvents=\" + string(context[\"tradeEventCount\"])) }"
-    }
+    "risk_free_rate": 0.03,
+    "utils": "<完整 DolphinDB 脚本>",
+    "callbacks": "<上面的八回调对象>"
   }
 }
 ```
 
-此示例只使用已在适配文档中说明的 Arena/Backtest 接口。若自行加入 `find`、优化器、矩阵函数
-等通用内置函数，必须先用 `describe_dolphindb_functions` 核对签名。例如当前服务器的
-`find` 是 `find(X,Y)`，不是单参数布尔索引函数。
+实际提交必须用 JSON object 替换三个占位字符串。
 
-## 8. 预检、运行与输出
+## 输出
 
-`run_backtest` 会在创建 Workspace 前：
+普通项目固定请求四个 Parquet：
 
-1. 连接部署中的 DolphinDB；
-2. 加载 Backtest 和 MatchingEngineSimulator 插件及 Runtime `backtest` 模块；
-3. 执行/编译 `utils`；
-4. 编译八个 callbacks。
-
-语法、函数参数数量或缺失符号会直接作为 MCP tool error 返回，不会生成注定失败的调度任务。
-预检只能证明脚本可编译；空数据、数组越界、资金不足、订单拒绝等运行期问题仍需由真实回测发现。
-
-普通项目固定生成四项：
-
-| 输出名 | 文件 | 用途 |
+| 逻辑名 | 文件名 | 内容 |
 | --- | --- | --- |
-| `trade_details` | `trade_details.parquet` | 成交明细 |
-| `daily_positions` | `daily_positions.parquet` | 每日证券持仓 |
-| `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、市值、总权益、净值 |
+| `trade_details` | `trade_details.parquet` | 委托与成交明细 |
+| `daily_positions` | `daily_positions.parquet` | 每日持仓 |
+| `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、权益、净值、费用和盈亏 |
 | `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日交易统计 |
 
-Runtime 还支持 `return_summary`、`engine_stat`，但普通项目不会默认请求。工作流成功后可保存版本，
-后端会从结果计算摘要指标。
+Workspace SUCCESS 只说明程序执行完成。验证策略还应检查成交、持仓、资金曲线和 Task 日志。
 
-## 9. 提交前检查
+## 提交前检查
 
-- 静态/动态股票池契约满足，动态候选查询不会返回空 code；
-- dataset 不过滤掉策略平仓所需的持仓股票；
-- 所有交易信号严格来自当前日期之前的数据；
-- params 中每个 key 在 initialize 明确读取并转换类型；
-- utils 与八个回调都是完整脚本，没有占位符；
-- 目标数量按交易单位取整、卖出不超过真实 longPosition；
-- 调仓前考虑未成交订单，资金和手续费不会导致系统性拒单；
-- 不确定的 DolphinDB 内置函数已通过实时签名工具核对；
-- 已理解 `matchingMode=2` 为 Runtime 固定值，未尝试覆盖。
+- 静态股票池非空，或第一阶段能产生候选代码；
+- 第二阶段仍包含退出持仓所需的代码；
+- 所有信号通过 `getLastData` / `getHistoryData` 使用当前日期之前的数据；
+- `params` 的 key 均存在并在 initialize 转换类型；
+- `utils` 包含 callbacks 引用的所有函数；
+- callbacks 恰好八个，名称和参数数量正确；
+- 目标仓位合计、费用和 spread 不会系统性造成资金不足；
+- 不把 `submitOrder` 返回订单号当作成交结果；
+- 不访问 Runtime 会话内部变量或把 DSL derivative 当成 message 列。

@@ -1,149 +1,80 @@
-# Factor Query DSL 构造契约
+# Factor Query DSL
 
-本文只说明 Arena DSL 的图结构和引用规则。可用算符及其字段不能手写猜测，必须从
+DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是名称到节点的映射；命名节点会
+成为输出列，也可以被其它节点、`filters` 和 `on` 引用。
+
+本页只定义组合规则。当前有哪些算符、每个算符的准确字段与参数，必须通过
 `list_dsl_operators` 和 `describe_dsl_operator` 获取。
 
-## 1. FactorQuery
+## 节点结构
 
 ```json
 {
-  "start_date": "2024-01-01",
-  "end_date": "2024-12-31",
-  "lookback": "P60D",
-  "codes": ["000001.SZ", "600000.SH"],
-  "factors": ["close", "pe"],
-  "derivatives": {},
-  "filters": []
+  "type": "DIRECT | TS | CS",
+  "op": "算符完整名称",
+  "fields": {},
+  "params": {},
+  "on": "可选，仅 TS/CS"
 }
 ```
 
-| 字段 | 业务语义 |
+| 字段 | 含义 |
 | --- | --- |
-| `start_date`、`end_date` | 输出闭区间，严格 `YYYY-MM-DD`，开始不得晚于结束 |
-| `lookback` | 只增加计算输入历史；最终输出仍从 `start_date` 开始；不得为负 |
-| `codes` | 静态代码范围；空数组表示全市场。两阶段任务中第二阶段会被第一阶段结果覆盖 |
-| `factors` | 直接从 CoreData 输出的原始列 |
-| `derivatives` | `输出列名 -> Derivative` 的有向无环图 |
-| `filters` | BOOL derivative 名称列表；按 AND 过滤最终输出 |
+| `type` | 计算上下文，必须与算符定义一致 |
+| `op` | Runtime 注册的完整算符名 |
+| `fields` | 操作数；字段名由具体算符定义 |
+| `params` | 非列参数；字段名、类型和默认值由具体算符定义 |
+| `on` | TS/CS 可选的 BOOL 条件；DIRECT 禁止 |
 
-`factors` 与 `derivatives` 至少一项非空。`time`、`code` 是框架列，不能出现在
-`factors` 或作为 derivative 名称。名称去除首尾空格后必须唯一。
+即使算符没有参数，`params` 也应传 `{}`。不要把 `fields` 中的列输入移入 `params`，也不要根据
+函数名称猜 `periods`、`window`、`min_periods` 等参数。
 
-## 2. Derivative 节点
+## 三种计算上下文
 
-每个节点统一为：
+- `DIRECT`：逐行计算，不建立时序或截面分组；禁止 `on`。
+- `TS`：按 `code` 分组并按 `time` 排序计算。
+- `CS`：按 `time` 分组，在同一交易日的代码截面计算。
 
-```json
-{
-  "type": "TS",
-  "op": "unary.pct_change",
-  "fields": {"col": "close"},
-  "params": {"periods": 20}
-}
-```
+TS/CS 的 `on` 可为：
 
-- `type`：`DIRECT` 逐行、`TS` 按 `code` 排序分组、`CS` 按 `time` 截面分组；
-- `op`：完整算符名；
-- `fields`：输入列、常量、其它命名 derivative，或嵌套 Derivative；
-- `params`：算符参数；没有参数也必须传 `{}`；
-- TS/CS 算符可能有顶层 `on`，具体以该算符 Schema 为准。
+- 顶层 BOOL derivative 名称；
+- `true` / `false`；
+- 返回 BOOL 的嵌套 DSL；
+- `null` 或省略，表示不限制输入。
 
-同一个通用算符名可能因 `type` 不同具有不同分组语义。`op` 和 `type` 必须与
-`describe_dsl_operator` 返回值一致。
+使用 `on` 时，只有条件为 true 的行参与该算符计算；false/NULL 行的算符结果为 NULL。`on` 不会
+从最终结果删除行，删行必须使用 Query 顶层 `filters`。
 
-## 3. 算符发现
+## 操作数
 
-```text
-list_dsl_operators(search="rolling", operator_type="TS")
-describe_dsl_operator(operator="unary.rolling_std")
-```
+具体算符的 `fields` 通常使用以下一种或多种操作数：
 
-`describe_dsl_operator` 返回：
+- 字符串：基础 factor 或顶层命名 derivative 的列引用；
+- number / boolean：常量；
+- object：嵌套 DSL 节点；
+- array：多操作数算符的输入列表。
 
-- `type`、`output_kind`；
-- `fields` 的精确 JSON Schema；
-- `params` 的精确 JSON Schema；
-- 是否支持及如何构造 `on`。
+字符串永远按列引用处理。需要字符串字面量时，应使用 Catalog 中明确支持字面量的算符和参数，
+不能把普通字符串直接放入数值操作数位置。
 
-不要把其它库的参数名带进来。例如 TA-Lib 风格算符可能使用 `time_period`，Runtime 原生
-rolling 算符可能使用 `window`、`min_periods`；只接受返回 Schema 声明的名字。
-
-## 4. 引用和依赖
-
-字符串 operand 的解析顺序：
-
-1. 同名 derivative 输出；
-2. 原始 CoreData factor；
-3. 否则运行时查询会失败。
-
-derivative 可以引用定义顺序在后的节点，Runtime 会解析依赖；但禁止直接或间接循环：
-
-```text
-a -> b -> a   非法
-```
-
-filters 只能引用顶层、已命名且静态返回 `BOOL` 的 derivative。数值 derivative 不能作为
-filter。逻辑操作数和 `on` 引用也必须是 BOOL。
-
-## 5. `on` 与最终 `filters` 不同
-
-- `on`：只控制某一个 TS/CS 计算参与哪些行；不参与的行该 derivative 输出 NULL；
-- `filters`：所有 derivative 计算完成后，删除不满足条件的最终输出行。
-
-例如只在指数成分内计算截面排名，但保留非成分行供其它节点使用：
-
-```json
-"momentum_rank": {
-  "type": "CS",
-  "op": "unary.rank_pct",
-  "fields": {"col": "momentum_20d"},
-  "params": {"ascending": true, "ties_method": "min"},
-  "on": "is_member"
-}
-```
-
-## 6. lookback
-
-lookback 必须覆盖最长历史依赖，并留出停牌/缺失数据余量。它是日历时长，不是交易 Bar
-数量。常见依赖：
-
-- `pct_change(periods=120)`：至少覆盖 120 个有效交易日；
-- `rolling_std(window=60)`：至少覆盖 60 个有效交易日；
-- 两者串联：覆盖前置收益计算和 rolling 窗口，而不是只取两者最大值。
-
-lookback 不会让早期历史行进入最终 Parquet。
-
-## 7. 完整示例
-
-目标：全市场读取，逐日保留沪深300且 PE>5 的股票；计算20日动量、日收益、20日波动和
-指数成分内动量分位数。
+示例：
 
 ```json
 {
-  "start_date": "2024-01-01",
-  "end_date": "2024-12-31",
-  "lookback": "P120D",
-  "codes": [],
-  "factors": ["close", "pe", "weight_000300SH"],
+  "type": "DIRECT",
+  "op": "binary.gt",
+  "fields": {"left": "pe", "right": 5},
+  "params": {}
+}
+```
+
+这里 `"pe"` 是列，`5` 是常量。
+
+## 命名与依赖
+
+```json
+{
   "derivatives": {
-    "is_member": {
-      "type": "DIRECT",
-      "op": "binary.gt",
-      "fields": {"left": "weight_000300SH", "right": 0},
-      "params": {}
-    },
-    "pe_gt_5": {
-      "type": "DIRECT",
-      "op": "binary.gt",
-      "fields": {"left": "pe", "right": 5},
-      "params": {}
-    },
-    "momentum_20d": {
-      "type": "TS",
-      "op": "unary.pct_change",
-      "fields": {"col": "close"},
-      "params": {"periods": 20}
-    },
     "daily_return": {
       "type": "TS",
       "op": "unary.pct_change",
@@ -155,19 +86,85 @@ lookback 不会让早期历史行进入最终 Parquet。
       "op": "unary.rolling_std",
       "fields": {"col": "daily_return"},
       "params": {"window": 20, "min_periods": 20}
-    },
-    "momentum_rank": {
-      "type": "CS",
-      "op": "unary.rank_pct",
-      "fields": {"col": "momentum_20d"},
-      "params": {"ascending": true, "ties_method": "min"},
-      "on": "is_member"
     }
-  },
-  "filters": ["is_member", "pe_gt_5"]
+  }
 }
 ```
 
-该示例用于说明结构，不代表任何推荐策略。构造其它算符时重新查询算符 Schema，不要复制
-这里的 fields/params。
+Runtime 从所有 `fields`、嵌套节点和 `on` 收集依赖，按拓扑顺序计算，所以 JSON 对象中的书写顺序
+不是依赖保证。循环依赖会在提交前拒绝。
 
+命名规则：
+
+- 去除首尾空格后不能为空或重复；
+- 不能使用保留名 `time`、`code`；
+- 不能与 `factors` 中的基础输出列同名。
+
+## BOOL 约束
+
+`describe_dsl_operator` 的 `output_kind` 表示静态输出类型。以下位置必须是 BOOL：
+
+- Query 顶层 `filters` 引用的 derivative；
+- TS/CS 的 `on`；
+- `and`、`or`、`not` 等逻辑算符的操作数；
+- 条件选择算符的 condition。
+
+Runtime 会拒绝静态可确定为数值的节点，但基础列本身的数据库类型仍应由调用方根据 Catalog 选择
+正确。
+
+## `filters`
+
+`filters` 只能列出顶层命名 BOOL derivative：
+
+```json
+{
+  "derivatives": {
+    "is_member": {
+      "type": "DIRECT",
+      "op": "binary.gt",
+      "fields": {"left": "weight_000300SH", "right": 0},
+      "params": {}
+    },
+    "pe_positive": {
+      "type": "DIRECT",
+      "op": "binary.gt",
+      "fields": {"left": "pe", "right": 0},
+      "params": {}
+    }
+  },
+  "filters": ["is_member", "pe_positive"]
+}
+```
+
+语义为 `is_member AND pe_positive`。若需要 OR，先用逻辑算符构造一个命名 BOOL derivative，再把
+该名称放入 `filters`。
+
+## 基础因子与派生依赖
+
+`factors` 表示需要直接输出的基础列。即使某基础列只被 derivative 引用、不在 `factors` 中，
+Runtime 也会把它加入内部读取集合，但不会把它作为最终基础输出列。
+
+例如 derivative 引用 `close`，而 `factors=[]`，Runtime 仍读取 `close`。请求仍必须满足
+`factors` 与 `derivatives` 至少一项非空。
+
+## 时序边界
+
+滚动、滞后、指数加权和 TA-Lib 算符需要历史数据。通过 `lookback` 加载开始日期之前的历史；最终
+输出仍从 `start_date` 开始。`lookback` 是日历时长，不是交易日数量，应为停牌和非交易日留出
+余量。
+
+在回测中，负 `shift` 或其它未来数据只能作为分析标签，不能作为策略信号。回测回调读取策略数据
+时还必须使用 `getLastData` / `getHistoryData` 的严格历史边界。
+
+## 正确的发现流程
+
+1. `list_dsl_operators(search="close")` 查基础因子和候选算符；
+2. `describe_dsl_operator(operator="unary.rolling_mean")` 获取准确 definition；
+3. 按 definition 构造节点；
+4. 对请求中每个不同 `op` 重复第 2 步；
+5. 用对应的 `arena://schemas/query`、`arena://schemas/factor` 或
+   `arena://schemas/backtest` 校验顶层对象；
+6. 提交给对应 `run_*` 工具。
+
+`arena://dsl/catalog` 提供完整 Catalog，适合一次性加载；仍应以其中每个 operator 的
+`definition` 为准。

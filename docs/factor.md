@@ -1,111 +1,93 @@
-# Factor MCP 业务契约
+# Factor 分析请求
 
-Factor 工作流用于研究一个或多个因子与一个或多个未来收益标签的关系。它先生成研究数据，再按
-交易日计算 Pearson IC、Rank IC 和市值加权分组收益。输出列名严格由请求中的
-`factor_columns`、`return_columns` 拼接，读取报告时不得假定列名叫 `ret0`。
+Factor 工作流研究一个或多个因子与一个或多个收益标签之间的截面关系。它支持可选的第一阶段
+候选池查询，第二阶段生成分析数据，然后计算逐日 IC、Rank IC 和市值加权分组收益。
 
-## 1. 调用顺序
+## 调用
 
 ```text
 create_project(application="factor", title=...)
-  -> result.id
-run_factor_analysis(project_id=id, parameters=<FactorAnalysisParameters>)
-  -> workspace_id + workflow_instance_id
-get_workspace_status(workspace_id) 轮询到 SUCCESS
+run_factor_analysis(project_id=result.id, parameters=<FactorAnalysisParameters>)
+get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="factor", workflow_instance_id=...)
-  -> information_coefficient + group_returns
-可选 save_version(application="factor", project_id=id, workflow_instance_id=...)
+save_version(application="factor", project_id=..., workflow_instance_id=..., remark=...)
 ```
 
-`run_factor_analysis` 的参数名是 `parameters`，不能写成 `request`。精确 JSON 类型见
-`arena://schemas/factor`；其中两份查询都遵循 `arena://docs/dsl`。
+项目创建时包含一个可更新的未保存版本。保存版本不是读取结果的前提，但只有当前成功工作流可以
+保存。
 
-## 2. 参数字段
+## 顶层字段
 
-| 字段 | 类型 | 要求 |
-| --- | --- | --- |
-| `codes_query` | FactorQuery 或 null | 第一阶段候选股票查询；结果 code 去重后覆盖第二阶段 `codes` |
-| `dataset_query` | FactorQuery | 第二阶段研究数据查询，必填；自身 derivatives 和 filters 保留 |
-| `factor_columns` | string[] | 待分析因子，至少 1 个、不得重复 |
-| `return_columns` | string[] | 未来收益标签，至少 1 个、不得重复 |
-| `n_groups` | integer | 分组数量，默认 5，至少 2 |
-| `preprocess` | boolean | 默认 true；执行内置去极值、标准化、中性化和分组 |
-| `market_value_column` | string | 默认 `circ_mv`；用于中性化及分组收益加权 |
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选池查询 |
+| `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询 |
+| `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
+| `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
+| `n_groups` | integer | 否 | `5` | 每日等数量分组数，至少 2 |
+| `preprocess` | boolean | 否 | `true` | 是否执行 Runtime 内置预处理 |
+| `market_value_column` | string | 否 | `circ_mv` | 中性化控制变量和分组收益权重 |
 
-`factor_columns` 与 `return_columns` 不能重叠，`market_value_column` 不能同时扮演这两种角色。
-模型会把三者自动补进 `dataset_query.factors`（已由 derivative 生成的名称不会重复添加），但
-构造请求时仍应明确检查每个名称确实由第二阶段输出。
+`factor_columns`、`return_columns`、`market_value_column` 不能互相承担冲突角色。Runtime 会把这
+些必要列自动加入 `dataset_query.factors`，但如果同名 derivative 已存在则使用 derivative 输出。
 
-## 3. 两阶段动态股票池
+## 两阶段查询
 
-第一阶段不是逐日结果与第二阶段逐行 join。实际语义是：
+当 `codes_query` 非空时：
 
 1. 执行 `codes_query`；
-2. 对其结果的 `code` 取期间并集并去重；
-3. 用这个候选代码集合替换 `dataset_query.codes`；
-4. 完整执行 `dataset_query`。
+2. 对其过滤后结果的 `code` 去重；
+3. 将去重结果设为 `dataset_query.codes`；
+4. 执行完整 `dataset_query`，包括其自己的日期条件、derivatives 和 filters。
 
-因此，若要求“每一天都必须是沪深300且 PE>5”，membership 与 PE filter 要在两阶段都出现：
+第一阶段得到的是整个研究区间的候选代码并集，不会把第一阶段每日行过滤自动复制到第二阶段。
+需要逐日动态成员关系时，在 `dataset_query` 中再次定义成员 derivative 和 filter。
 
-- 第一阶段减少期间候选代码；
-- 第二阶段保证每日研究截面仍满足条件。
+`codes_query=null` 时直接使用 `dataset_query.codes` 的语义；其中空数组遵循 Query 的全代码域规则。
 
-只放在第一阶段会把“期间任何一天满足过条件”的股票带进第二阶段所有日期。两阶段日期范围
-通常一致；第二阶段可配置更长 `lookback` 以计算时序因子。
+## 内置预处理
 
-## 4. 未来收益标签
+`preprocess=true` 时，Runtime 对每个交易日、每个因子分别处理：
 
-收益标签是 DSL derivative，不是 Arena 固定字段。使用实际命名，例如
-`future_1d_log_return`、`future_5d_log_return`。一种清晰构造是先算历史方向的收益，再用负
-shift 对齐到当前因子日：
+1. 过滤因子、市值或行业无效的行；
+2. MAD 去极值；
+3. z-score 标准化；
+4. 对 `log(max(market_value, 1))` 和行业哑变量做截面 OLS；
+5. 将残差再次 z-score；
+6. 按残差从小到大划分 `n_groups` 个等数量组。
 
-```json
-"daily_log_return": {
-  "type": "TS",
-  "op": "unary.log_return",
-  "fields": {"col": "close"},
-  "params": {"periods": 1}
-},
-"future_1d_log_return": {
-  "type": "TS",
-  "op": "unary.shift",
-  "fields": {"col": "daily_log_return"},
-  "params": {"periods": -1}
-}
-```
+行业映射在任务运行时从当前股票元数据取得，不由 `dataset_query` 提供。若某日某因子的有效样本
+数不足以完成回归，该日该因子的处理值和分组保持空值，不会用未中性化值代替。
 
-未来收益只允许作为研究标签，不能被因子、股票池 filter 或实际交易信号引用。使用这些算符前
-仍需调用 `describe_dsl_operator` 核对当前 Runtime 的精确 Schema。
+启用内置预处理时：
 
-## 5. `preprocess`
+- `dataset_query` 不能输出 `industry`；
+- 不能预先定义 `<factor>_group`；
+- 输出分析所用因子列是中性化后的值。
 
-### `preprocess=true`
+`preprocess=false` 时 Runtime 不修改因子值，也不生成分组；`dataset_query` 必须为每个因子输出
+`<factor>_group`，分组值应为 `0..n_groups-1`。
 
-Runtime 对每个因子执行 MAD 去极值、标准化、市值与行业中性化，并生成整数分组列
-`<factor>_group`。此时：
+## 收益标签
 
-- `dataset_query` 不得自行输出 `<factor>_group`；
-- `dataset_query` 不得自行输出保留列 `industry`；
-- 截面样本过少、因子全空或无法完成中性化时，分析可能失败或产生空指标，不能用兜底数值替代。
+收益标签由 DSL 生成，Runtime 不假定 `ret0`、`ret1` 等固定名称。未来收益常用“先计算区间收益，
+再负向 shift”的结构。其字段必须与请求中的 `return_columns` 完全一致。
 
-### `preprocess=false`
+因子分析允许使用未来收益作为标签，但这些列不能再作为回测交易信号。
 
-Runtime 不做上述预处理。`dataset_query` 必须为每个因子显式输出对应的
-`<factor>_group`，否则请求校验失败。
+## 完整示例
 
-## 6. 完整多因子、多收益示例
-
-目标：研究沪深300且 PE>5 的逐日动态股票池，分析 20 日动量与 5 日反转，对应未来 1 日和
-未来 5 日对数收益。
+以下请求先用沪深300且 PE>5 得到候选代码，再在第二阶段保留逐日沪深300成员，研究 20 日动量
+对未来 1 日和 5 日对数收益的关系：
 
 ```json
 {
-  "project_id": 18,
+  "project_id": 7,
   "parameters": {
     "codes_query": {
       "start_date": "2020-01-01",
-      "end_date": "2026-01-01",
-      "lookback": "P0D",
+      "end_date": "2025-12-31",
+      "lookback": "PT0S",
       "codes": [],
       "factors": ["weight_000300SH", "pe"],
       "derivatives": {
@@ -126,10 +108,10 @@ Runtime 不做上述预处理。`dataset_query` 必须为每个因子显式输�
     },
     "dataset_query": {
       "start_date": "2020-01-01",
-      "end_date": "2026-01-01",
+      "end_date": "2025-12-31",
       "lookback": "P180D",
       "codes": [],
-      "factors": ["close", "circ_mv", "weight_000300SH", "pe"],
+      "factors": ["close", "circ_mv", "weight_000300SH"],
       "derivatives": {
         "is_hs300": {
           "type": "DIRECT",
@@ -137,29 +119,11 @@ Runtime 不做上述预处理。`dataset_query` 必须为每个因子显式输�
           "fields": {"left": "weight_000300SH", "right": 0},
           "params": {}
         },
-        "pe_gt_5": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "pe", "right": 5},
-          "params": {}
-        },
         "momentum_20d": {
           "type": "TS",
           "op": "unary.pct_change",
           "fields": {"col": "close"},
           "params": {"periods": 20}
-        },
-        "return_5d": {
-          "type": "TS",
-          "op": "unary.pct_change",
-          "fields": {"col": "close"},
-          "params": {"periods": 5}
-        },
-        "reversal_5d": {
-          "type": "DIRECT",
-          "op": "unary.neg",
-          "fields": {"col": "return_5d"},
-          "params": {}
         },
         "daily_log_return": {
           "type": "TS",
@@ -186,9 +150,9 @@ Runtime 不做上述预处理。`dataset_query` 必须为每个因子显式输�
           "params": {"periods": -5}
         }
       },
-      "filters": ["is_hs300", "pe_gt_5"]
+      "filters": ["is_hs300"]
     },
-    "factor_columns": ["momentum_20d", "reversal_5d"],
+    "factor_columns": ["momentum_20d"],
     "return_columns": ["future_1d_log_return", "future_5d_log_return"],
     "n_groups": 5,
     "preprocess": true,
@@ -197,33 +161,35 @@ Runtime 不做上述预处理。`dataset_query` 必须为每个因子显式输�
 }
 ```
 
-`reversal_5d` 明确通过 `unary.neg` 对 5 日收益取负，不依靠名称暗示方向。
+## 输出列
 
-## 7. 输出列契约
+逻辑输出 `information_coefficient` 对应 `factor_information_coefficients.parquet`：
 
-项目默认生成：
+```text
+time
+{factor}_{return}_ic
+{factor}_{return}_rank_ic
+```
 
-| 输出名 | 文件 | 列命名 |
-| --- | --- | --- |
-| `information_coefficient` | `factor_information_coefficients.parquet` | `time`；每个组合为 `<factor>_<return>_ic` 和 `<factor>_<return>_rank_ic` |
-| `group_returns` | `factor_group_returns.parquet` | `time`；每个组合和分组为 `<factor>_<return>_group0` 到 `group<n_groups-1>` |
+逻辑输出 `group_returns` 对应 `factor_group_returns.parquet`：
 
-以上示例会产生
-`momentum_20d_future_1d_log_return_ic`，不会产生 `momentum_20d_ret0_ic`。读取结果时必须从
-保存的 `factor_columns`、`return_columns` 生成列名，不能硬编码 `ret0`、`ret1`。
+```text
+time
+{factor}_{return}_group0
+...
+{factor}_{return}_group{n_groups-1}
+```
 
-Runtime 还支持中间输出 `processed_data`，但普通 Factor 项目默认只请求上表两项。
+每个请求中的因子与收益列做笛卡尔组合。`group0` 是因子值最低组，最后一组是最高组。分组收益
+使用 `market_value_column` 加权。读取结果时必须由实际 `factor_columns` 和 `return_columns`
+构造列名，不能硬编码 `ret0`。
 
-## 8. 版本与提交前检查
+## 提交前检查
 
-工作流成功后可调用 `save_version`。保存时后端读取 Parquet、计算每个 factor × return 的摘要
-并将当前草稿固化；项目随后生成新的可更新草稿。
-
-提交前确认：
-
-- `codes_query` 的结果不会为空；
-- 每日股票池约束已按意图放入第二阶段 filters；
-- 所有 factor/return/market-value 名称能由 `dataset_query` 输出；
-- 未来收益没有参与因子或过滤逻辑；
-- `preprocess` 与 `<factor>_group` 的提供方式一致；
-- 报告按真实 factor/return 名称读取输出列。
+- 两阶段都分别满足完整 `FactorQuery` 契约；
+- 第二阶段仍包含需要逐日生效的成员和状态过滤；
+- `factor_columns`、`return_columns` 与实际输出列同名；
+- 收益标签的方向和 shift 符合研究定义；
+- `lookback` 覆盖所有滚动窗口；
+- 内置预处理的样本数量足以进行市值和行业回归；
+- 关闭预处理时已经提供所有 `<factor>_group` 列。

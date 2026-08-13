@@ -12,7 +12,7 @@ from core.apps.admin.services import AdminService
 from core.apps.admin.views import router as admin_router
 from core.apps.backtest.views import router as backtest_router
 from core.apps.factor.views import router as factor_router
-from core.apps.mcp.server import mcp_app, mcp_server
+from core.mcp.server import mcp_app, mcp_server
 from core.apps.query.views import router as query_router
 from core.apps.tasks.views import router as tasks_router
 from core.apps.users.services import validate_security_configuration

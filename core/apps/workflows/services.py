@@ -565,7 +565,14 @@ class WorkflowGatewayService:
         workflow_instance_id: int,
     ) -> dict[str, Any]:
         workflow, attempt, workspace = self.find_accessible_workflow(session, user, workflow_instance_id)
-        return workflow_information(workspace, attempt, workflow)
+        try:
+            with DolphinSchedulerClient() as client:
+                tasks = live_workflow_tasks(client, attempt, workflow)
+            tasks_error = None
+        except DolphinSchedulerError as error:
+            tasks = []
+            tasks_error = str(error)
+        return workflow_information(workspace, attempt, workflow, tasks, tasks_error)
 
     def tasks(
         self,
@@ -1221,7 +1228,13 @@ def workflow_status_information(
     }
 
 
-def workflow_information(workspace: WorkflowWorkspace, attempt: WorkflowAttempt, workflow: WorkflowInstance) -> dict[str, Any]:
+def workflow_information(
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt,
+    workflow: WorkflowInstance,
+    tasks: list[dict[str, Any]],
+    tasks_error: str | None,
+) -> dict[str, Any]:
     definition = workflow_definition_details(int(attempt.workflow_definition_code or 0))
     return {
         "application": workspace.application,
@@ -1240,6 +1253,8 @@ def workflow_information(workspace: WorkflowWorkspace, attempt: WorkflowAttempt,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
         "task_count": len(definition.get("taskDefinitionList") or []),
+        "tasks": tasks,
+        "tasks_error": tasks_error,
         "payload": {"input_json": attempt.input_json, "start_parameters": attempt.start_parameters},
         "requested_outputs": attempt.requested_outputs,
         "state_history": workflow.state_history or [],
