@@ -1,9 +1,9 @@
 """MCP tool input aliases, output models, and annotations."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.apps.backtest.schemas import BacktestProjectItem, BacktestProjectListItem, BacktestVersionListItem, BacktestVersionResponse
 from core.apps.factor.schemas import FactorProjectItem, FactorProjectListItem, FactorVersionListItem, FactorVersionResponse
@@ -13,9 +13,22 @@ from core.utils.results import ResultFile
 
 type ApplicationName = Literal["query", "factor", "backtest"]
 type VersionedApplicationName = Literal["factor", "backtest"]
-type DocumentName = Literal["overview", "tools", "query", "factor", "backtest", "dolphindb-backtest", "dsl"]
+type DocumentName = Literal[
+    "overview/overview",
+    "overview/projects",
+    "overview/dsl",
+    "overview/workflows",
+    "query/request",
+    "query/api",
+    "factor/request",
+    "factor/api",
+    "backtest/request",
+    "backtest/api",
+    "backtest/dolphindb",
+]
 type ProjectListResult = ProjectPage[QueryProjectListItem] | ProjectPage[FactorProjectListItem] | ProjectPage[BacktestProjectListItem]
 type ProjectResult = QueryProjectItem | FactorProjectItem | BacktestProjectItem
+type VersionedProjectResult = FactorProjectItem | BacktestProjectItem
 type VersionListResult = list[FactorVersionListItem | BacktestVersionListItem]
 type VersionResult = FactorVersionResponse | BacktestVersionResponse
 
@@ -64,6 +77,20 @@ class WorkflowOutputs(BaseModel):
     outputs: list[WorkflowOutputFile]
 
 
+class TaskLogDownload(BaseModel):
+    workflow_instance_id: int
+    task_instance_id: int
+    download_path: str
+
+
+class McpBatchRunItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    client_id: str = Field(min_length=1, max_length=64)
+    remark: str = Field(default="", max_length=512)
+    parameters: dict[str, Any]
+
+
 class McpResult[T](BaseModel):
     """Stable envelope used by every Arena MCP tool."""
 
@@ -72,7 +99,7 @@ class McpResult[T](BaseModel):
 
 __all__ = [
     "ApplicationName", "VersionedApplicationName", "DocumentName", "ProjectListResult", "ProjectResult",
-    "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "DslOperatorSummary",
+    "VersionedProjectResult", "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "DslOperatorSummary",
     "DslOperatorSearchResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions",
-    "WorkflowOutputFile", "WorkflowOutputs", "McpResult",
+    "WorkflowOutputFile", "WorkflowOutputs", "TaskLogDownload", "McpBatchRunItem", "McpResult",
 ]

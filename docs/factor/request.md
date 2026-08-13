@@ -16,6 +16,9 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 项目创建时包含一个可更新的未保存版本。保存版本不是读取结果的前提，但只有当前成功工作流可以
 保存。
 
+未保存版本再次运行、保存后创建下一版本、历史 Attempt 参数和结果保留规则见
+`arena://docs/factor/api`；通用对象关系见 `arena://docs/overview/projects`。
+
 ## 顶层字段
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
@@ -183,6 +186,12 @@ time
 每个请求中的因子与收益列做笛卡尔组合。`group0` 是因子值最低组，最后一组是最高组。分组收益
 使用 `market_value_column` 加权。读取结果时必须由实际 `factor_columns` 和 `return_columns`
 构造列名，不能硬编码 `ret0`。
+
+## 批量执行
+
+`run_factor_batch` 对应网页研究队列。每项包含唯一 `client_id`、版本 `remark` 和完整
+`FactorAnalysisParameters`。一次最多 100 项；成功项会自动保存为独立版本，无需再调用
+`save_version`。批量请求外形、自动保存和重试语义见 `arena://docs/factor/api`。
 
 ## 提交前检查
 

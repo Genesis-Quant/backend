@@ -51,10 +51,11 @@ Backend 进程时，同一轮只有一个轮询器执行。
 
 MCP Streamable HTTP 端点为 `/mcp`，复用 Arena 登录接口签发的 Bearer JWT 和原有项目、
 工作流权限。部署时通过 `ARENA_PUBLIC_URL` 配置 Backend 对外地址，例如
-`https://api.example.com`。MCP 客户端应先读取 `arena://docs/overview` 和
-`arena://docs/tools`，再读取对应的 `arena://docs/query`、`arena://docs/factor` 或
-`arena://docs/backtest`；回测还需读取 `arena://docs/dolphindb-backtest`。完整字段规则、DSL
-节点结构和可直接校验的请求示例位于 [`docs`](docs) 目录。运行时 JSON Schema 也分别以
+`https://api.example.com`。MCP 客户端应先读取 `arena://docs/overview/overview`、
+`arena://docs/overview/projects` 和 `arena://docs/overview/workflows`，再读取对应应用目录中的
+`request` 与 `api` 文档；回测还需读取 `arena://docs/backtest/dolphindb`。完整字段规则、DSL
+节点结构和可直接校验的请求示例位于 [`docs`](docs) 的 `overview`、`query`、`factor`、`backtest`
+四个目录。运行时 JSON Schema 也分别以
 `arena://schemas/query`、`arena://schemas/factor` 和 `arena://schemas/backtest` 资源提供，
 DSL 算符应通过 `list_dsl_operators`、`describe_dsl_operator` 查询，不能由调用方猜测字段。
 

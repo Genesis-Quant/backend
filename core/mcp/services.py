@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from config import MCPSettings
 from core.apps.schemas import WorkflowSubmitted
 from core.apps.workflows.services import current_workflow_instance
 from core.scheduler.errors import DolphinSchedulerError
@@ -20,7 +21,11 @@ def document(name: DocumentName) -> str:
     path = DOCUMENT_DIRECTORY / f"{name}.md"
     if not path.is_file():
         raise FileNotFoundError(f"MCP 文档不存在：{name}")
-    return path.read_text(encoding="utf-8")
+    return (
+        path.read_text(encoding="utf-8")
+        .replace("{ARENA_PUBLIC_URL}", MCPSettings.PUBLIC_URL)
+        .replace("{ARENA_WEB_URL}", MCPSettings.WEB_URL)
+    )
 
 
 def runtime_schema(model: type[BaseModel]) -> dict[str, Any]:

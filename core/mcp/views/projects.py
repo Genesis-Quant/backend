@@ -1,13 +1,21 @@
 """MCP project, execution, and version tools."""
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from pydantic import Field
 from runtime import BacktestParameters, FactorAnalysisParameters, FactorQuery
 from runtime.apps.backtest.api import compile_backtest_scripts
 
-from core.apps.backtest.schemas import BacktestProjectCreate, BacktestProjectItem, BacktestProjectListItem, BacktestVersionListItem, BacktestVersionResponse
+from core.apps.backtest.schemas import (
+    BacktestProjectCreate,
+    BacktestProjectItem,
+    BacktestProjectListItem,
+    BacktestProjectUpdate,
+    BacktestVersionListItem,
+    BacktestVersionResponse,
+    BacktestVersionUpdate,
+)
 from core.apps.backtest.services import (
     create_backtest_project,
     create_backtest_version,
@@ -16,8 +24,18 @@ from core.apps.backtest.services import (
     list_backtest_projects,
     list_backtest_versions,
     submit_project_backtest,
+    update_backtest_project,
+    update_backtest_version,
 )
-from core.apps.factor.schemas import FactorProjectCreate, FactorProjectItem, FactorProjectListItem, FactorVersionListItem, FactorVersionResponse
+from core.apps.factor.schemas import (
+    FactorProjectCreate,
+    FactorProjectItem,
+    FactorProjectListItem,
+    FactorProjectUpdate,
+    FactorVersionListItem,
+    FactorVersionResponse,
+    FactorVersionUpdate,
+)
 from core.apps.factor.services import (
     create_factor_project,
     create_factor_version,
@@ -26,6 +44,8 @@ from core.apps.factor.services import (
     list_factor_projects,
     list_factor_versions,
     submit_project_analysis,
+    update_factor_project,
+    update_factor_version,
 )
 from core.apps.query.schemas import QueryProjectCreate, QueryProjectItem, QueryProjectListItem
 from core.apps.query.services import create_query_project, get_query_project, list_query_projects, submit_project_query
@@ -34,13 +54,12 @@ from core.database.session import database_session_factory
 
 from ..auth import current_user
 from ..schemas import (
-    ApplicationName,
     McpResult,
     ProjectListResult,
     ProjectResult,
     READ_ONLY,
-    VersionedApplicationName,
     VersionListResult,
+    VersionedProjectResult,
     VersionResult,
     WRITE,
 )
@@ -52,7 +71,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="列出项目", annotations=READ_ONLY)
     def list_projects(
-        application: Annotated[ApplicationName, Field(description="项目类型：query、factor 或 backtest。")],
+        application: Annotated[Literal["query", "factor", "backtest"], Field(description="项目类型。")],
         page: Annotated[int, Field(ge=1, description="页码，从 1 开始。")] = 1,
         page_size: Annotated[int, Field(ge=1, le=100, description="每页数量。")] = 20,
     ) -> McpResult[ProjectListResult]:
@@ -69,7 +88,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="创建项目", annotations=WRITE)
     def create_project(
-        application: Annotated[ApplicationName, Field(description="项目类型：query、factor 或 backtest。")],
+        application: Annotated[Literal["query", "factor", "backtest"], Field(description="项目类型。")],
         title: Annotated[str, Field(min_length=1, max_length=128, description="项目标题；会去除首尾空格。")],
     ) -> McpResult[ProjectResult]:
         """Create an Arena project and return its project ID."""
@@ -88,7 +107,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="获取项目", annotations=READ_ONLY)
     def get_project(
-        application: Annotated[ApplicationName, Field(description="项目类型：query、factor 或 backtest。")],
+        application: Annotated[Literal["query", "factor", "backtest"], Field(description="项目类型。")],
         project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
     ) -> McpResult[ProjectResult]:
         """Get one project including its current workflow or draft."""
@@ -102,10 +121,30 @@ def register_project_tools(server: MCPServer) -> None:
                 result = BacktestProjectItem.model_validate(get_backtest_project(session, user.id, project_id))
             return McpResult(result=result)
 
+    @server.tool(title="重命名项目", annotations=WRITE)
+    def update_project(
+        application: Annotated[Literal["factor", "backtest"], Field(description="项目类型。Query 项目当前不支持重命名。")],
+        project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
+        title: Annotated[str, Field(min_length=1, max_length=128, description="新标题。")],
+    ) -> McpResult[VersionedProjectResult]:
+        """Rename a Factor or Backtest project."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            if application == "factor":
+                validated = FactorProjectUpdate(title=title)
+                result = FactorProjectItem.model_validate(update_factor_project(session, user.id, project_id, validated.title))
+            else:
+                validated = BacktestProjectUpdate(title=title)
+                result = BacktestProjectItem.model_validate(update_backtest_project(session, user.id, project_id, validated.title))
+            return McpResult(result=result)
+
     @server.tool(title="执行数据查询", annotations=WRITE)
     def run_query(
         project_id: Annotated[int, Field(gt=0, description="已存在的 Query 项目 ID。")],
-        request: Annotated[dict[str, Any], Field(description="完整 FactorQuery JSON 对象；精确契约见 Query Schema。")],
+        request: Annotated[
+            dict[str, Any],
+            Field(description="FactorQuery 对象；必填 start_date/end_date，lookback/codes/factors/derivatives/filters 有默认值，精确契约见 Query Schema。"),
+        ],
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Query workflow."""
         validated = FactorQuery.model_validate(request)
@@ -117,7 +156,10 @@ def register_project_tools(server: MCPServer) -> None:
     @server.tool(title="执行因子分析", annotations=WRITE)
     def run_factor_analysis(
         project_id: Annotated[int, Field(gt=0, description="已存在的 Factor 项目 ID。")],
-        parameters: Annotated[dict[str, Any], Field(description="完整因子分析 JSON 对象；精确契约见 Factor Schema。")],
+        parameters: Annotated[
+            dict[str, Any],
+            Field(description="因子分析对象；必填 dataset_query/factor_columns/return_columns，精确字段、默认值与约束见 Factor Schema。"),
+        ],
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Factor workflow."""
         validated = FactorAnalysisParameters.model_validate(parameters)
@@ -129,10 +171,16 @@ def register_project_tools(server: MCPServer) -> None:
     @server.tool(title="执行策略回测", annotations=WRITE)
     def run_backtest(
         project_id: Annotated[int, Field(gt=0, description="已存在的 Backtest 项目 ID。")],
-        parameters: Annotated[dict[str, Any], Field(description="完整回测 JSON 对象；精确契约见 Backtest Schema。")],
+        parameters: Annotated[
+            dict[str, Any],
+            Field(description="回测对象；必填 dataset_query/callbacks，config/params/codes_query/adj/年化参数/utils 有默认值，精确契约见 Backtest Schema。"),
+        ],
     ) -> McpResult[WorkflowSubmitted]:
         """Compile scripts in DolphinDB and submit one Backtest workflow."""
         validated = BacktestParameters.model_validate(parameters)
+        with database_session_factory()() as session:
+            user = current_user(session)
+            get_backtest_project(session, user.id, project_id)
         compile_backtest_scripts(validated)
         with database_session_factory()() as session:
             user = current_user(session)
@@ -141,7 +189,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="列出研究版本", annotations=READ_ONLY)
     def list_versions(
-        application: Annotated[VersionedApplicationName, Field(description="版本类型：factor 或 backtest。")],
+        application: Annotated[Literal["factor", "backtest"], Field(description="版本类型。")],
         project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
     ) -> McpResult[VersionListResult]:
         """List saved and current draft versions."""
@@ -155,7 +203,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="获取研究版本", annotations=READ_ONLY)
     def get_version(
-        application: Annotated[VersionedApplicationName, Field(description="版本类型：factor 或 backtest。")],
+        application: Annotated[Literal["factor", "backtest"], Field(description="版本类型。")],
         project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
         version: Annotated[int, Field(gt=0, description="项目内版本号。")],
     ) -> McpResult[VersionResult]:
@@ -170,7 +218,7 @@ def register_project_tools(server: MCPServer) -> None:
 
     @server.tool(title="保存研究版本", annotations=WRITE)
     def save_version(
-        application: Annotated[VersionedApplicationName, Field(description="版本类型：factor 或 backtest。")],
+        application: Annotated[Literal["factor", "backtest"], Field(description="版本类型。")],
         project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
         workflow_instance_id: Annotated[int, Field(gt=0, description="当前成功工作流的 workflow_instance_id。")],
         remark: Annotated[str, Field(max_length=512, description="版本备注。")] = "",
@@ -182,6 +230,28 @@ def register_project_tools(server: MCPServer) -> None:
                 result = FactorVersionResponse.model_validate(create_factor_version(session, user.id, project_id, workflow_instance_id, remark.strip()))
             else:
                 result = BacktestVersionResponse.model_validate(create_backtest_version(session, user.id, project_id, workflow_instance_id, remark.strip()))
+            return McpResult(result=result)
+
+    @server.tool(title="重命名研究版本", annotations=WRITE)
+    def update_version(
+        application: Annotated[Literal["factor", "backtest"], Field(description="版本类型。")],
+        project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
+        version: Annotated[int, Field(gt=0, description="项目内版本号。")],
+        remark: Annotated[str, Field(min_length=1, max_length=512, description="新的版本名称或备注。")],
+    ) -> McpResult[VersionResult]:
+        """Update the display remark of a Factor or Backtest version."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            if application == "factor":
+                validated = FactorVersionUpdate(remark=remark)
+                result = FactorVersionResponse.model_validate(
+                    update_factor_version(session, user.id, project_id, version, validated.remark)
+                )
+            else:
+                validated = BacktestVersionUpdate(remark=remark)
+                result = BacktestVersionResponse.model_validate(
+                    update_backtest_version(session, user.id, project_id, version, validated.remark)
+                )
             return McpResult(result=result)
 
 

@@ -24,17 +24,19 @@ def register_discovery_tools(server: MCPServer) -> None:
     """Register documentation, DSL, and DolphinDB discovery tools."""
 
     @server.tool(title="读取 Arena 请求文档", annotations=READ_ONLY)
-    def read_arena_document(name: Annotated[DocumentName, Field(description="文档名；可选值与 arena://docs/* Resources 一致。")]) -> McpResult[str]:
+    def read_arena_document(
+        name: Annotated[DocumentName, Field(description="文档名；可选值与 arena://docs/* Resources 一致。")],
+    ) -> McpResult[str]:
         """Read one Arena request document."""
         return McpResult(result=document(name))
 
     @server.tool(title="搜索 DSL 算符", annotations=READ_ONLY)
     def list_dsl_operators(
-        search: Annotated[str, Field(description="按算符名或描述搜索；空字符串返回全部摘要。", max_length=128)] = "",
+        search: Annotated[str, Field(description="只按算符名或描述搜索；不筛选返回的完整 factors 列表。", max_length=128)] = "",
         operator_type: Annotated[Literal["DIRECT", "TS", "CS"] | None, Field(description="可选计算类别筛选。")] = None,
         limit: Annotated[int, Field(ge=1, le=200, description="最多返回的算符数量。")] = 50,
     ) -> McpResult[DslOperatorSearchResult]:
-        """List DSL summaries; inspect a concrete operator before using it."""
+        """List operator summaries and the complete Runtime factor allowlist."""
         query = search.strip().lower()
         operators = [item for item in dsl_catalog().operators if operator_type is None or item.type == operator_type]
         if query:

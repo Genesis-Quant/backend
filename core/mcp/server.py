@@ -11,13 +11,14 @@ from .auth import ArenaTokenVerifier
 from .views import register_views
 
 SERVER_INSTRUCTIONS = (
-    "First read arena://docs/overview and arena://docs/tools. Before constructing a request, read the matching "
-    "arena://docs resource and runtime JSON Schema. Before writing backtest callbacks, also read "
-    "arena://docs/dolphindb-backtest. Inspect uncertain DolphinDB built-ins with describe_dolphindb_functions. "
-    "Never invent DSL operator fields: call list_dsl_operators and describe_dsl_operator. Every tool's business "
-    "result is at CallToolResult.structuredContent.result. Create or select a project before running a workflow. "
-    "Poll get_workspace_status using the returned workspace_id until SUCCESS or a failure state, then call "
-    "list_workflow_outputs. Factor and backtest versions can only be saved from a successful current workflow."
+    "Start with arena://docs/overview/overview, arena://docs/overview/projects, and "
+    "arena://docs/overview/workflows. Before run_* read that application's request and API documents plus its "
+    "Schema; backtests must also read arena://docs/backtest/dolphindb. Discover DSL operators "
+    "and DolphinDB signatures instead of guessing. Business results are in structuredContent.result. Follow "
+    "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
+    "can be saved. Use Workspace Attempt history to inspect earlier submitted parameters. Project/version rename, "
+    "browser batch queues, fee studies, sensitivity studies, task queries, and log downloads all have dedicated "
+    "tools documented under the owning application or overview/workflows. No deletion operation is exposed through MCP."
 )
 
 mcp_server = MCPServer(

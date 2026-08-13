@@ -6,6 +6,24 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 本页只定义组合规则。当前有哪些算符、每个算符的准确字段与参数，必须通过
 `list_dsl_operators` 和 `describe_dsl_operator` 获取。
 
+## 获取全部可用基础字段
+
+读取 Resource `arena://dsl/catalog`，返回对象的 `factors` 是当前 Runtime 允许放入
+`FactorQuery.factors`、也允许作为 derivative 列引用的**完整基础字段白名单**。该列表在 Backend
+启动时由 Runtime `available_factors()` 初始化，当前包含固定 Worker 字段和 `INDEX_CODES` 配置生成
+的指数权重字段。
+
+`list_dsl_operators` 的 `result.factors` 也返回同一份完整列表。需要注意：该工具的 `search`、
+`operator_type` 和 `limit` 只作用于 `operators`，不会截断或筛选 `factors`。只需要一次性获取全部
+字段和算符定义时，优先读取 `arena://dsl/catalog`。
+
+“可用”表示请求能通过 Runtime 的字段白名单校验，不表示每个字段在每只证券、每个日期都存在非
+空数据。实际覆盖取决于已更新的数据源、证券类型、上市日期、财报日期和配置的指数代码。
+
+派生字段没有预先存在的全局列表：它们由当前请求的 `derivatives` key 动态命名。一个算符对象中
+允许出现哪些 `fields` key、每个 key 接受列引用还是常量，由
+`describe_dsl_operator(operator).result.definition` 决定。
+
 ## 节点结构
 
 ```json
@@ -158,10 +176,10 @@ Runtime 也会把它加入内部读取集合，但不会把它作为最终基础
 
 ## 正确的发现流程
 
-1. `list_dsl_operators(search="close")` 查基础因子和候选算符；
-2. `describe_dsl_operator(operator="unary.rolling_mean")` 获取准确 definition；
-3. 按 definition 构造节点；
-4. 对请求中每个不同 `op` 重复第 2 步；
+1. 读取 `arena://dsl/catalog` 的 `factors`，确认所有基础列都在白名单中；
+2. 用 `list_dsl_operators(search="rolling")` 搜索候选算符；
+3. `describe_dsl_operator(operator="unary.rolling_mean")` 获取准确 definition；
+4. 按 definition 构造节点，并对请求中每个不同 `op` 重复第 3 步；
 5. 用对应的 `arena://schemas/query`、`arena://schemas/factor` 或
    `arena://schemas/backtest` 校验顶层对象；
 6. 提交给对应 `run_*` 工具。

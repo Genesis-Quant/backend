@@ -77,6 +77,7 @@ class MCPSettings:
     """MCP Streamable HTTP 对外地址与传输安全配置。"""
 
     PUBLIC_URL = os.getenv("ARENA_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+    WEB_URL = os.getenv("ARENA_WEB_URL", "http://127.0.0.1:5173").rstrip("/")
     ENDPOINT_URL = f"{PUBLIC_URL}/mcp"
 
     @classmethod
@@ -84,6 +85,9 @@ class MCPSettings:
         parsed = urlsplit(cls.PUBLIC_URL)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path not in {"", "/"}:
             raise RuntimeError("ARENA_PUBLIC_URL 必须是只包含协议和主机的 HTTP(S) 地址")
+        web = urlsplit(cls.WEB_URL)
+        if web.scheme not in {"http", "https"} or not web.netloc or web.path not in {"", "/"}:
+            raise RuntimeError("ARENA_WEB_URL 必须是只包含协议和主机的 HTTP(S) 地址")
 
     @classmethod
     def allowed_hosts(cls) -> list[str]:

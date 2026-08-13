@@ -2,7 +2,13 @@
 
 Backtest 使用 Factor Query 准备候选代码和策略数据，将日线转换为开盘、收盘单档合成快照，并在
 DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓和
-事件接口见 `arena://docs/dolphindb-backtest`。
+事件接口、策略时序、价格尺度、订单状态和 QA 见 `arena://docs/backtest/dolphindb`。
+
+DolphinDB 插件原始定义可直接查阅
+[股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)、
+[Backtest 接口说明](https://docs.dolphindb.com/zh/plugins/backtest/interface_description.html) 和
+[模拟撮合引擎使用教程](https://docs.dolphindb.com/zh/tutorials/matching_engine_simulator.html)。Arena
+文档负责说明当前 Runtime 实际固定了哪些配置，不能用它替代官方完整插件文档。
 
 ## 调用
 
@@ -16,6 +22,9 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 `run_backtest` 会先连接 DolphinDB 编译 `utils` 和 callbacks。编译失败时不会创建 Workspace；编译
 成功后返回的 ID 只表示工作流已提交，仍需轮询。
+
+未保存版本再次运行、保存后创建下一版本、历史 Attempt 参数和结果保留规则见
+`arena://docs/backtest/api`；通用对象关系见 `arena://docs/overview/projects`。
 
 ## 顶层字段
 
@@ -32,6 +41,39 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 | `callbacks` | object | 是 | — | 必须且只能包含八个固定回调 |
 
 模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
+
+`adj` **不会复权 `dataset_query` 的 factors/derivatives**。它只改变用于插件撮合的 message 及由其
+产生的委托、成交和持仓价格。凡是把 DSL 中的原始 ATR、通道价、均线或止损价与 message/持仓价格
+比较或相除的策略，都必须先按运行契约换算到同一价格尺度。
+
+以下是 `parameters` 的最小合法外形，只验证接口并运行一个不下单的回测，不代表策略示例：
+
+```json
+{
+  "dataset_query": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31",
+    "lookback": "P1D",
+    "codes": ["000001.SZ"],
+    "factors": ["close"],
+    "derivatives": {},
+    "filters": []
+  },
+  "callbacks": {
+    "initialize": "def initialize(mutable context) { return NULL }",
+    "beforeTrading": "def beforeTrading(mutable context) { return NULL }",
+    "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
+    "onSnapshot": "def onSnapshot(mutable context, message, indicator) { return NULL }",
+    "onOrder": "def onOrder(mutable context, orders) { return NULL }",
+    "onTrade": "def onTrade(mutable context, trades) { return NULL }",
+    "afterTrading": "def afterTrading(mutable context) { return NULL }",
+    "finalize": "def finalize(mutable context) { return NULL }"
+  }
+}
+```
+
+省略字段使用本节表中的默认值。它可以用于确认 Tool 参数层级是
+`run_backtest(project_id=..., parameters=<上面对象>)`，不能用于评估交易逻辑。
 
 ## 代码范围与两阶段查询
 
@@ -156,7 +198,7 @@ frequency, callbackForSnapshot, msgAsPiecesOnSnapshot,
 matchingRatio, orderBookMatchingRatio
 ```
 
-实际固定值见 `arena://docs/dolphindb-backtest`。
+实际固定值见 `arena://docs/backtest/dolphindb`。
 
 ## `params`
 
@@ -173,40 +215,11 @@ matchingRatio, orderBookMatchingRatio
 在 `initialize` 中调用 `getParams()` 并进行 `long()`、`double()`、`bool()` 等明确类型转换。策略
 不得假定缺失 key 会自动获得默认值。需要参数敏感性分析的值应放在这里，而不是硬编码在 utils。
 
-## `utils`
+## `utils` 与 callbacks
 
 `utils` 是一个 DolphinDB 脚本字符串，在 callbacks 之前原样执行。它可以包含多个函数和确有需要
 的顶层语句，不是函数名到源码的字典。callbacks 引用的每个自定义函数必须在同一请求的 `utils`
 中定义。
-
-```dos
-def rebalanceEqualWeight(mutable context, message, signal) {
-    selected = select code
-               from signal
-               where is_member == true and momentum_20d > 0
-    selectedCodes = exec code from selected
-    for (rowIndex in 0..(message.rows() - 1)) {
-        stockCode = message.symbol[rowIndex]
-        if (!(stockCode in selectedCodes)) {
-            backtest::order_target(context, message, stockCode, 0l, "exit")
-        }
-    }
-    if (size(selectedCodes) == 0) return
-    portfolios = Backtest::getTotalPortfolios(context.engine)
-    targetValue = double(portfolios["totalEquity"]) *
-        context["capitalRatio"] / size(selectedCodes)
-    for (rowIndex in 0..(message.rows() - 1)) {
-        stockCode = message.symbol[rowIndex]
-        if (stockCode in selectedCodes) {
-            backtest::order_target_value(
-                context, message, stockCode, targetValue, "entry"
-            )
-        }
-    }
-}
-```
-
-## `callbacks`
 
 JSON 必须正好包含以下八个 key，且每个值必须是同名完整函数定义：
 
@@ -224,23 +237,8 @@ def finalize(mutable context)
 未使用的回调仍要定义并可 `return NULL`。不能改变函数名、参数数量或只传函数体。当前固定模式在
 09:30 和 15:00 触发 `onSnapshot`，不触发 `onBar`；准确生命周期见运行契约。
 
-一个与上面 utils 配套的回调对象：
-
-```json
-{
-  "initialize": "def initialize(mutable context) { params = getParams(); context[\"rebalanceDays\"] = long(params[\"rebalanceDays\"]); context[\"capitalRatio\"] = double(params[\"capitalRatio\"]); context[\"tradingDays\"] = 0l; context[\"rejectedOrders\"] = 0l; context[\"filledShares\"] = 0l }",
-  "beforeTrading": "def beforeTrading(mutable context) { Backtest::cancelOrder(context.engine); return NULL }",
-  "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
-  "onSnapshot": "def onSnapshot(mutable context, message, indicator) { if (message.rows() == 0 || time(message.timestamp[0]) != 09:30:00.000) return; context[\"tradingDays\"] = context[\"tradingDays\"] + 1l; if ((context[\"tradingDays\"] - 1l) % context[\"rebalanceDays\"] != 0l) return; signal = backtest::getLastData(context, message, false); if (signal.rows() == 0) return; rebalanceEqualWeight(context, message, signal) }",
-  "onOrder": "def onOrder(mutable context, orders) { if (int(orders[5]) < 0) context[\"rejectedOrders\"] = context[\"rejectedOrders\"] + 1l }",
-  "onTrade": "def onTrade(mutable context, trades) { context[\"filledShares\"] = context[\"filledShares\"] + long(trades[3]) }",
-  "afterTrading": "def afterTrading(mutable context) { return NULL }",
-  "finalize": "def finalize(mutable context) { print(\"回测结束：拒单=\" + string(context[\"rejectedOrders\"]) + \"，成交股数=\" + string(context[\"filledShares\"])) }"
-}
-```
-
-该对象只是说明序列化格式和接口连接。策略的选股、组合、退出与风控由调用方定义，Arena 不规定
-策略类别或数量。
+回调实现必须从真实持仓和挂单状态出发，并按运行契约处理部分成交、复权尺度和结果 QA；本页不
+提供会被误当成生产策略的简化模板。
 
 ## 完整参数外形
 
@@ -265,7 +263,7 @@ def finalize(mutable context)
     "annual_trading_days": 250,
     "risk_free_rate": 0.03,
     "utils": "<完整 DolphinDB 脚本>",
-    "callbacks": "<上面的八回调对象>"
+    "callbacks": "<八个同名完整函数定义>"
   }
 }
 ```
@@ -283,7 +281,20 @@ def finalize(mutable context)
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、权益、净值、费用和盈亏 |
 | `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日交易统计 |
 
-Workspace SUCCESS 只说明程序执行完成。验证策略还应检查成交、持仓、资金曲线和 Task 日志。
+Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价格尺度一致或成交逻辑可信。统一 QA
+清单与指标口径见 `arena://docs/backtest/dolphindb`。
+
+## 批量执行与研究报告
+
+- `run_backtest_batch` 对应网页执行队列，每个成功项自动保存成版本；
+- `create_backtest_fee_analysis` 从已保存版本生成手续费率网格；
+- `create_backtest_research(analysis_type="sensitivity", ...)` 提交参数敏感性网格；
+- `get_backtest_research` 轮询每个子任务；
+- 状态为 `RESULT_PENDING` 时调用 `calculate_backtest_research` 收集 Parquet 并计算报告指标。
+
+敏感性研究的 `parameter_sets` 必须是完整 `BacktestParameters` 数组。先用 `get_version` 读取
+基准参数，对每个网格点深拷贝并修改相应策略参数，再提交；不能只发送
+`{"params": {"KEY": value}}` 这样的局部对象。精确工具字段见 `arena://docs/backtest/api`。
 
 ## 提交前检查
 
@@ -296,3 +307,6 @@ Workspace SUCCESS 只说明程序执行完成。验证策略还应检查成交�
 - 目标仓位合计、费用和 spread 不会系统性造成资金不足；
 - 不把 `submitOrder` 返回订单号当作成交结果；
 - 不访问 Runtime 会话内部变量或把 DSL derivative 当成 message 列。
+- 价格型 DSL 指标与 message/持仓价格已转换到同一尺度；
+- 已设计挂单、部分成交、撤单拒绝和期末未成交的处理；
+- 已按 `arena://docs/backtest/dolphindb` 对四个输出执行回测后 QA。

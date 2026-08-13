@@ -8,15 +8,25 @@ from pydantic import Field
 from core.apps.backtest.services import backtest_result_files
 from core.apps.factor.services import factor_result_files
 from core.apps.query.services import query_result_files
-from core.apps.tasks.schemas import TaskLogResponse
+from core.apps.tasks.schemas import TaskAction, TaskActionResponse, TaskLogResponse
 from core.apps.tasks.services import TaskGatewayService
-from core.apps.workflows.schemas import WorkflowAction, WorkflowActionResponse, WorkflowInformation, WorkflowWorkspaceListResponse, WorkflowWorkspaceStatus
+from core.apps.workflows.schemas import (
+    WorkflowAction,
+    WorkflowActionResponse,
+    WorkflowAttemptInformation,
+    WorkflowAttemptListResponse,
+    WorkflowInformation,
+    WorkflowStatusInformation,
+    WorkflowTasks,
+    WorkflowWorkspaceListResponse,
+    WorkflowWorkspaceStatus,
+)
 from core.apps.workflows.services import WorkflowGatewayService
 from core.database.session import database_session_factory
 from core.utils.results import ResultFile
 
 from ..auth import current_user
-from ..schemas import ApplicationName, CONTROL, McpResult, READ_ONLY, WorkflowOutputFile, WorkflowOutputs
+from ..schemas import CONTROL, McpResult, READ_ONLY, TaskLogDownload, WorkflowOutputFile, WorkflowOutputs
 
 
 def register_workflow_tools(server: MCPServer) -> None:
@@ -45,6 +55,38 @@ def register_workflow_tools(server: MCPServer) -> None:
             result = WorkflowGatewayService().workspace_status(session, user, workspace_id)
             return McpResult(result=WorkflowWorkspaceStatus.model_validate(result))
 
+    @server.tool(title="获取工作流状态", annotations=READ_ONLY)
+    def get_workflow_status(
+        workflow_instance_id: Annotated[int, Field(gt=0, description="DolphinScheduler workflow instance ID。")],
+    ) -> McpResult[WorkflowStatusInformation]:
+        """Synchronize and return one workflow instance's lightweight status."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = WorkflowGatewayService().status(session, user, workflow_instance_id)
+            return McpResult(result=WorkflowStatusInformation.model_validate(result))
+
+    @server.tool(title="列出工作空间运行记录", annotations=READ_ONLY)
+    def list_workflow_attempts(
+        workspace_id: Annotated[int, Field(gt=0, description="项目、版本或 run 工具返回的 workspace_id。")],
+        page: Annotated[int, Field(ge=1, description="页码，从 1 开始；运行记录按创建时间倒序返回。")] = 1,
+        page_size: Annotated[int, Field(ge=1, le=50, description="每页运行记录数量。")] = 20,
+    ) -> McpResult[WorkflowAttemptListResponse]:
+        """List current and historical attempts in one workspace."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = WorkflowGatewayService().attempts(session, user, workspace_id, page, page_size)
+            return McpResult(result=WorkflowAttemptListResponse.model_validate(result))
+
+    @server.tool(title="获取一次运行记录", annotations=READ_ONLY)
+    def get_workflow_attempt(
+        attempt_id: Annotated[int, Field(gt=0, description="list_workflow_attempts 返回的 attempt_id。")],
+    ) -> McpResult[WorkflowAttemptInformation]:
+        """Get one attempt including its submitted input JSON and lifecycle events."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = WorkflowGatewayService().attempt_detail(session, user, attempt_id)
+            return McpResult(result=WorkflowAttemptInformation.model_validate(result))
+
     @server.tool(title="获取工作流详情", annotations=READ_ONLY)
     def get_workflow_details(
         workflow_instance_id: Annotated[int, Field(gt=0, description="DolphinScheduler workflow instance ID。")],
@@ -54,6 +96,16 @@ def register_workflow_tools(server: MCPServer) -> None:
             user = current_user(session)
             result = WorkflowGatewayService().detail(session, user, workflow_instance_id)
             return McpResult(result=WorkflowInformation.model_validate(result))
+
+    @server.tool(title="列出工作流任务", annotations=READ_ONLY)
+    def list_workflow_tasks(
+        workflow_instance_id: Annotated[int, Field(gt=0, description="DolphinScheduler workflow instance ID。")],
+    ) -> McpResult[WorkflowTasks]:
+        """Return the current task instances without the full workflow payload."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = WorkflowGatewayService().tasks(session, user, workflow_instance_id)
+            return McpResult(result=WorkflowTasks.model_validate(result))
 
     @server.tool(title="分页读取任务日志", annotations=READ_ONLY)
     def get_task_logs(
@@ -68,9 +120,44 @@ def register_workflow_tools(server: MCPServer) -> None:
             result = TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit)
             return McpResult(result=TaskLogResponse.model_validate(result))
 
+    @server.tool(title="获取完整任务日志下载地址", annotations=READ_ONLY)
+    def get_task_log_download(
+        workflow_instance_id: Annotated[int, Field(gt=0, description="工作流实例 ID。")],
+        task_instance_id: Annotated[int, Field(gt=0, description="属于该工作流的 Task instance ID。")],
+    ) -> McpResult[TaskLogDownload]:
+        """Authorize and return the same complete-log download path used by the web page."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            TaskGatewayService.find_accessible_task(session, user, workflow_instance_id, task_instance_id)
+            return McpResult(result=TaskLogDownload(
+                workflow_instance_id=workflow_instance_id,
+                task_instance_id=task_instance_id,
+                download_path=(
+                    f"/api/v1/tasks/{task_instance_id}/logs/download"
+                    f"?workflow_instance_id={workflow_instance_id}"
+                ),
+            ))
+
+    @server.tool(title="将任务标记为成功", annotations=CONTROL)
+    def force_success_task(
+        workflow_instance_id: Annotated[int, Field(gt=0, description="工作流实例 ID。")],
+        task_instance_id: Annotated[int, Field(gt=0, description="属于该工作流的 Task instance ID。")],
+    ) -> McpResult[TaskActionResponse]:
+        """Apply DolphinScheduler force-success to one owned task instance."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = TaskGatewayService().control(
+                session,
+                user,
+                workflow_instance_id,
+                task_instance_id,
+                TaskAction.FORCE_SUCCESS,
+            )
+            return McpResult(result=TaskActionResponse.model_validate(result))
+
     @server.tool(title="列出工作流输出", annotations=READ_ONLY)
     def list_workflow_outputs(
-        application: Annotated[ApplicationName, Field(description="工作流应用：query、factor 或 backtest。")],
+        application: Annotated[Literal["query", "factor", "backtest"], Field(description="工作流应用。")],
         workflow_instance_id: Annotated[int, Field(gt=0, description="成功且仍为当前 Attempt 的 workflow instance ID。")],
     ) -> McpResult[WorkflowOutputs]:
         """List generated Parquet outputs and download paths."""
@@ -94,7 +181,7 @@ def register_workflow_tools(server: MCPServer) -> None:
     @server.tool(title="控制工作流", annotations=CONTROL)
     def control_workflow(
         workflow_instance_id: Annotated[int, Field(gt=0, description="需要控制的 workflow instance ID。")],
-        action: Annotated[WorkflowAction, Field(description="stop、pause、resume、rerun 或 retry-failed。重跑会产生新的 Attempt。")],
+        action: Annotated[WorkflowAction, Field(description="控制动作；重跑会产生新的 Attempt。")],
     ) -> McpResult[WorkflowActionResponse]:
         """Perform a scheduler control action."""
         with database_session_factory()() as session:
