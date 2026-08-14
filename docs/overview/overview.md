@@ -45,7 +45,9 @@ CallToolResult.structuredContent.result
 | 工作流状态、运行历史、Task、日志、输出和控制 | `arena://docs/overview/workflows` |
 | Query 请求与 API | `arena://docs/query/request`、`arena://docs/query/api`、`arena://schemas/query` |
 | Factor 请求与 API | `arena://docs/factor/request`、`arena://docs/factor/api`、`arena://schemas/factor` |
-| Backtest 请求与 API | `arena://docs/backtest/request`、`arena://docs/backtest/api`、`arena://docs/backtest/dolphindb`、`arena://schemas/backtest` |
+| Backtest 请求与 API | `arena://docs/backtest/request`、`arena://docs/backtest/api`、`arena://schemas/backtest` |
+| Backtest 行情、回调和撮合 | `arena://docs/backtest/dolphindb` |
+| Backtest 四张结果表、费用和审计 | `arena://docs/backtest/results` |
 
 使用 `read_arena_document(name)` 可读取同名文档；`name` 与上述 `arena://docs/*` 路径一致，例如
 `overview/workflows`。Schema 定义顶层业务对象，某个 DSL 节点的精确 `fields`、`params` 和 `on`
@@ -108,7 +110,8 @@ Workspace 是稳定的业务执行容器，重跑会创建新的 Attempt 和新�
 
 - Query/Factor 要检查日期、股票域、缺失值、派生依赖、过滤结果和输出行数。
 - Backtest 要检查信号时序、价格尺度、订单状态、成交覆盖率、拒单、费用、现金、持仓、期末挂单和
-  指标口径；完整契约见 `arena://docs/backtest/dolphindb`。
+  指标口径；执行契约见 `arena://docs/backtest/dolphindb`，结果契约见
+  `arena://docs/backtest/results`。
 - 输出下载前先用目标应用 API 文档确认逻辑输出名称。
 
 ## 权限与副作用

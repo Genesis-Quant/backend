@@ -13,7 +13,8 @@ from .views import register_views
 SERVER_INSTRUCTIONS = (
     "Start with arena://docs/overview/overview, arena://docs/overview/projects, and "
     "arena://docs/overview/workflows. Before run_* read that application's request and API documents plus its "
-    "Schema; backtests must also read arena://docs/backtest/dolphindb. Discover DSL operators "
+    "Schema; backtests must also read arena://docs/backtest/dolphindb before running and "
+    "arena://docs/backtest/results before interpreting outputs. Discover DSL operators "
     "and DolphinDB signatures instead of guessing. Business results are in structuredContent.result. Follow "
     "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
     "can be saved. Use Workspace Attempt history to inspect earlier submitted parameters. Project/version rename, "

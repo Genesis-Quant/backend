@@ -25,6 +25,7 @@ type DocumentName = Literal[
     "backtest/request",
     "backtest/api",
     "backtest/dolphindb",
+    "backtest/results",
 ]
 type ProjectListResult = ProjectPage[QueryProjectListItem] | ProjectPage[FactorProjectListItem] | ProjectPage[BacktestProjectListItem]
 type ProjectResult = QueryProjectItem | FactorProjectItem | BacktestProjectItem

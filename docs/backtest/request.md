@@ -1,8 +1,9 @@
 # Backtest 请求
 
 Backtest 使用 Factor Query 准备候选代码和策略数据，将日线转换为开盘、收盘单档合成快照，并在
-DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓和
-事件接口、策略时序、价格尺度、订单状态和 QA 见 `arena://docs/backtest/dolphindb`。
+DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓、
+事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`。
+四张结果表的字段、费用和对账规则见 `arena://docs/backtest/results`。
 
 DolphinDB 插件原始定义可直接查阅
 [股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)、
@@ -43,8 +44,8 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
 
 `adj` **不会复权 `dataset_query` 的 factors/derivatives**。它只改变用于插件撮合的 message 及由其
-产生的委托、成交和持仓价格。凡是把 DSL 中的原始 ATR、通道价、均线或止损价与 message/持仓价格
-比较或相除的策略，都必须先按运行契约换算到同一价格尺度。
+产生的委托、成交和持仓价格。凡是把 DSL 中任意原始价格、价格差或价格型派生值与 message/持仓
+价格比较或相除，都必须先按运行契约换算到同一价格尺度。
 
 以下是 `parameters` 的最小合法外形，只验证接口并运行一个不下单的回测，不代表策略示例：
 
@@ -185,10 +186,13 @@ Runtime 允许并校验的常用字段：
 | `enableMinimumPerTransactionFee` | boolean | 最低单笔费用 |
 | `enableSellCloseRestrict` | boolean | 卖出可用量限制 |
 | `outputOrderInfo` | boolean | 输出订单风控信息 |
-| `outputQueuePosition` | 0、1 或 2 | 插件队列位置输出选项 |
+| `outputQueuePosition` | 0、1 或 2 | Runtime 可校验该插件选项，但非零值只适用于含逐笔行情模式；当前固定 `dataType=1` 不应设置 |
 
 其余 Runtime 已声明的插件 boolean 选项也按 boolean 校验。`config` 是开放字典，能通过 JSON 校验
 不代表某个 DolphinDB 版本或当前快照模式一定支持该选项。
+
+`benchmark` 当前明确禁止传入并会在请求校验阶段被拒绝。Arena 不创建基准行情、不向结果表添加
+基准列，也不自动计算基准收益；需要基准比较时应在下载结果后独立完成。
 
 以下字段由 Runtime 强制设置，用户传入会被拒绝：
 
@@ -237,8 +241,8 @@ def finalize(mutable context)
 未使用的回调仍要定义并可 `return NULL`。不能改变函数名、参数数量或只传函数体。当前固定模式在
 09:30 和 15:00 触发 `onSnapshot`，不触发 `onBar`；准确生命周期见运行契约。
 
-回调实现必须从真实持仓和挂单状态出发，并按运行契约处理部分成交、复权尺度和结果 QA；本页不
-提供会被误当成生产策略的简化模板。
+回调必须从真实持仓和挂单状态出发，并遵守部分成交与复权尺度等运行契约；结果 QA 见
+`arena://docs/backtest/results`。本页不提供会被误当成生产代码的简化模板。
 
 ## 完整参数外形
 
@@ -256,7 +260,7 @@ def finalize(mutable context)
       "enableMinimumPerTransactionFee": true,
       "outputOrderInfo": true
     },
-    "params": {"rebalanceDays": 20, "capitalRatio": 0.9},
+    "params": {},
     "codes_query": "<完整 FactorQuery 或 null>",
     "dataset_query": "<完整 FactorQuery>",
     "adj": "hfq",
@@ -276,13 +280,13 @@ def finalize(mutable context)
 
 | 逻辑名 | 文件名 | 内容 |
 | --- | --- | --- |
-| `trade_details` | `trade_details.parquet` | 委托与成交明细 |
-| `daily_positions` | `daily_positions.parquet` | 每日持仓 |
+| `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单可有多行 |
+| `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、权益、净值、费用和盈亏 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日交易统计 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日按证券和成交方向汇总 |
 
 Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价格尺度一致或成交逻辑可信。统一 QA
-清单与指标口径见 `arena://docs/backtest/dolphindb`。
+清单、字段字典、费用和指标口径见 `arena://docs/backtest/results`。
 
 ## 批量执行与研究报告
 
@@ -309,4 +313,4 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - 不访问 Runtime 会话内部变量或把 DSL derivative 当成 message 列。
 - 价格型 DSL 指标与 message/持仓价格已转换到同一尺度；
 - 已设计挂单、部分成交、撤单拒绝和期末未成交的处理；
-- 已按 `arena://docs/backtest/dolphindb` 对四个输出执行回测后 QA。
+- 已按 `arena://docs/backtest/results` 对四个输出执行回测后 QA。

@@ -106,11 +106,20 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/backtest/dolphindb",
         title="DolphinDB Backtest 运行契约",
-        description="价格尺度、合成快照、撮合、订单簿、回调事件、持仓、资金、代码映射和结果 QA。",
+        description="价格尺度、合成快照、撮合、订单簿、回调事件、持仓、资金、代码映射和缺价行为。",
         mime_type="text/markdown",
     )
     def dolphindb_backtest_document() -> str:
         return document("backtest/dolphindb")
+
+    @server.resource(
+        "arena://docs/backtest/results",
+        title="Backtest 结果与审计契约",
+        description="四张 Parquet 的完整字段、订单状态、费用、对账公式、已知限制和结果 QA。",
+        mime_type="text/markdown",
+    )
+    def backtest_results_document() -> str:
+        return document("backtest/results")
 
     @server.resource(
         "arena://schemas/query",

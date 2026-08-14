@@ -152,6 +152,92 @@ list_workflow_outputs(application, workflow_instance_id)
 一个部署环境签发的 Token 发送到另一个域名。旧 Attempt 的 Instance 不等于永久输出归档；同一
 Workspace 的旧结果可能已被当前结果覆盖。
 
+### 认证下载示例
+
+以下示例中的 `DOWNLOAD_PATH` 必须使用 `list_workflow_outputs` 或 `get_task_log_download` 当前返回的
+相对路径，不要自行猜文件 URL。
+
+PowerShell：
+
+```powershell
+$baseUrl = "{ARENA_PUBLIC_URL}"
+$downloadPath = $env:DOWNLOAD_PATH
+$headers = @{ Authorization = "Bearer $env:ARENA_TOKEN" }
+Invoke-WebRequest -Uri "$baseUrl$downloadPath" -Headers $headers -OutFile .\arena-output.parquet
+```
+
+curl：
+
+```bash
+ARENA_BASE_URL="{ARENA_PUBLIC_URL}"
+curl --fail --location \
+  --header "Authorization: Bearer ${ARENA_TOKEN}" \
+  "${ARENA_BASE_URL}${DOWNLOAD_PATH}" \
+  --output arena-output.parquet
+```
+
+Python 标准库：
+
+```python
+import os
+import shutil
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+base_url = "{ARENA_PUBLIC_URL}"
+download_path = os.environ["DOWNLOAD_PATH"]
+download_url = urljoin(f"{base_url.rstrip('/')}/", download_path)
+arena = urlsplit(base_url)
+arena_origin = (arena.scheme.lower(), arena.hostname, arena.port)
+initial = urlsplit(download_url)
+if (initial.scheme.lower(), initial.hostname, initial.port) != arena_origin:
+    raise ValueError("DOWNLOAD_PATH 必须指向当前 Arena API")
+
+
+class ArenaRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, message, headers, new_url):
+        target_url = urljoin(request.full_url, new_url)
+        source = urlsplit(request.full_url)
+        target = urlsplit(target_url)
+        if target.scheme not in {"http", "https"}:
+            raise ValueError("下载重定向只允许 HTTP(S)")
+        if source.scheme == "https" and target.scheme != "https":
+            raise ValueError("拒绝从 HTTPS 降级到 HTTP")
+        redirected = super().redirect_request(
+            request, file, code, message, headers, target_url
+        )
+        target_origin = (target.scheme.lower(), target.hostname, target.port)
+        if redirected is not None and target_origin != arena_origin:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+request = Request(
+    download_url,
+    headers={"Authorization": f"Bearer {os.environ['ARENA_TOKEN']}"},
+)
+opener = build_opener(ArenaRedirectHandler())
+with opener.open(request) as response, Path("arena-output.parquet").open("wb") as target:
+    shutil.copyfileobj(response, target)
+```
+
+Token 只能发送到当前 Arena API 的 origin。Arena 可以返回指向对象存储的跨 origin 预签名
+重定向；这种重定向是正常的，但后续请求绝不能携带 `Authorization` header。上述 Python 示例
+会校验初始 URL，允许安全的预签名跨 origin 重定向，并在离开 Arena origin 前移除 Token。
+
+### 保留与本地归档
+
+- Query 重复运行会更新当前结果，旧 Parquet 不保证继续可下载；每个用户最多 5 个 Query 项目；
+- Factor/Backtest 已保存版本固定其业务结果绑定，但对象存储、DolphinScheduler 日志和数据库仍受
+  部署方保留策略约束，不能把在线地址当成永久档案；
+- Attempt 保留的是提交参数、状态和事件，不等于保留该次 Parquet；
+- `list_workflow_outputs` 只对仍绑定当前业务结果的成功 Instance 提供文件元数据。
+
+需要复现时，建议在结果仍可下载时一并归档：原始请求或 Attempt `payload.input_json`、Project/
+Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、Runtime/Backend 版本、基础
+数据版本、费用与年化参数。不要只保存截图或摘要指标。
+
 ## 工作流控制
 
 ```text

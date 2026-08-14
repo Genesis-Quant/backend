@@ -1,8 +1,9 @@
 # Backtest API
 
 本文件说明策略回测的项目、编译提交、版本、批量执行、专项研究和输出 API。请求对象见
-`arena://docs/backtest/request`，回调、行情、价格尺度、撮合、订单簿、事件和 QA 见
-`arena://docs/backtest/dolphindb`，Schema 见 `arena://schemas/backtest`。通用工作流诊断见
+`arena://docs/backtest/request`，回调、行情、价格尺度、撮合、订单簿和事件见
+`arena://docs/backtest/dolphindb`，四张结果表、费用、订单状态和对账见
+`arena://docs/backtest/results`，Schema 见 `arena://schemas/backtest`。通用工作流诊断见
 `arena://docs/overview/workflows`。
 
 ## 项目与版本
@@ -137,18 +138,18 @@ list_workflow_outputs("backtest", workflow_instance_id)
 
 | 名称 | 文件 | 内容 |
 | --- | --- | --- |
-| `trade_details` | `trade_details.parquet` | 成交明细、价格、数量、方向和费用 |
-| `daily_positions` | `daily_positions.parquet` | 每日证券持仓明细 |
-| `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、资产与组合净值 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日委托与成交统计 |
+| `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单多行，当前没有费用列 |
+| `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓；当前卖出量/额字段有已知限制 |
+| `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、市值、权益、净值、累计收益和累计费用 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日按证券和买开/卖平成交方向汇总 |
 
 下载与鉴权见 `arena://docs/overview/workflows`。读取报告前必须执行
-`arena://docs/backtest/dolphindb` 的 QA 清单。
+`arena://docs/backtest/results` 的字段解释、已知限制、对账公式和 QA 清单。
 
 ## 完整调用顺序
 
 ```text
-1. 读取 backtest/request、backtest/dolphindb、overview/dsl、schemas/backtest
+1. 读取 backtest/request、backtest/dolphindb、backtest/results、overview/dsl、schemas/backtest
 2. 发现 DSL 算符和需要的 DolphinDB 内置函数签名
 3. create_project("backtest", title)
 4. run_backtest(project_id, complete_parameters)

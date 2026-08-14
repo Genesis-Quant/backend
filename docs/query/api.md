@@ -8,6 +8,8 @@
 
 Query 只有 Project，没有 Version。一个项目始终复用一个 Workspace；每次执行新增 Attempt，并更新
 项目页当前参数、状态与结果。以前的提交参数从 Attempt 历史读取，旧 Parquet 不保证永久保留。
+每个用户最多创建 5 个 Query 项目；达到上限后应复用现有项目，不能通过反复创建项目规避结果覆盖
+与保留规则。
 
 网页地址：`{ARENA_WEB_URL}/query/projects/{project_id}`。
 

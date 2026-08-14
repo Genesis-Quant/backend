@@ -48,9 +48,10 @@ position = Backtest::getPosition(context.engine, stockCode)
 print(position.keys())
 ```
 
-`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum`、`outputQueuePosition` 等配置会改变部分结果或
-事件的附加字段。因此“全部字段”必须绑定到当前 engine 配置；官方静态字段表和运行时自省应一起
-使用。Arena 文档下面列出的 message 与事件位置，针对的是 Runtime 当前固定配置。
+`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum` 等配置会改变部分结果或事件的附加字段。
+`outputQueuePosition` 只适用于官方文档指定的含逐笔行情模式，不适用于 Arena 当前固定的
+`dataType=1`。因此“全部字段”必须绑定到当前 engine 配置；官方静态字段表和运行时自省应一起使用。
+Arena 文档下面列出的 message 与事件位置，针对的是 Runtime 当前固定配置。
 
 DolphinDB 普通内置函数的部署版本签名可用 `describe_dolphindb_functions` 查询。带
 `Backtest::` 或 `backtest::` 命名空间的接口不要传给该工具，其契约以本页为准。
@@ -92,18 +93,19 @@ Runtime 从 `dataset_query` filters 后的表生成消息。每个有效交易�
 | `15:00:00` | 当日 `close` |
 
 `adj=null` 不复权；`hfq` 使用 `adj_factor` 后复权；`qfq` 使用每只代码最后一个 `adj_factor` 归一
-后前复权。`open/low/high/close/upLimitPrice/downLimitPrice/prevClosePrice` 使用相同调整系数。必要
-价格为空的日线不会生成快照。
+后前复权。`open/low/high/close/upLimitPrice/downLimitPrice/prevClosePrice` 使用相同调整系数。源
+`up_limit/down_limit` 允许为空：Runtime 会结合 `high/low` 和 `pre_close` 生成回退值，具体规则见
+“停牌、缺价和无法退出”。回退完成后的必要价格为空时，该日线不会生成快照。
 
 ### 原始历史数据与执行价格是两套尺度
 
 `dataset_query` 计算出的 factors、derivatives、`getHistoryData` 和 `getLastData` **始终保留
 CoreData 原始价格尺度**。`adj` 不会改写这些历史列；它只调整 message 以及随后产生的订单、成交和
-持仓价格。因此 `adj="qfq"` 或 `"hfq"` 时，下面的直接比较是错误的，虽然工作流通常仍会成功：
+持仓价格。因此 `adj="qfq"` 或 `"hfq"` 时，直接混用两个尺度是错误的，虽然工作流通常仍会成功：
 
 ```dos
-// 错误：raw ATR 与 adjusted position price 处在两个尺度
-stopPrice = position.longPositionAvgPrice - 2.0 * signal.atr_raw[0]
+// 错误：原始尺度的价格型派生值不能直接与复权后的持仓价格运算
+distance = position.longPositionAvgPrice - signal.rawPriceLikeValue[0]
 ```
 
 在 t 日开盘回调中，`signal` 是同一代码的前一实际交易日行时，可使用 message 的复权昨收与该行
@@ -112,13 +114,12 @@ stopPrice = position.longPositionAvgPrice - 2.0 * signal.atr_raw[0]
 ```dos
 rawClose = double(signal.close[0])
 scale = double(message.prevClosePrice[rowIndex]) / rawClose
-atrExecution = double(signal.atr_raw[0]) * scale
-channelExecution = double(signal.entry_channel_raw[0]) * scale
+executionPriceLikeValue = double(signal.rawPriceLikeValue[0]) * scale
 ```
 
 使用前必须确认代码一致、两端非 NULL 且大于 0。若信号行不是该代码的前一实际交易日（停牌、缺
-行或手工拼表），不能套用该比例，应跳过该次交易。所有价格型指标——ATR、通道、均线、止损距
-离、风险仓位分母——都必须先转到 message/持仓的执行价格尺度。
+行或手工拼表），不能套用该比例。所有价格水平、价格差和以价格为单位的派生值都必须先转到
+message/持仓的执行价格尺度；无量纲比例不需要这一步。
 
 代码在查询完成后统一映射：
 
@@ -151,8 +152,9 @@ bidQty[0] = offerQty[0] = totalBidQty = totalOfferQty = 1,000,000,000
 档位 1+    不存在                             不存在
 ```
 
-当 `syntheticSpread=0.001`、`lastPrice=10` 时，买一为 9.995，卖一为 10.005；当 spread=0 时，
-买一、卖一和 lastPrice 都是 10。`upLimitPrice/downLimitPrice` 是独立风控边界，不是第二档盘口。
+`syntheticSpread=0.001` 表示完整价差 10bp，舍入前买卖两侧各约 5bp；当 `lastPrice=10` 时，买一为
+9.995，卖一为 10.005。spread=0 时，买一、卖一和 lastPrice 都是 10。
+`upLimitPrice/downLimitPrice` 是独立风控边界，不是第二档盘口。
 
 ## `onSnapshot` message
 
@@ -244,6 +246,39 @@ signal = backtest::getLastData(context, message, false)
 挂起并等待 15:00 或更晚行情；15:00 回调提交但未立即成交的订单，当日没有下一条合成快照。
 订单 timestamp 与成交 timestamp 可以相同，但仍不能把“已提交”当作“已成交”。
 
+### 从因子日期到成交日期的完整时间线
+
+对交易日 `t`，当前日线合成模式的严格顺序是：
+
+```text
+t 之前最后一个实际数据截面收盘
+  -> Runtime 已完成该截面的基础字段、派生字段和截面计算
+t 日盘前
+  -> beforeTrading(context)
+t 日 09:30
+  -> 引擎接收以 t 日 open 构造的快照并更新最新订单簿
+  -> onSnapshot(context, message, indicator)
+  -> 回调内提交的 latency=0 可成交限价单立即与这张 09:30 订单簿撮合
+  -> onOrder/onTrade 按实际状态变化穿插触发
+t 日 15:00
+  -> 引擎接收以 t 日 close 构造的快照并更新订单簿
+  -> onSnapshot，再处理已有挂单和新订单产生的订单/成交事件
+  -> afterTrading(context)
+最后一个交易日结束
+  -> finalize(context)
+```
+
+在 09:30：
+
+- `message.lastPrice` 是当日 `open`，可以用于当前目标股数换算和撮合；
+- message 只含本页列出的快照字段，不含当日 `high`、`low`、`close`；
+- `getLastData/getHistoryData` 强制 `date(time) < t`，所以不能读取当日收盘后才确定的字段；
+- 当日 `high`、`low`、`close` 不能参与 09:30 决策，即使它们曾用于离线构造 message；
+- `getLastData` 返回全表最后一个实际存在的时间截面，不是给每只股票分别寻找最后一个非空值。
+
+输出 Parquet 的时间戳采用交易所本地时间，但当前写出为无时区 `timestamp[ns]`。跨系统读取时应显式
+按 `Asia/Shanghai` 业务语义解释，不能把它当成 UTC 再转换一次。
+
 ## 历史数据 helper
 
 ```text
@@ -262,7 +297,7 @@ backtest::getLastData(context, msg, filter=true)
 `context["coreBacktestComputedData"]`、`context["coreBacktestUnfilteredFactorData"]` 等名称。
 这些不是策略 API，且绕开日期边界会引入未来数据。
 
-### 信号日期与 rolling/shift
+### 历史行与 rolling/shift
 
 在 t 日 09:30 调用 `getLastData`，读到的是最后一个 `date(time) < t` 的完整截面，通常是 t-1：
 
@@ -271,9 +306,10 @@ t-20 ... t-2  t-1       t 日 09:30 callback / submitOrder
 |------ rolling window ------|  读取 t-1 信号；latency=0 时可与 t 日开盘最新盘口即时撮合
 ```
 
-- 在 t-1 行计算 `rollingMax(high, 20)` 已包含截至 t-1 的 20 个已完成观测，供 t 日决策时不需要再
-  shift；再 shift 会额外少算一天。
-- 若在**同一 DSL 行**比较该行 `close/high` 与 20 日通道，通道必须 shift 1，才能排除当前行自身。
+- 在 t-1 行得到的滚动结果已经只使用不晚于 t-1 的观测；t 日读取该行时，不应为了“避免未来数据”
+  无条件再 shift，否则会额外丢掉一个已完成观测；
+- 若某项定义要求窗口排除**正在计算的当前行**，应在 DSL 层显式滞后其输入或结果。是否包含当前行
+  由具体算符定义决定，应读取 `describe_dsl_operator`，不能根据算符名字猜测；
 - 负 shift、未来收益标签或在 09:30 使用当日 high/low/close 都是未来数据。
 - `getLastData` 取最后实际存在日期，不保证自然日相邻；依赖严格连续交易日时需检查 signal.time。
 
@@ -425,6 +461,9 @@ Backtest::cancelOrder(context.engine, , , "orderLabel")
 `msgAsTable=true`、未启用额外序号字段时实际收到的位置型 ANY VECTOR。
 
 当前创建方式下 `orders` 是 ANY VECTOR，必须按整数位置读取，不能写 `orders["status"]`。
+若请求启用 `outputSeqNum` 或 `outputTradeSeqNum`，插件会给事件参数增加序号字段；下表只对应两项均为
+false 的默认布局。启用前必须按部署插件版本核对新增位置并同步修改 callback，不能继续假定向量长度
+固定为 11。
 
 | 位置 | 字段 | 说明 |
 | ---: | --- | --- |
@@ -475,6 +514,9 @@ def onOrder(mutable context, orders) {
 
 `trades` 同样是 ANY VECTOR：
 
+下表同样是 `outputSeqNum=false`、`outputTradeSeqNum=false` 的默认布局；启用序号字段后必须按实际
+插件版本重新核对向量位置。
+
 | 位置 | 字段 | 说明 |
 | ---: | --- | --- |
 | 0 | `orderId` | LONG 订单号 |
@@ -508,6 +550,50 @@ message 中，`order_target` 无法对它下单。需要根据动态成员退出
 4. `getLastData(..., false)` 读取前一截面成员状态；
 5. 对当前 message 中未入选但仍持有的股票下目标 0。
 
+### 候选代码并集不等于每日成员
+
+`codes_query` 对整个请求区间的过滤结果取 `code` 去重并集，再用这个并集覆盖第二阶段
+`dataset_query.codes`。因此某证券即使在区间后半段才进入指数，也会被加载其查询区间内可用的历史
+数据；第一阶段只控制“需要加载哪些代码”，不代表每日成员身份。
+
+避免未来成分泄露必须在第二阶段再次构造每日成员 BOOL：
+
+- 截面排名等计算用 `on=<每日成员 BOOL>` 限制参与域；
+- 选股时检查前一完整截面的每日成员值；
+- 若旧持仓需要在退出成员后卖出，通常保持第二阶段 `filters=[]`，否则证券会从当日 message 消失；
+- 只在第一阶段过滤指数成员、第二阶段完全不做每日门控，是高风险用法。
+
+新成员入选后使用其入选前已经公开的历史价格计算滚动指标，与“提前把它视为指数成员”是两个不同
+问题。前者可以是合法历史窗口，后者会造成成员身份泄露。
+
+基础字段自动填充、指数权重来源和供应商历史修订边界属于所有 Query 的通用数据契约，见
+`arena://docs/overview/dsl` 的“基础字段填充与 point-in-time 边界”。Backtest 不会额外冻结或版本化
+这些输入；复现运行时必须同时固定基础数据版本。
+
+## 停牌、缺价和无法退出
+
+源 `up_limit/down_limit` 可以为 NULL。构造合成快照时，Runtime 先按以下规则生成最终涨跌停价：
+
+```text
+upLimitPrice = up_limit 非 NULL ? up_limit : max(high, round(pre_close * 1.1, 3))
+downLimitPrice = down_limit 非 NULL ? down_limit : min(low, round(pre_close * 0.9, 3))
+```
+
+之后 Runtime 才检查同一代码日期的 `open`、`low`、`high`、`close`、最终 `upLimitPrice`、最终
+`downLimitPrice` 和 `pre_close`。这些**最终用于生成消息的字段**必须全部非 NULL；任一字段无有效值，
+该证券当天的 09:30 与 15:00 快照都不会生成。不能仅凭源 `up_limit/down_limit` 缺失判断快照缺失。
+
+后果是：
+
+1. 该证券不在当日 `message.symbol`；
+2. `backtest::order_target*` 找不到它时会抛出“股票不在当前快照中”，策略应先检查是否存在；
+3. 已有非目标持仓当天可能无法卖出并继续保留；
+4. `daily_positions.closePrice` 可能继续使用最近估值价，而 Query/历史因子中的当日价格仍为 NULL；
+5. 恢复交易后 Runtime 不会自动清仓，只有策略再次在它出现在 message 时提交目标 0 才会退出。
+
+因此“目标集合已经删除该证券”不等于“仓位已经卖出”。结果审计必须检查无法交易期间的持仓延续，
+并按 `arena://docs/backtest/results` 对账真实卖平记录。
+
 ## 日频合成快照的能力边界
 
 日线输入只生成开盘与收盘两个快照，事件路径中不存在盘中 high/low 发生的准确时刻。因此：
@@ -532,23 +618,10 @@ helper 中的代码统一为 `510300.XSHG` / `000001.XSHE`。不要在回调里�
 
 ### 使用 DOS 输出调试
 
-回测 Session 的 DolphinDB 消息输出已由 Runtime 从默认 stdout 重定向到 Loguru，Loguru 输出随后进入
-DolphinScheduler Task 日志。因此 `utils` 和八个 callback 中的 `print(...)` 可以直接用于调试，无需
-另建日志文件。例如可打印当前回调日期、筛选后行数、提交的 orderId 以及 `onOrder`/`onTrade` 收到的
-状态摘要：
-
-```dos
-print("调仓日期=" + string(date(message.timestamp[0])) +
-      ", 候选数量=" + string(selected.rows()))
-```
-
-运行后先用 `list_workflow_tasks(workflow_instance_id)` 找到 `task_instance_id`，再从
-`get_task_logs(..., skip_line_num=0)` 开始分页读取，直到 `has_more=false`；也可以用
-`get_task_log_download` 下载完整日志。DolphinDB 的语法错误和运行异常同样会出现在该 Task 日志中。
-
-调试输出应是少量摘要。不要打印密码、Token、完整行情表或每只股票每个快照的全部数据；大量输出会
-拖慢回测并放大日志。`print` 只能证明代码路径与当时变量值，订单是否真正成交仍必须以 `onOrder`、
-`onTrade`、`trade_details` 和持仓结果为准。
+DOS 输出重定向、Task 日志分页、完整日志下载和敏感信息限制属于所有任务的通用契约，见
+`arena://docs/overview/workflows`。Backtest 的 `utils` 和八个 callback 中可以使用少量 `print(...)`
+输出日期、行数、订单号或事件摘要；这些内容会进入对应 Task 日志。日志只能证明代码路径和当时变量
+值，订单是否真正成交仍必须以 `onOrder`、`onTrade` 和结果表对账。
 
 回测 SUCCESS 但无交易时依次检查：
 
@@ -560,28 +633,8 @@ print("调仓日期=" + string(date(message.timestamp[0])) +
 - `orders[5]`、`trade_details` 是否显示拒单或未成交；
 - 现金、可卖持仓、涨跌停、限价、延时和 `syntheticSpread` 是否允许当前或后续盘口成交。
 
-## SUCCESS 后的结果 QA
+## 结果读取与 QA
 
-工作流成功后至少检查以下内容；任一项失败都不能直接采信收益指标：
-
-- 随机抽查交易，确认信号行日期严格早于下单回调日期，窗口没有多 shift 或少 shift；
-- 重算 `prevClosePrice / raw close`，核对价格型信号、ATR、止损距离和仓位分母处于同一尺度；
-- 按 orderId 对账委托量、累计成交量和最终状态，部分成交不能算全成；
-- 分别统计 `-1` 拒单、`-2` 撤单拒绝和 `-3` 期末未成交，并检查重复挂单；
-- 用 `trade_details` 与 `daily_positions` 对账持仓，不允许非法负多头；
-- 检查 `daily_portfolios` 日期递增，净值、权益和现金有限非空，费用增量符合配置；
-- 检查关键信号 NULL 比例、每日可交易代码数和缺失交易日是否异常；
-- 明确期末持仓处理；Arena 不会为了报表自动平仓。
-
-## 指标口径
-
-- 日收益：相邻有效 `netValue` 的变化率；
-- 年化收益：最后有效净值按有效净值行数和 `annual_trading_days` 几何年化；
-- 年化波动：日收益总体标准差乘 `sqrt(annual_trading_days)`；
-- Sharpe：`(annualReturn - risk_free_rate) / annualVolatility`；
-- 费用：插件交易费用，受 commission、tax、最低单笔费用及买卖方向影响；
-- 期末持仓：不自动卖出，最后净值包含未平仓市值；
-- 基准：当前请求没有基准参数，不自动扣除基准收益或基准成本。
-
-后端展示的胜率是非零日收益中正收益日的比例，不是逐笔交易胜率；最大回撤从初始净值 1.0 开始
-计算。比较结果时必须固定年化日数、无风险利率、费用、复权方式和期末持仓处理。
+四张 Parquet 的字段类型、行粒度、订单事件状态机、费用公式、已知持仓字段限制、标准对账公式和
+SUCCESS 后 QA 已集中到 `arena://docs/backtest/results`。执行契约只说明回调中如何产生事件；结果
+分析必须再读取结果契约，不能根据 `trade_details` 文件名把它误当成“一笔成交一行”。

@@ -12,7 +12,7 @@ get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="query", workflow_instance_id=...)
 ```
 
-再次运行同一 Query 项目会更新当前请求和结果。Query 不支持版本，每个用户最多 5 个 Query 项目。
+再次运行同一 Query 项目会更新当前请求和结果。Query 不支持版本。
 Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`；Workspace 与 Attempt 的通用关系见
 `arena://docs/overview/projects`。
 
