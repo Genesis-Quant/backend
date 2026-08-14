@@ -104,11 +104,12 @@ class BatchResearchItemCreate(BaseModel):
 class BatchResearchCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    analysis_type: BatchAnalysisType
+    analysis_type: BatchAnalysisType = Field(strict=False)
     project_id: int = Field(gt=0)
     version: int = Field(gt=0)
     description: str = Field(default="", max_length=512)
     items: list[BatchResearchItemCreate] = Field(min_length=1, max_length=100)
+
 
 class FeeAnalysisCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
