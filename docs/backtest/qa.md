@@ -1,220 +1,129 @@
-# Backtest 端到端生命周期与结果 QA
+# Backtest 生命周期与最低 QA
 
-本页把项目、草稿版本、Workspace、Attempt、Workflow Instance、Task、输出、指标和保存版本串成一个
-可执行流程。工作流 `SUCCESS` 只表示代码完成，必须下载四张结果表并通过本页检查后才能采信结果。
+本页给出通用运行、核验和保存顺序，不包含任何策略或组合构造。工作流 `SUCCESS` 只表示程序完成，
+不能替代数据、订单和账务检查。
 
-## 一次完整运行
+## 标准生命周期
 
 ```text
-1. create_project("backtest", title)
-   -> project.id；同时创建 version=1、saved=false 的可更新草稿和一对一 Workspace
-
-2. run_backtest(project_id, complete_parameters)
-   -> 先做 Runtime Schema 校验和 DolphinDB 编译预检
-   -> 成功后在草稿 Workspace 创建新 Attempt 并提交 DolphinScheduler
-   -> 返回 workspace_id 和可能暂为 null 的 workflow_instance_id
-
-3. get_workspace_status(workspace_id)
-   -> 始终轮询 Workspace 当前 Attempt，不固定轮询旧 Instance
-   -> 失败时先 list_workflow_attempts(workspace_id)，再用 attempt_id 调用 get_workflow_attempt
-   -> 有 workflow_instance_id 时继续读取 get_workflow_details、Task 和完整日志
-
-4. SUCCESS 后 list_workflow_outputs("backtest", current_workflow_instance_id)
-   -> 必须出现 trade_details、daily_positions、daily_portfolios、daily_trading_statistics
-   -> 按 overview/workflows 的安全重定向规则下载并本地归档
-
-5. 执行本页 QA；发现时序、价格尺度、订单、账务或结果缺失时，不保存版本
-
-6. get_project("backtest", project_id)
-   -> 确认草稿绑定的仍是刚验证的 Workspace/Instance，避免把迟到结果保存到错误运行
-
-7. save_version("backtest", project_id, current_workflow_instance_id, remark)
-   -> 固化当前草稿参数、结果绑定和摘要
-   -> 项目自动创建下一个递增、saved=false 的可更新草稿
+读取 request / runtime / results / Schema
+  -> create_project
+  -> run_backtest
+  -> 按 workspace_id 轮询当前 Attempt
+  -> SUCCESS 后列出并下载四张结果表
+  -> 执行数据、订单、持仓和账务 QA
+  -> 再次确认草稿绑定的当前 Workflow Instance
+  -> save_version
 ```
 
-同一草稿再次 `run_backtest` 会在同一 Workspace 创建新 Attempt 并更新当前结果。Attempt 保留提交参数、
-状态和事件，但旧 Parquet 不保证永久存在。失败重跑也会创建新 Attempt/Instance；持续使用 Workspace
-找当前运行。已保存版本的参数和结果绑定不再被后续草稿覆盖。
+关键规则：
 
-## 四张表的最低要求
+- `run_backtest` 返回成功只表示提交成功；`workflow_instance_id` 初期可以为 `null`；
+- 重跑会在同一 Workspace 创建新 Attempt 和新 Workflow Instance，持续使用 `workspace_id` 找当前运行；
+- 失败时依次读取 Attempt、Workflow、Task 和完整 Task 日志；
+- 同一草稿再次运行可能覆盖当前结果绑定，QA 前后都要确认 Instance；
+- `save_version` 固化当前成功草稿，并自动创建下一未保存版本及新 Workspace；
+- 推荐顺序始终是“运行 → QA → 保存”，不能在 QA 前保存。
 
-完整字段、状态码和已知限制见 `arena://docs/backtest/results`。QA 不能只检查文件存在：
+对象关系和保留边界见 `arena://docs/overview/projects`，日志与下载见
+`arena://docs/overview/workflows`。
 
-| 表 | 最低检查 |
-| --- | --- |
-| `trade_details` | 按 `orderId` 聚合状态事件；终态集合；拒单、撤单拒绝和 `-3`；direction；不要累加各状态行 tradeQty |
-| `daily_positions` | 盘后数量、零仓行、缺行和旧估值价；当前部署不用 `todaySellVolume/Value` 审计卖出 |
-| `daily_portfolios` | 日期、现金、市值、权益、净值、累计费用和 ratio；用标准恒等式对账 |
-| `daily_trading_statistics` | 买开/卖平实际成交量额；volume>0 时 value/volume≈averagePrice |
+## 运行前能校验什么
 
-当前部署卖出审计以 `daily_trading_statistics.todaySellCloseTradeVolume/Value` 为主，再用
-`trade_details.direction=3` 的真实成交状态交叉核对。`trade_details` 是订单事件表，不是成交表。
+当前提交路径会校验顶层 Schema、已知配置类型、保留字段、代码后缀、固定回调名称和签名，并在创建
+Workspace 前编译 `utils` 与 callbacks。
 
-## 可直接运行的本地 QA 脚本
+当前没有独立静态校验工具自动证明以下内容：
 
-先按 `arena://docs/overview/workflows` 下载四个文件为当前目录中的同名 Parquet。再从刚验证的
-`get_project(...).draft.parameters` 或 `get_version(...).parameters` 取得完整规范化参数对象，原样保存为
-当前目录的 `parameters.json`，然后运行下面脚本。它复现 Backend 当前摘要口径，并检查最基本的账务
-恒等式；不能把其他运行或默认示例的参数写入该文件。
+- DSL 业务语义和数据是否 point-in-time；
+- 自定义矩阵的维度、数值条件和可行性；
+- 运行时计算出的目标是否有限、非负；
+- 多订单合计资金、调仓顺序和最终可成交性。
 
-```python
-import json
-import math
-from pathlib import Path
+这些检查必须在请求构造、回调代码和结果 QA 中完成。不要把编译成功描述成上述检查已通过。
 
-import numpy as np
-import pandas as pd
+## 四张结果表
 
-parameters = json.loads(Path("parameters.json").read_text(encoding="utf-8"))
-ANNUAL_TRADING_DAYS = int(parameters["annual_trading_days"])
-RISK_FREE_RATE = float(parameters["risk_free_rate"])
-INITIAL_CASH = float(parameters["config"]["cash"])
-ATOL = 0.05
+| 输出 | 行粒度 | 最低检查 |
+| --- | --- | --- |
+| `trade_details` | 一次订单状态事件 | 按 `orderId` 聚合生命周期；识别拒单、撤单、撤单拒绝和期末未成交 |
+| `daily_positions` | 证券 × 交易日的盘后持仓记录 | 数量、估值价、零仓行、缺行和无法退出持仓 |
+| `daily_portfolios` | 组合 × 交易日 | 现金、市值、权益、净值、收益、盈亏和累计费用 |
+| `daily_trading_statistics` | 有成交统计的证券 × 交易日 | 实际成交量、成交额和方向均价 |
 
-trade_details = pd.read_parquet(Path("trade_details.parquet"))
-positions = pd.read_parquet(Path("daily_positions.parquet"))
-portfolios = pd.read_parquet(Path("daily_portfolios.parquet")).sort_values("tradeDate", kind="stable")
-statistics = pd.read_parquet(Path("daily_trading_statistics.parquet"))
+`trade_details` 不是“一笔订单一行”。同一 `orderId` 可有多个状态事件，事件行数不能当作唯一订单数。
+字段、状态码和关联键见 `arena://docs/backtest/results`。
 
-required_portfolio = {
-    "tradeDate", "ratio", "cash", "totalMarketValue", "totalEquity", "netValue",
-    "totalReturn", "floatingPnl", "realizedPnl", "totalPnl", "totalFee"
-}
-missing = required_portfolio - set(portfolios.columns)
-if missing:
-    raise ValueError(f"daily_portfolios missing columns: {sorted(missing)}")
-if portfolios.empty:
-    raise ValueError("daily_portfolios is empty")
-if portfolios["tradeDate"].duplicated().any():
-    raise ValueError("daily_portfolios contains duplicate tradeDate")
+## 账务核验
 
-returns = pd.to_numeric(portfolios["ratio"], errors="coerce").fillna(0).to_numpy(float)
-returns = np.where(np.isfinite(returns), returns, 0.0)
-wealth = np.cumprod(1.0 + returns)
-growth = wealth[-1]
-annual_return = growth ** (ANNUAL_TRADING_DAYS / len(returns)) - 1 if growth > 0 else math.nan
-annual_volatility = (
-    np.std(returns[1:], ddof=0) * np.sqrt(ANNUAL_TRADING_DAYS)
-    if len(returns) > 1 else math.nan
-)
-sharpe = (
-    (annual_return - RISK_FREE_RATE) / annual_volatility
-    if annual_volatility != 0 else math.nan
-)
-running_peak = np.maximum.accumulate(np.concatenate(([1.0], wealth)))[1:]
-max_drawdown = min(0.0, np.min(wealth / running_peak - 1.0))
-period_rate = (1.0 + RISK_FREE_RATE) ** (1.0 / ANNUAL_TRADING_DAYS) - 1.0
-excess = returns - period_rate
-negative = excess[excess < 0]
-downside = np.sqrt(np.square(negative).sum() / len(excess))
-sortino = excess.mean() / downside * np.sqrt(ANNUAL_TRADING_DAYS) if downside != 0 else math.nan
-nonzero = returns[returns != 0]
-win_rate = np.count_nonzero(returns > 0) / len(nonzero) if len(nonzero) else 0.0
-fees = pd.to_numeric(portfolios["totalFee"], errors="coerce").to_numpy(float)
-previous_fees = np.concatenate(([0.0], fees[:-1]))
-fee_increments = fees - np.where(np.isfinite(previous_fees), previous_fees, 0.0)
-total_fee = fee_increments[np.isfinite(fee_increments) & (fee_increments >= 0)].sum()
+使用浮点容差检查：
 
-checks = {
-    "equity_equals_cash_plus_market_value": bool(np.allclose(
-        portfolios["totalEquity"], portfolios["cash"] + portfolios["totalMarketValue"], atol=ATOL, rtol=1e-9
-    )),
-    "net_value_equals_equity_over_initial_cash": bool(np.allclose(
-        portfolios["netValue"], portfolios["totalEquity"] / INITIAL_CASH, atol=1e-8, rtol=1e-8
-    )),
-    "total_return_equals_net_value_minus_one": bool(np.allclose(
-        portfolios["totalReturn"], portfolios["netValue"] - 1.0, atol=1e-8, rtol=1e-8
-    )),
-    "total_pnl_equals_floating_plus_realized": bool(np.allclose(
-        portfolios["totalPnl"], portfolios["floatingPnl"] + portfolios["realizedPnl"], atol=ATOL, rtol=1e-9
-    )),
-    "cumulative_fee_never_decreases": bool(np.all(np.diff(fees[np.isfinite(fees)]) >= -1e-9)),
-}
-
-terminal_states = {1, 2, -1, -3}
-orders_without_terminal = []
-if not trade_details.empty:
-    required_orders = {"orderId", "orderStatus", "direction", "tradeQty", "tradePrice"}
-    missing_orders = required_orders - set(trade_details.columns)
-    if missing_orders:
-        raise ValueError(f"trade_details missing columns: {sorted(missing_orders)}")
-    for order_id, events in trade_details.groupby("orderId", sort=False):
-        if not set(pd.to_numeric(events["orderStatus"], errors="coerce").dropna().astype(int)) & terminal_states:
-            orders_without_terminal.append(int(order_id))
-
-sell_volume = 0
-if "todaySellCloseTradeVolume" in statistics:
-    sell_volume = int(pd.to_numeric(statistics["todaySellCloseTradeVolume"], errors="coerce").fillna(0).sum())
-
-report = {
-    "metrics": {
-        "totalReturn": float(growth - 1.0),
-        "cagr": float(annual_return),
-        "volatility": float(annual_volatility),
-        "sharpe": float(sharpe),
-        "sortino": float(sortino),
-        "maxDrawdown": float(max_drawdown),
-        "winRate": float(win_rate),
-        "calmar": None if max_drawdown == 0 else float(annual_return / abs(max_drawdown)),
-        "totalFee": float(total_fee),
-    },
-    "checks": checks,
-    "orders": {
-        "eventRows": int(len(trade_details)),
-        "uniqueOrders": int(trade_details["orderId"].nunique()) if "orderId" in trade_details else 0,
-        "ordersWithoutTerminalState": orders_without_terminal,
-        "rejectedEvents": int((trade_details.get("orderStatus", pd.Series(dtype=int)) == -1).sum()),
-        "sellCloseVolumeFromStatistics": sell_volume,
-    },
-    "positions": {
-        "rows": int(len(positions)),
-        "zeroLongPositionRows": int((positions.get("longPosition", pd.Series(dtype=float)) == 0).sum()),
-    },
-}
-print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
-if not all(checks.values()) or orders_without_terminal:
-    raise SystemExit("QA failed; inspect the report before saving the version")
+```text
+权益 = 现金 + 持仓市值
+净值 = 权益 / 初始资金
+累计收益 = 净值 - 1
+总 PnL = 浮动 PnL + 已实现 PnL
+当日收益 = 当日净值 / 前一有效日净值 - 1
+当日费用 = 当日累计费用 - 前一有效日累计费用
 ```
 
-若某指标为非有限值，`allow_nan=False` 会主动报错，而不是输出伪 JSON。无交易、零波动或零回撤时应
-根据业务口径明确处理，不要擅自填成 0。
+首行前值分别使用初始资金、净值 1 和累计费用 0。费用已经反映在现金和权益中，不得从权益再次扣除。
+存在公司行为、冻结资金或其他现金事件时，应按相应账户定义扩展现金对账，不能把全部差额直接判错。
+
+成交审计还应检查：
+
+- 成交量大于 0 时，成交额 / 成交量与报告均价在容差内一致；
+- 累计费用不应无解释地下降；
+- 订单方向以 `direction` 为准，不以 `label` 推断；
+- 拒单和未成交不能计入成交量或成交费用；
+- 期末持仓和活动订单必须单独披露，Arena 不自动平仓。
+
+## 数据时点与价格尺度
+
+- `getLastData` / `getHistoryData` 只返回 `date(time) < 当前消息日期` 的数据；
+- `codes_query` 的区间候选并集不代表每日有效集合；逐日状态必须在第二阶段门控；
+- `adj` 只调整执行 `message`，不会自动调整 `dataset_query` 的 factors/derivatives 或历史 helper；
+- 带价格量纲的历史字段与订单、成交、持仓价格混用前必须统一尺度；
+- 财务数据和历史成员数据可能受供应商修订影响；Arena 当前不保存每次运行的输入快照。
+
+因此“代码无前视”与“数据源严格 point-in-time”是两项独立检查。
+
+## 撮合现实性
+
+当前日线模式每天只生成开盘和收盘两个合成快照，只有一档、近似无限深度，不包含真实盘口深度、
+成交容量或市场冲击。合成价差进入买卖盘价格；费用另行计算。涨跌停、停牌、缺价、资金、可卖数量、
+延时和插件风控仍会影响订单。
+
+结果只能解释为该合成撮合模型下的输出，不能直接推断真实市场可复制性，也不能从日线数据声称某个
+盘中路径或先后顺序。
 
 ## Backend 当前指标口径
 
-| 指标 | 当前精确定义 |
+项目摘要读取 `daily_portfolios.ratio`，先按日期排序，并将 NULL、非数值和非有限值按 0 处理：
+
+| 指标 | 当前定义 |
 | --- | --- |
-| 总收益 | 全部 `ratio` 先把 NULL/非有限值置 0，`prod(1+ratio)-1` |
-| 年化收益 | `(1+totalReturn)^(annualTradingDays/N)-1`，N 包含首行 |
-| 年化波动 | 从第二行开始的 `ratio` 总体标准差 `ddof=0 * sqrt(annualTradingDays)` |
-| Sharpe | `(annualReturn-riskFreeRate)/annualVolatility`，无风险率是年化值 |
-| Sortino | 年化无风险率先换为单期；负超额收益平方和除以**全序列长度**后开方 |
-| 胜率 | 非零 `ratio` 中正收益日比例；不是订单或逐笔胜率 |
-| 最大回撤 | 财富序列前补初始净值 1，返回最小的 `wealth/runningPeak-1`，不大于 0 |
-| Calmar | `annualReturn/abs(maxDrawdown)`；零回撤时为 NULL |
-| 总费用 | 累计 `totalFee` 的非负有限日增量之和 |
+| 累计收益 | `prod(1 + ratio) - 1` |
+| 年化收益 | `(1 + 累计收益)^(annual_trading_days / N) - 1` |
+| 年化波动 | 从第二行开始的 `ratio` 总体标准差乘 `sqrt(annual_trading_days)` |
+| Sharpe | `(年化收益 - risk_free_rate) / 年化波动` |
+| 胜率 | 非零 `ratio` 中正收益日比例；不是订单或逐笔成交胜率 |
+| 最大回撤 | 财富序列以前置净值 1 为起点计算，结果不大于 0 |
 
-首日 `ratio` 进入总收益、年化收益、Sortino、胜率和回撤，但从年化波动中排除。对比第三方库时必须
-先对齐这一点。`annual_trading_days` 和 `risk_free_rate` 来自版本参数。当前禁止传入 `benchmark`，
-没有基准列或基准指标；动态沪深300候选池也不等于沪深300业绩基准。基准比较应另取明确版本的指数
-收益并独立计算。
+`N` 包含全部 `ratio` 行。`annual_trading_days` 和 `risk_free_rate` 来自当前版本参数。Backend 当前没有
+官方组合换手率指标；若外部报告换手率，必须同时给出分子、分母、单双边和年化口径。
 
-## 撮合现实性检查
+当前请求不支持 `config.benchmark`，结果表也不含基准序列或基准指标。需要比较时，应在下载后使用
+明确版本、相同日期轴和明确缺失值规则的独立序列计算，不能把候选代码域当作基准表现。
 
-当前日线 Runtime 固定在 09:30 和 15:00 两个合成快照，只有一档、每侧十亿股近似无限深度，默认
-没有 ADV 参与率或市场冲击模型。`syntheticSpread` 进入买一/卖一价；佣金、印花税和最低费用另计。
-涨跌停边界和必要价格缺失仍会影响快照/风控，因此“无限深度”不等于任何订单都成交。正 latency 也
-不会创造真实的 09:30:01 行情，订单可能等到下一张 15:00 快照。
+## 保存前最低结论
 
-每次 QA 还必须确认：
+只有以下各项都明确后才保存版本：
 
-- t 日决策只使用 t 日以前的数据；动态成员每日门控而不是把期间并集当成每日成员；
-- `adj` 只调整执行 message，价格型 DSL 指标与持仓/成交价已换到同一尺度；无量纲收益无需换算；
-- 指数权重和财务字段可能被供应商回溯修订，Arena 当前不冻结 point-in-time 数据快照；
-- 停牌或必要价格缺失的持仓可能无法退出，期末没有自动平仓；
-- 普通股票 100 股整数手、科创板首次正目标至少 200 股以及资金/费用拒单均已审计；
-- `daily_positions.todaySell*` 当前不能作为卖出事实；卖出使用交易统计和订单/成交事件；
-- Token 只发给 Arena origin；允许对象存储预签名重定向，但离开 Arena origin 时移除 Authorization。
-
-本文指标代码与 Backend 当前实现逐项一致，最后按 DolphinDB Server `2.00.18`、Backtest
-`2.00.18.11`、MatchingEngineSimulator `2.00.18.11` 于 2026-08-15 验证。
+- 输入日期、代码域、时点和数据版本边界；
+- 价格尺度一致；
+- 每个订单的终态和实际成交覆盖；
+- 实际持仓、无法退出和期末状态；
+- 现金、权益、PnL、收益和费用对账；
+- 年化、无风险率、波动、胜率及任何外部指标口径；
+- 撮合模型限制和不可直接实盘复制的边界。

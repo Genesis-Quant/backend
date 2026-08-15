@@ -56,65 +56,11 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 Query 不会先执行一份查询、将 code 去重、再执行第二份查询。需要两阶段候选池时使用 Factor 或
 Backtest 的 `codes_query` + `dataset_query`。
 
-## 完整示例
+## 请求构造
 
-以下请求逐日保留沪深300成分且 PE>5 的股票，输出 20 日动量、20 日波动和成员内动量分位：
-
-```json
-{
-  "project_id": 12,
-  "request": {
-    "start_date": "2024-01-01",
-    "end_date": "2024-12-31",
-    "lookback": "P120D",
-    "codes": [],
-    "factors": ["close", "pe", "weight_000300SH"],
-    "derivatives": {
-      "is_hs300": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "weight_000300SH", "right": 0},
-        "params": {}
-      },
-      "pe_gt_5": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "pe", "right": 5},
-        "params": {}
-      },
-      "momentum_20d": {
-        "type": "TS",
-        "op": "unary.pct_change",
-        "fields": {"col": "close"},
-        "params": {"periods": 20}
-      },
-      "daily_return": {
-        "type": "TS",
-        "op": "unary.pct_change",
-        "fields": {"col": "close"},
-        "params": {"periods": 1}
-      },
-      "volatility_20d": {
-        "type": "TS",
-        "op": "unary.rolling_std",
-        "fields": {"col": "daily_return"},
-        "params": {"window": 20, "min_periods": 20}
-      },
-      "momentum_rank": {
-        "type": "CS",
-        "op": "unary.rank_pct",
-        "fields": {"col": "momentum_20d"},
-        "params": {"ascending": true, "ties_method": "min"},
-        "on": "is_hs300"
-      }
-    },
-    "filters": ["is_hs300", "pe_gt_5"]
-  }
-}
-```
-
-示例中的 `binary.gt`、`unary.pct_change`、`unary.rolling_std` 和 `unary.rank_pct` 结构应与
-当前 `describe_dsl_operator` 返回结果核对后再提交。
+精确顶层结构读取 `arena://schemas/query`。基础字段先从 DSL Catalog 发现，每个 derivative 的
+`fields`、`params`、返回类型和 `on` 约束必须逐项使用 `describe_dsl_operator` 核对。本页不提供具体
+筛选条件、因子定义或完整业务请求。
 
 ## 输出
 

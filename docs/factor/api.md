@@ -1,6 +1,6 @@
 # Factor API
 
-本文件说明因子研究的项目、运行、版本、批量执行和输出 API。请求字段与示例见
+本文件说明因子研究的项目、运行、版本、批量执行和输出 API。请求字段见
 `arena://docs/factor/request`，DSL 见 `arena://docs/overview/dsl`，Schema 见
 `arena://schemas/factor`。通用工作流诊断见 `arena://docs/overview/workflows`。
 
@@ -27,70 +27,8 @@ update_project("factor", project_id, title)
 run_factor_analysis(project_id, parameters)
 ```
 
-`parameters` 必须直接是完整 `FactorAnalysisParameters`：
-
-```json
-{
-  "project_id": 1,
-  "parameters": {
-    "codes_query": {
-      "start_date": "2024-01-01",
-      "end_date": "2024-12-31",
-      "lookback": "PT0S",
-      "codes": [],
-      "factors": ["weight_000300SH"],
-      "derivatives": {
-        "is_hs300": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        }
-      },
-      "filters": ["is_hs300"]
-    },
-    "dataset_query": {
-      "start_date": "2024-01-01",
-      "end_date": "2024-12-31",
-      "lookback": "P120D",
-      "codes": [],
-      "factors": ["close", "circ_mv", "weight_000300SH"],
-      "derivatives": {
-        "is_hs300": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        },
-        "momentum_20d": {
-          "type": "TS",
-          "op": "unary.pct_change",
-          "fields": {"col": "close"},
-          "params": {"periods": 20}
-        },
-        "daily_log_return": {
-          "type": "TS",
-          "op": "unary.log_return",
-          "fields": {"col": "close"},
-          "params": {"periods": 1}
-        },
-        "future_1d_log_return": {
-          "type": "TS",
-          "op": "unary.shift",
-          "fields": {"col": "daily_log_return"},
-          "params": {"periods": -1}
-        }
-      },
-      "filters": ["is_hs300"]
-    },
-    "factor_columns": ["momentum_20d"],
-    "return_columns": ["future_1d_log_return"],
-    "n_groups": 5,
-    "preprocess": true,
-    "market_value_column": "circ_mv"
-  }
-}
-```
+`parameters` 必须直接是完整 `FactorAnalysisParameters`。机器可读结构以
+`arena://schemas/factor` 为准；不能只提交局部 override。
 
 服务端严格校验请求，返回 `workspace_id` 和可能暂为空的 `workflow_instance_id`。用
 `get_workspace_status(workspace_id)` 轮询当前 Attempt。
@@ -116,23 +54,9 @@ update_version(application="factor", project_id, version, remark)
 run_factor_batch(project_id, items)
 ```
 
-`items` 为 1 到 100 项；每项包含唯一 `client_id`、可选 `remark` 和一份完整 parameters：
-
-```json
-{
-  "project_id": 1,
-  "items": [
-    {
-      "client_id": "factor-grid-001",
-      "remark": "5 groups",
-      "parameters": {"codes_query": null, "dataset_query": {}, "factor_columns": [], "return_columns": []}
-    }
-  ]
-}
-```
-
-示例中的空对象/数组只展示外形，不能直接执行；每项都必须独立满足 Factor Schema。成功项会自动保存
-为递增版本。`client_id` 用于同一次客户端提交的幂等识别，重试应复用原值；分别轮询返回的每个
+`items` 为 1 到 100 项；每项包含唯一 `client_id`、可选 `remark` 和一份完整 parameters。每项都必须
+独立满足 Factor Schema。成功项会自动保存为递增版本。`client_id` 用于同一次客户端提交的幂等
+识别，重试应复用原值；分别轮询返回的每个
 `workspace_id`。批量工具不是浏览器本地队列，调用后会立即提交。
 
 ## 输出

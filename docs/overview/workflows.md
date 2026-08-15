@@ -86,6 +86,11 @@ DolphinScheduler 的数据保留周期。
 
 ## Task 日志分页与下载
 
+`get_workspace_status`、`get_workflow_attempt` 和 `get_workflow_details` 返回的是结构化状态、事件和 Task
+摘要，不是 Worker 的完整执行日志。真正的 stdout、DOS 输出、警告和异常按 Task 保存；先定位
+`task_instance_id`，再读取该 Task 的日志。一个 Workflow 有多个 Task 时，不存在可替代全部 Task
+日志的单一“工作流摘要日志”。
+
 先从 `list_workflow_tasks` 或 `get_workflow_details` 找到 `task_instance_id`，再读取：
 
 ```text

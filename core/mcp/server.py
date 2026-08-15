@@ -14,8 +14,8 @@ SERVER_INSTRUCTIONS = (
     "Start with arena://docs/overview/overview, arena://docs/overview/projects, and "
     "arena://docs/overview/workflows. Before run_* read that application's request and API documents plus its "
     "Schema; backtests must also read arena://docs/backtest/dolphindb before running and "
-    "arena://docs/backtest/results before interpreting outputs. Read the applicable executable Backtest example "
-    "for dynamic pools, constrained optimization, callback diagnostics, or result QA instead of inventing a contract. "
+    "arena://docs/backtest/results before interpreting outputs. Read the applicable Backtest contract for dynamic "
+    "data domains, quadratic-program outputs, callback objects, or result QA instead of guessing runtime behavior. "
     "arena://docs/overview/dolphindb documents the administrator-only arbitrary DolphinScript diagnostic tool. Discover DSL operators "
     "and DolphinDB signatures instead of guessing. Business results are in structuredContent.result. Follow "
     "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
@@ -36,7 +36,7 @@ mcp_server = MCPServer(
         issuer_url=AnyHttpUrl(MCPSettings.PUBLIC_URL),
         resource_server_url=AnyHttpUrl(MCPSettings.ENDPOINT_URL),
         required_scopes=["arena"],
-        service_documentation_url=AnyHttpUrl(f"{MCPSettings.PUBLIC_URL}/docs"),
+        service_documentation_url=AnyHttpUrl(f"{MCPSettings.WEB_URL}/mcp"),
     ),
 )
 register_views(mcp_server)

@@ -61,7 +61,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/query/request",
         title="Query 请求构造",
-        description="FactorQuery 字段、执行顺序、代码范围、完整示例和提交前检查。",
+        description="FactorQuery 字段、执行顺序、代码范围、Schema 发现和提交前检查。",
         mime_type="text/markdown",
     )
     def query_request_document() -> str:
@@ -79,7 +79,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/factor/request",
         title="Factor 请求构造",
-        description="两阶段股票池、因子列、收益列、预处理、完整示例和提交前检查。",
+        description="两阶段查询、因子列、收益列、预处理和提交前检查。",
         mime_type="text/markdown",
     )
     def factor_request_document() -> str:
@@ -97,7 +97,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/backtest/request",
         title="Backtest 请求构造",
-        description="查询、配置、参数、utils、八个回调、输出要求和完整请求外形。",
+        description="查询、配置、参数、utils、八个回调、输出要求和提交前检查。",
         mime_type="text/markdown",
     )
     def backtest_request_document() -> str:
@@ -132,8 +132,8 @@ def register_resources(server: MCPServer) -> None:
 
     @server.resource(
         "arena://docs/backtest/dynamic-pool",
-        title="动态指数股票池完整示例",
-        description="候选并集、逐日成员门控、退出保留和无未来函数的完整可运行请求。",
+        title="动态数据域与时点契约",
+        description="候选并集、逐日状态、退出保留和 point-in-time 边界。",
         mime_type="text/markdown",
     )
     def backtest_dynamic_pool_document() -> str:
@@ -141,8 +141,8 @@ def register_resources(server: MCPServer) -> None:
 
     @server.resource(
         "arena://docs/backtest/optimization",
-        title="OSQP 约束组合优化完整示例",
-        description="目标函数、矩阵维度、求解状态、失败回退和目标仓位执行的完整可运行请求。",
+        title="二次规划与目标权重契约",
+        description="OSQP 接口、矩阵维度、求解状态、数值容差和两阶段调仓。",
         mime_type="text/markdown",
     )
     def backtest_optimization_document() -> str:
@@ -150,8 +150,8 @@ def register_resources(server: MCPServer) -> None:
 
     @server.resource(
         "arena://docs/backtest/callback-data",
-        title="回调与交易对象诊断示例",
-        description="message、持仓、订单和成交字段的可运行自省请求及事件读取规则。",
+        title="回调与交易对象契约",
+        description="message、持仓、订单和成交对象的读取规则及拒单诊断边界。",
         mime_type="text/markdown",
     )
     def backtest_callback_data_document() -> str:
@@ -160,7 +160,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/backtest/qa",
         title="回测端到端与结果 QA",
-        description="运行生命周期、四表下载、指标复算、账务对账和撮合限制的可运行检查。",
+        description="运行生命周期、四表核验、账务公式、指标口径、撮合限制和保存顺序。",
         mime_type="text/markdown",
     )
     def backtest_qa_document() -> str:

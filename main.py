@@ -11,6 +11,7 @@ from config import ArenaSettings, MCPSettings
 from core.apps.admin.services import AdminService
 from core.apps.admin.views import router as admin_router
 from core.apps.backtest.views import router as backtest_router
+from core.apps.mcp.views import router as mcp_router
 from core.apps.factor.views import router as factor_router
 from core.mcp.server import mcp_app, mcp_server
 from core.apps.query.views import router as query_router
@@ -54,6 +55,7 @@ app.include_router(admin_router)
 app.include_router(query_router)
 app.include_router(factor_router)
 app.include_router(backtest_router)
+app.include_router(mcp_router)
 app.include_router(workflows_router)
 app.include_router(tasks_router)
 

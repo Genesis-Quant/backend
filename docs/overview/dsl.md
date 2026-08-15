@@ -75,39 +75,10 @@ TS/CS 的 `on` 可为：
 字符串永远按列引用处理。需要字符串字面量时，应使用 Catalog 中明确支持字面量的算符和参数，
 不能把普通字符串直接放入数值操作数位置。
 
-示例：
-
-```json
-{
-  "type": "DIRECT",
-  "op": "binary.gt",
-  "fields": {"left": "pe", "right": 5},
-  "params": {}
-}
-```
-
-这里 `"pe"` 是列，`5` 是常量。
+列引用与常量是否允许、各自位于哪个 `fields` key，必须以目标算符 definition 为准；本页不提供
+具体字段或阈值构造。
 
 ## 命名与依赖
-
-```json
-{
-  "derivatives": {
-    "daily_return": {
-      "type": "TS",
-      "op": "unary.pct_change",
-      "fields": {"col": "close"},
-      "params": {"periods": 1}
-    },
-    "volatility_20d": {
-      "type": "TS",
-      "op": "unary.rolling_std",
-      "fields": {"col": "daily_return"},
-      "params": {"window": 20, "min_periods": 20}
-    }
-  }
-}
-```
 
 Runtime 从所有 `fields`、嵌套节点和 `on` 收集依赖，按拓扑顺序计算，所以 JSON 对象中的书写顺序
 不是依赖保证。循环依赖会在提交前拒绝。
@@ -132,30 +103,8 @@ Runtime 会拒绝静态可确定为数值的节点，但基础列本身的数据
 
 ## `filters`
 
-`filters` 只能列出顶层命名 BOOL derivative：
-
-```json
-{
-  "derivatives": {
-    "is_member": {
-      "type": "DIRECT",
-      "op": "binary.gt",
-      "fields": {"left": "weight_000300SH", "right": 0},
-      "params": {}
-    },
-    "pe_positive": {
-      "type": "DIRECT",
-      "op": "binary.gt",
-      "fields": {"left": "pe", "right": 0},
-      "params": {}
-    }
-  },
-  "filters": ["is_member", "pe_positive"]
-}
-```
-
-语义为 `is_member AND pe_positive`。若需要 OR，先用逻辑算符构造一个命名 BOOL derivative，再把
-该名称放入 `filters`。
+`filters` 只能列出顶层命名 BOOL derivative，多个名称按 AND 合并。若需要其他逻辑关系，先用逻辑
+算符生成一个命名 BOOL derivative，再把该名称放入 `filters`。
 
 ### 横截面结果的复现边界
 
@@ -164,7 +113,7 @@ Runtime 会拒绝静态可确定为数值的节点，但基础列本身的数据
 
 - `on` 只限制该 CS 节点参与计算的行，不会从最终结果删除未参与行；
 - `filters` 在全部命名 derivatives 计算完成后执行；
-- 只查询最终持有过或成交过的少量代码，无法复现原完整指数截面的 rank；
+- 只查询最终保留下来的少量代码，无法复现原完整参与域的横截面结果；
 - 对两个不同代码子集分别运行相同 rank 请求，会得到不同分位值；
 - 需要全市场基础域时使用 `codes=[]`，再以逐日成员 BOOL 作为 CS 的 `on`；需要删除非成员输出时，
   最后再把该 BOOL 放入 `filters`；
@@ -179,7 +128,8 @@ Runtime 在计算任何 derivative 和执行 `filters` **之前**，对部分基
 
 - `weight_*`：某日期至少观察到一条该指数权重时，该日期其他查询代码的缺失权重先填 0；随后按
   `code`、`time` 前向填充；
-- 财务字段：按 `code`、`time` 前向填充已经进入 CoreData 的历史记录；
+- 财务字段：按 `code`、`time` 前向填充已经进入 CoreData 的历史记录；财务报表使用供应商
+  `f_ann_date`，财务指标使用 `ann_date` 作为 `time`，不是直接用报告期结束日；
 - `is_st`：查询轴上的缺失值当前直接填 0；
 - 其他基础字段：不做隐式前向填充，除非请求显式使用相应 DSL 算符。
 
@@ -197,6 +147,11 @@ Runtime 在计算任何 derivative 和执行 `filters` **之前**，对部分基
 Arena 能说明当前抓取和填充规则，但不能据此证明权重是不可修订的严格历史时点版本。需要审计级
 point-in-time 复现时，应另行归档供应商原始响应、抓取时间和数据版本。
 
+财务 Worker 会先按公告日整理供应商当前返回的报表，再把公告日写入查询时间轴；查询层只会从该日
+起向后填充。因此它不直接把报告期值放到报告期结束日。这个规则仍不等于不可修订的 point-in-time
+快照：当前存储不暴露供应商修订批次，也不为每次运行保留原始响应版本。重新抓取后，历史公告记录
+可能反映供应商当前回溯值。
+
 ## 基础因子与派生依赖
 
 `factors` 表示需要直接输出的基础列。即使某基础列只被 derivative 引用、不在 `factors` 中，
@@ -211,14 +166,14 @@ Runtime 也会把它加入内部读取集合，但不会把它作为最终基础
 输出仍从 `start_date` 开始。`lookback` 是日历时长，不是交易日数量，应为停牌和非交易日留出
 余量。
 
-在回测中，负 `shift` 或其它未来数据只能作为分析标签，不能作为策略信号。回测回调读取策略数据
+在回测中，负 `shift` 或其它未来数据只能作为分析标签，不能作为决策输入。回测回调读取历史数据
 时还必须使用 `getLastData` / `getHistoryData` 的严格历史边界。
 
 ## 正确的发现流程
 
 1. 读取 `arena://dsl/catalog` 的 `factors`，确认所有基础列都在白名单中；
-2. 用 `list_dsl_operators(search="rolling")` 搜索候选算符；
-3. `describe_dsl_operator(operator="unary.rolling_mean")` 获取准确 definition；
+2. 用 `list_dsl_operators(search=<关键词>)` 搜索候选算符；
+3. `describe_dsl_operator(operator=<完整算符名>)` 获取准确 definition；
 4. 按 definition 构造节点，并对请求中每个不同 `op` 重复第 3 步；
 5. 用对应的 `arena://schemas/query`、`arena://schemas/factor` 或
    `arena://schemas/backtest` 校验顶层对象；

@@ -1,6 +1,6 @@
 # Query API
 
-本文件只说明 Query 项目的 MCP 操作。请求字段与完整示例见 `arena://docs/query/request`，DSL 见
+本文件只说明 Query 项目的 MCP 操作。请求字段见 `arena://docs/query/request`，DSL 见
 `arena://docs/overview/dsl`，精确顶层结构见 `arena://schemas/query`。通用 Workspace、Attempt、Task、
 日志和控制接口见 `arena://docs/overview/workflows`。
 
@@ -33,22 +33,8 @@ get_project(application="query", project_id=1)
 run_query(project_id, request)
 ```
 
-`request` 必须直接是完整 `FactorQuery`，不能再包一层 `dataset_query`：
-
-```json
-{
-  "project_id": 1,
-  "request": {
-    "start_date": "2024-01-01",
-    "end_date": "2024-12-31",
-    "lookback": "P60D",
-    "codes": ["000001.SZ"],
-    "factors": ["close"],
-    "derivatives": {},
-    "filters": []
-  }
-}
-```
+`request` 必须直接是完整 `FactorQuery`，不能再包一层 `dataset_query`。机器可读结构以
+`arena://schemas/query` 为准。
 
 服务端先用 Runtime `FactorQuery` 严格校验，再创建当前 Attempt。返回：
 

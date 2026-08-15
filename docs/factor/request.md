@@ -73,96 +73,15 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 ## 收益标签
 
-收益标签由 DSL 生成，Runtime 不假定 `ret0`、`ret1` 等固定名称。未来收益常用“先计算区间收益，
-再负向 shift”的结构。其字段必须与请求中的 `return_columns` 完全一致。
+收益标签由 DSL 生成，Runtime 不假定固定名称。其字段必须与请求中的 `return_columns` 完全一致，
+方向和时间对齐由调用方定义并核验。
 
 因子分析允许使用未来收益作为标签，但这些列不能再作为回测交易信号。
 
-## 完整示例
+## 请求构造
 
-以下请求先用沪深300且 PE>5 得到候选代码，再在第二阶段保留逐日沪深300成员，研究 20 日动量
-对未来 1 日和 5 日对数收益的关系：
-
-```json
-{
-  "project_id": 7,
-  "parameters": {
-    "codes_query": {
-      "start_date": "2020-01-01",
-      "end_date": "2025-12-31",
-      "lookback": "PT0S",
-      "codes": [],
-      "factors": ["weight_000300SH", "pe"],
-      "derivatives": {
-        "is_hs300": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        },
-        "pe_gt_5": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "pe", "right": 5},
-          "params": {}
-        }
-      },
-      "filters": ["is_hs300", "pe_gt_5"]
-    },
-    "dataset_query": {
-      "start_date": "2020-01-01",
-      "end_date": "2025-12-31",
-      "lookback": "P180D",
-      "codes": [],
-      "factors": ["close", "circ_mv", "weight_000300SH"],
-      "derivatives": {
-        "is_hs300": {
-          "type": "DIRECT",
-          "op": "binary.gt",
-          "fields": {"left": "weight_000300SH", "right": 0},
-          "params": {}
-        },
-        "momentum_20d": {
-          "type": "TS",
-          "op": "unary.pct_change",
-          "fields": {"col": "close"},
-          "params": {"periods": 20}
-        },
-        "daily_log_return": {
-          "type": "TS",
-          "op": "unary.log_return",
-          "fields": {"col": "close"},
-          "params": {"periods": 1}
-        },
-        "five_day_log_return": {
-          "type": "TS",
-          "op": "unary.log_return",
-          "fields": {"col": "close"},
-          "params": {"periods": 5}
-        },
-        "future_1d_log_return": {
-          "type": "TS",
-          "op": "unary.shift",
-          "fields": {"col": "daily_log_return"},
-          "params": {"periods": -1}
-        },
-        "future_5d_log_return": {
-          "type": "TS",
-          "op": "unary.shift",
-          "fields": {"col": "five_day_log_return"},
-          "params": {"periods": -5}
-        }
-      },
-      "filters": ["is_hs300"]
-    },
-    "factor_columns": ["momentum_20d"],
-    "return_columns": ["future_1d_log_return", "future_5d_log_return"],
-    "n_groups": 5,
-    "preprocess": true,
-    "market_value_column": "circ_mv"
-  }
-}
-```
+精确顶层结构读取 `arena://schemas/factor`。两阶段中的每个 `FactorQuery` 都必须独立满足 Query 契约，
+每个 DSL 节点使用 `describe_dsl_operator` 核对。本文不提供具体候选域、因子、标签或分析构造。
 
 ## 输出列
 

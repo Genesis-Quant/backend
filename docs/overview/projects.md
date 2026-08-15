@@ -64,6 +64,9 @@ is_current = true
 3. 新 Version 使用新的 Workspace，并从上一版本参数继续研究；
 4. 后续运行不会修改已保存 Version。
 
+推荐顺序是“运行当前草稿 → 核验当前 Instance 的输出 → 保存该 Instance”。保存后继续工作时使用系统
+自动创建的新草稿，不要把旧 Workspace 或旧 Instance 当作新草稿的运行标识。
+
 Factor 与 Backtest 的保存、重命名、批量自动保存和专项研究 API 分别在各自 `api` 文档中说明。
 
 ## Workspace 和 Attempt 为什么分开

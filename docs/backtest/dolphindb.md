@@ -3,6 +3,16 @@
 本页只描述 Arena Runtime 当前实际创建的股票回测环境，不是 DolphinDB 语言教程，也不覆盖插件
 其它 dataType 或 matchingMode。策略可以依赖本文列出的 message、Runtime helper 和回调事件结构。
 
+## 先看能力边界
+
+- 日线输入每天只生成 09:30 和 15:00 两个合成快照；
+- 盘口只有一档且数量近似无限，不包含真实深度、成交容量或市场冲击；
+- `adj` 只调整执行价格链路，不调整查询字段和历史 helper；
+- 历史 helper 保证 `date(time) < 当前消息日期`，但不保证供应商数据不可回溯修订；
+- 订单号只表示提交，订单终态、成交、现金和持仓必须分别核验。
+
+因此结果只能按当前合成撮合模型解释，不能直接视为真实市场可复制结果。
+
 ## 官方文档
 
 本文对 Arena 固定配置进行具体化，DolphinDB 插件的通用定义以以下官方文档为准：
@@ -19,9 +29,9 @@
 官方文档描述插件支持的全部配置；下文写的是 Arena Runtime 在这些能力中固定选择的子集。如果两
 者看似不同，应先检查 Arena 是否固定了某个参数，而不是把官方的其它模式套到当前运行环境。
 
-可执行示例：动态成员时序见 `arena://docs/backtest/dynamic-pool`，OSQP 维度和状态处理见
-`arena://docs/backtest/optimization`，真实回调对象自省见 `arena://docs/backtest/callback-data`，输出
-审计见 `arena://docs/backtest/qa`。
+专项契约：动态数据域见 `arena://docs/backtest/dynamic-pool`，二次规划与目标权重见
+`arena://docs/backtest/optimization`，回调对象见 `arena://docs/backtest/callback-data`，输出审计见
+`arena://docs/backtest/qa`。这些资源不提供具体策略或构造。
 
 ## 运行时字段自省
 
@@ -101,34 +111,21 @@ Runtime 从 `dataset_query` filters 后的表生成消息。每个有效交易�
 `up_limit/down_limit` 允许为空：Runtime 会结合 `high/low` 和 `pre_close` 生成回退值，具体规则见
 “停牌、缺价和无法退出”。回退完成后的必要价格为空时，该日线不会生成快照。
 
-### 原始历史数据与执行价格是两套尺度
+### 复权作用范围
 
-`dataset_query` 计算出的 factors、derivatives、`getHistoryData` 和 `getLastData` **始终保留
-CoreData 原始价格尺度**。`adj` 不会改写这些历史列；它只调整 message 以及随后产生的订单、成交和
-持仓价格。因此 `adj="qfq"` 或 `"hfq"` 时，直接混用两个尺度是错误的，虽然工作流通常仍会成功：
+`adj` 只改变撮合使用的执行价格链路，不会改写查询字段：
 
-```dos
-// 错误：原始尺度的价格型派生值不能直接与复权后的持仓价格运算
-distance = position.longPositionAvgPrice - signal.rawPriceLikeValue[0]
-```
+| 对象 | 是否受 `adj` 影响 | 价格尺度 |
+| --- | --- | --- |
+| `dataset_query` factors/derivatives | 否 | CoreData 查询尺度 |
+| `getHistoryData` / `getLastData` | 否 | 与 `dataset_query` 相同 |
+| 回调 `message` | 是 | 选择的执行复权尺度 |
+| 委托、成交和持仓价格 | 是 | 继承 `message` 执行尺度 |
+| 结果表中的估值、成交和组合金额 | 是 | 继承执行链路及插件账户口径 |
 
-在 t 日开盘回调中，`signal` 是同一代码的前一实际交易日行时，可使用 message 的复权昨收与该行
-原始收盘得到当前执行尺度比例：
-
-```dos
-rawClose = double(signal.close[0])
-scale = double(message.prevClosePrice[rowIndex]) / rawClose
-executionPriceLikeValue = double(signal.rawPriceLikeValue[0]) * scale
-```
-
-使用前必须确认代码一致、两端非 NULL 且大于 0。若信号行不是该代码的前一实际交易日（停牌、缺
-行或手工拼表），不能套用该比例。所有价格水平、价格差和以价格为单位的派生值都必须先转到
-message/持仓的执行价格尺度；无量纲比例不需要这一步。
-
-字段名也不代表自动对齐：`adj="qfq"` 只把 message 调整为前复权执行价；若 DSL 显式引用
-`close_hfq`，历史列仍是后复权尺度。直接比较二者的价格水平是错误的。对 `close_hfq` 做
-`pct_change` 得到的无量纲收益可以用于排名或协方差，但 ATR、价差、止损距离等有价格单位的派生值
-必须先换到 message 的执行尺度。
+凡是把带价格量纲的历史字段与 message、委托、成交或持仓价格混用，调用方必须先按同一代码、同一
+有效日期和明确调整因子统一尺度。Arena 不自动完成这一步，字段名相似也不表示尺度相同。无量纲值
+仍需确认其上游数据定义一致。
 
 代码在查询完成后统一映射：
 
@@ -198,8 +195,8 @@ def onSnapshot(mutable context, message, indicator) {
 }
 ```
 
-message 不包含 `dataset_query.derivatives`。例如 `message.momentum_20d` 无效。策略信号必须通过
-下面的历史数据 helper 读取。当前 Runtime 没有向 `indicator` 注册 DSL derivative。
+message 不包含 `dataset_query.derivatives`，不能把命名 derivative 当作 message 列。历史字段必须
+通过下面的数据 helper 读取。当前 Runtime 没有向 `indicator` 注册 DSL derivative。
 `indicator` 在当前模式下没有供策略使用的注册字段，不应从中猜测信号结构。
 
 ## 回放和撮合时点
@@ -328,17 +325,9 @@ t-20 ... t-2  t-1       t 日 09:30 callback / submitOrder
 getParams() -> parameters.params 对应的 DolphinDB 字典
 ```
 
-```dos
-def initialize(mutable context) {
-    params = getParams()
-    context["rebalanceDays"] = long(params["rebalanceDays"])
-    context["capitalRatio"] = double(params["capitalRatio"])
-    context["tradeCount"] = 0l
-}
-```
-
-插件提供 `context.engine`。策略自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入
-Factor 表、message、params 或任何 `coreBacktest*` 变量。
+`initialize` 必须检查需要的 key 并显式转换类型；缺失 key 不会自动获得业务默认值。插件提供
+`context.engine`，调用方自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入 Factor 表、
+message、params 或任何 `coreBacktest*` 变量。
 
 每个任务使用独立 DolphinDB session。`utils` 中定义的函数和顶层变量只在本次任务有效。
 
@@ -384,11 +373,18 @@ order_target_value(mutable context, msg, stockCode, targetValue, orderLabel="ord
 - 不做组合层资金预算，不保证多只买单合计小于可用现金；
 - 内部继续调用 `order_target`。
 
-组合调仓应先提交卖出目标，再提交买入目标，并为费用和价格变动保留现金。
+调用前还应检查 `targetValue` 有限。优化输出转换成非负目标时，应先按统一容差截断数值噪声，并在
+需要时重新归一化和复核约束；不能把极小负数直接传入 helper。完整数值契约见
+`arena://docs/backtest/optimization`。
+
+组合调仓分两阶段：先处理目标为零和所有目标下降的订单，包括保留代码的减仓；等待订单/成交状态
+更新后，重新查询真实持仓、可用现金和活动订单，再提交目标上升的订单。卖单已提交不等于现金已经
+释放，第二阶段还应为费用、价差、取整和价格变化留出余量。
 
 普通 A 股买入按 100 股整数手；目标 0 可以精确清仓不足一手的剩余持仓。科创板首次建立正持仓时
 实际目标不得少于 200 股。当前 `order_target_value` 的调整步长仍固定为 100，调用方必须保证科创板
-首次正目标至少 200，否则插件风控可能拒单。完整诊断示例见 `arena://docs/backtest/callback-data`。
+首次正目标至少 200，否则插件风控可能拒单。对象与诊断边界见
+`arena://docs/backtest/callback-data`。
 
 ## 直接提交普通限价单
 
@@ -512,7 +508,7 @@ Backtest::cancelOrder(context.engine, , , "orderLabel")
 | `0` | 部分成交 | 否 | 使用累计 `tradeQty`，剩余数量仍挂起 |
 | `1` | 全部成交 | 是 | 清除 pending 状态 |
 | `2` | 撤单成功 | 是 | 清除 pending 状态 |
-| `-1` | 审批/风控拒绝 | 是 | 记录原因并计入拒单 |
+| `-1` | 审批/风控拒绝 | 是 | 记录拒单；原因只在可选输出实际提供时可读 |
 | `-2` | 撤单拒绝 | 否 | 原订单可能仍活动，重新查询 `getOpenOrders` |
 | `-3` | 回测结束仍未成交 | 是 | 计入期末未成交，不能当成已撤单 |
 
@@ -529,9 +525,14 @@ def onOrder(mutable context, orders) {
 }
 ```
 
+当前订单事件不保证携带目标金额、可用现金快照或具体拒绝规则，MCP 也不会合成这类结构化错误。
+`outputOrderInfo=true` 时若结果表实际出现 `orderInfo`，可用其文本辅助排查；否则只能结合提交前记录、
+持仓、现金、挂单和日志诊断。
+
 标准处理顺序是：提交后保存 orderId；`status in [4,0]` 时禁止对同一代码重复下目标；每日开始撤销
 旧挂单；收到 `2`/`1`/`-1`/`-3` 后清理 pending；收到 `-2` 时以 `getOpenOrders` 的真实结果为准。
-部分成交的持仓均价和止损只能在 `onTrade` 后按真实持仓更新，不能在 submitOrder 返回时设置。
+部分成交后，任何依赖成交数量或持仓均价的状态都只能在 `onTrade` 后按真实持仓更新，不能在
+`submitOrder` 返回时设置。
 
 ## `onTrade` 事件
 
@@ -565,36 +566,15 @@ def onTrade(mutable context, trades) {
 }
 ```
 
-## 动态股票池退出
+## 动态数据域
 
-合成 message 来自第二阶段 filters 后的结果。如果某股票被第二阶段 filter 删除，它当天不在
-message 中，`order_target` 无法对它下单。需要根据动态成员退出时：
+合成 `message` 来自第二阶段 filters 后的数据。被 filter 删除或因必要行情缺失而没有快照的代码，
+当日不能通过 `order_target*` 调整。第一阶段区间候选并集不代表逐日有效集合；第二阶段必须重新提供
+逐日状态，决策只读取严格早于当前日期的截面。需要保留失效代码以继续观察或退出时，不得在第二阶段
+提前删行。完整契约见 `arena://docs/backtest/dynamic-pool`。
 
-1. `codes_query` 过滤成员，得到期间候选代码并集；
-2. `dataset_query` 输出每日成员 BOOL derivative；
-3. 通常保持第二阶段 `filters=[]`；
-4. `getLastData(..., false)` 读取前一截面成员状态；
-5. 对当前 message 中未入选但仍持有的股票下目标 0。
-
-### 候选代码并集不等于每日成员
-
-`codes_query` 对整个请求区间的过滤结果取 `code` 去重并集，再用这个并集覆盖第二阶段
-`dataset_query.codes`。因此某证券即使在区间后半段才进入指数，也会被加载其查询区间内可用的历史
-数据；第一阶段只控制“需要加载哪些代码”，不代表每日成员身份。
-
-避免未来成分泄露必须在第二阶段再次构造每日成员 BOOL：
-
-- 截面排名等计算用 `on=<每日成员 BOOL>` 限制参与域；
-- 选股时检查前一完整截面的每日成员值；
-- 若旧持仓需要在退出成员后卖出，通常保持第二阶段 `filters=[]`，否则证券会从当日 message 消失；
-- 只在第一阶段过滤指数成员、第二阶段完全不做每日门控，是高风险用法。
-
-新成员入选后使用其入选前已经公开的历史价格计算滚动指标，与“提前把它视为指数成员”是两个不同
-问题。前者可以是合法历史窗口，后者会造成成员身份泄露。
-
-基础字段自动填充、指数权重来源和供应商历史修订边界属于所有 Query 的通用数据契约，见
-`arena://docs/overview/dsl` 的“基础字段填充与 point-in-time 边界”。Backtest 不会额外冻结或版本化
-这些输入；复现运行时必须同时固定基础数据版本。
+历史财务字段和成员数据是否经过供应商修订，不由回调日期边界保证。Arena 当前不冻结每次运行的输入
+快照；数据来源、填充和 point-in-time 边界见 `arena://docs/overview/dsl`。
 
 ## 停牌、缺价和无法退出
 
@@ -622,22 +602,16 @@ downLimitPrice = down_limit 非 NULL ? down_limit : min(low, round(pre_close * 0
 
 ## 日频合成快照的能力边界
 
-日线输入只生成开盘与收盘两个快照，事件路径中不存在盘中 high/low 发生的准确时刻。因此：
-
-- 不能声称“盘中 low 触发止损”或“触及通道即成交”；
-- 09:30 决策不能读取当日 low/high/close；
-- 只能在开盘或收盘快照观察条件；下单后可与该时刻最新盘口即时撮合，未成交部分才等待后续快照；
-- 跳空越过止损时，成交价由触发时可撮合盘口决定，不是止损价；
-- 入场当日究竟先触及止损还是先触及盈利点，日线无法判定。
-
-需要严格盘口内路径或盘中止损时，应使用真实分钟/快照数据和与之对应的 Runtime 模式；当前 MCP
-BacktestParameters 固定的日线合成模式不能表达该精度。
+日线输入只生成开盘与收盘两个快照，不能恢复盘中路径或事件先后。09:30 决策不能读取当日
+`low/high/close`；订单只能在已有合成快照上观察和撮合，未成交部分等待后续快照。需要真实盘口深度、
+盘中路径、成交容量或市场冲击时，必须使用相应粒度的数据和 Runtime 模式；当前 MCP 固定模式不能
+表达该精度。
 
 ## 证券代码对齐
 
-请求中的 A 股代码使用 `510300.SH` / `000001.SZ`；查询完成后 Runtime 将回测表、message 和历史
-helper 中的代码统一为 `510300.XSHG` / `000001.XSHE`。不要在回调里把 `.SH` 字符串与
-`message.symbol` 混比，也不要二次手工转换。推荐始终从 `message.symbol[rowIndex]` 取得 SYMBOL，
+请求代码使用 `.SH` / `.SZ` 后缀；查询完成后 Runtime 将回测表、message 和历史 helper 中的代码统一
+为 `.XSHG` / `.XSHE`。不要在回调里把请求后缀字符串与 `message.symbol` 混比，也不要二次手工转换。
+推荐始终从 `message.symbol[rowIndex]` 取得 SYMBOL，
 用它筛选 `getLastData` 返回表；只有作为字典 key 或日志文本时再 `string(stockCode)`。
 
 ## 运行诊断

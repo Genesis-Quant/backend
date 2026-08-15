@@ -1,13 +1,13 @@
 # Backtest 请求
 
-Backtest 使用 Factor Query 准备候选代码和策略数据，将日线转换为开盘、收盘单档合成快照，并在
+Backtest 使用 Factor Query 准备候选代码和回调历史数据，将日线转换为开盘、收盘单档合成快照，并在
 DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓、
 事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`。
 四张结果表的字段、费用和对账规则见 `arena://docs/backtest/results`。
 
-可直接运行的完整契约示例按用途拆分：动态指数股票池见 `arena://docs/backtest/dynamic-pool`，约束组合
-优化见 `arena://docs/backtest/optimization`，回调对象与日志自省见
-`arena://docs/backtest/callback-data`，端到端保存与结果复算见 `arena://docs/backtest/qa`。
+专项契约按用途拆分：动态数据域见 `arena://docs/backtest/dynamic-pool`，二次规划与目标权重见
+`arena://docs/backtest/optimization`，回调对象见 `arena://docs/backtest/callback-data`，运行、核验和
+保存顺序见 `arena://docs/backtest/qa`。这些文档只定义接口与边界，不提供具体策略或构造。
 
 DolphinDB 插件原始定义可直接查阅
 [股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)、
@@ -36,7 +36,7 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `config` | object | 否 | 见下文 | 插件资金、费用和可开放选项 |
-| `params` | object | 否 | `{}` | 策略参数，通过 `getParams()` 读取 |
+| `params` | object | 否 | `{}` | 用户回调参数，通过 `getParams()` 读取 |
 | `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询 |
 | `adj` | `hfq`、`qfq` 或 null | 否 | `null` | 合成快照价格复权方式 |
@@ -51,34 +51,8 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 产生的委托、成交和持仓价格。凡是把 DSL 中任意原始价格、价格差或价格型派生值与 message/持仓
 价格比较或相除，都必须先按运行契约换算到同一价格尺度。
 
-以下是 `parameters` 的最小合法外形，只验证接口并运行一个不下单的回测，不代表策略示例：
-
-```json
-{
-  "dataset_query": {
-    "start_date": "2024-01-01",
-    "end_date": "2024-01-31",
-    "lookback": "P1D",
-    "codes": ["000001.SZ"],
-    "factors": ["close"],
-    "derivatives": {},
-    "filters": []
-  },
-  "callbacks": {
-    "initialize": "def initialize(mutable context) { return NULL }",
-    "beforeTrading": "def beforeTrading(mutable context) { return NULL }",
-    "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
-    "onSnapshot": "def onSnapshot(mutable context, message, indicator) { return NULL }",
-    "onOrder": "def onOrder(mutable context, orders) { return NULL }",
-    "onTrade": "def onTrade(mutable context, trades) { return NULL }",
-    "afterTrading": "def afterTrading(mutable context) { return NULL }",
-    "finalize": "def finalize(mutable context) { return NULL }"
-  }
-}
-```
-
-省略字段使用本节表中的默认值。它可以用于确认 Tool 参数层级是
-`run_backtest(project_id=..., parameters=<上面对象>)`，不能用于评估交易逻辑。
+`run_backtest` 的 `parameters` 必须直接传完整 `BacktestParameters` 对象。精确机器可读结构以
+`arena://schemas/backtest` 为准；本页不提供可能被误当成业务实现的完整请求。
 
 ## 代码范围与两阶段查询
 
@@ -94,9 +68,9 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 3. 用该并集覆盖 `dataset_query.codes`；
 4. 执行第二阶段完整查询。
 
-第一阶段不是每日 join。若成员关系需要逐日生效，应在第二阶段再输出成员 BOOL derivative。为了
-让调出股票仍保留在当日 message 中并可卖出，通常不要把该成员条件放入第二阶段 `filters`，而在
-回调读取的前一交易日信号中判断。
+第一阶段不是每日 join。若某个有效状态需要逐日生效，应在第二阶段重新输出 BOOL derivative。需要
+保留失效代码以继续观察或退出时，不能用第二阶段 `filters` 删除这些行；完整时点契约见
+`arena://docs/backtest/dynamic-pool`。
 
 ## `dataset_query`
 
@@ -117,53 +91,8 @@ open, low, high, close, up_limit, down_limit, pre_close
 - 策略时序特征必须由 `lookback` 提供足够历史；
 - 未来收益、负 shift 等标签不能作为回测信号。
 
-以下是可直接组成动态候选池和第二阶段信号表的两份完整查询：
-
-```json
-{
-  "codes_query": {
-    "start_date": "2020-01-01",
-    "end_date": "2025-12-31",
-    "lookback": "PT0S",
-    "codes": [],
-    "factors": ["weight_000300SH"],
-    "derivatives": {
-      "is_member": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "weight_000300SH", "right": 0},
-        "params": {}
-      }
-    },
-    "filters": ["is_member"]
-  },
-  "dataset_query": {
-    "start_date": "2020-01-01",
-    "end_date": "2025-12-31",
-    "lookback": "P120D",
-    "codes": [],
-    "factors": ["weight_000300SH"],
-    "derivatives": {
-      "is_member": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "weight_000300SH", "right": 0},
-        "params": {}
-      },
-      "momentum_20d": {
-        "type": "TS",
-        "op": "unary.pct_change",
-        "fields": {"col": "close"},
-        "params": {"periods": 20}
-      }
-    },
-    "filters": []
-  }
-}
-```
-
-第二阶段不按 `is_member` 删行；上文 utils 在前一截面显式检查该列，从而仍能对已调出成分下
-清仓目标。
+动态代码域只遵循“第一阶段候选并集、第二阶段逐日状态、回调读取严格历史截面”这一通用契约。
+具体 DSL 字段和算符必须通过 Catalog、`describe_dsl_operator` 和目标数据定义自行确认。
 
 ## `config`
 
@@ -189,7 +118,7 @@ Runtime 允许并校验的常用字段：
 | `latency` | integer >= 0 | 插件订单延时参数 |
 | `enableMinimumPerTransactionFee` | boolean | 最低单笔费用 |
 | `enableSellCloseRestrict` | boolean | 卖出可用量限制 |
-| `outputOrderInfo` | boolean | 输出订单风控信息 |
+| `outputOrderInfo` | boolean | 请求插件输出可选 `orderInfo`；不保证存在或形成结构化拒单原因 |
 | `outputQueuePosition` | 0、1 或 2 | Runtime 可校验该插件选项，但非零值只适用于含逐笔行情模式；当前固定 `dataType=1` 不应设置 |
 
 其余 Runtime 已声明的插件 boolean 选项也按 boolean 校验。`config` 是开放字典，能通过 JSON 校验
@@ -210,18 +139,8 @@ matchingRatio, orderBookMatchingRatio
 
 ## `params`
 
-`params` 只上传给策略，不传给插件：
-
-```json
-{
-  "rebalanceDays": 20,
-  "capitalRatio": 0.9,
-  "minimumMomentum": 0.05
-}
-```
-
-在 `initialize` 中调用 `getParams()` 并进行 `long()`、`double()`、`bool()` 等明确类型转换。策略
-不得假定缺失 key 会自动获得默认值。需要参数敏感性分析的值应放在这里，而不是硬编码在 utils。
+`params` 只上传给用户回调，不传给插件。在 `initialize` 中调用 `getParams()`，检查必需 key 并进行
+`long()`、`double()`、`bool()` 等明确类型转换；缺失 key 不会自动获得业务默认值。
 
 ## `utils` 与 callbacks
 
@@ -248,36 +167,6 @@ def finalize(mutable context)
 回调必须从真实持仓和挂单状态出发，并遵守部分成交与复权尺度等运行契约；结果 QA 见
 `arena://docs/backtest/results`。本页不提供会被误当成生产代码的简化模板。
 
-## 完整参数外形
-
-以下省略 DSL 节点内部细节时不能直接提交；它用于展示顶层组合关系：
-
-```json
-{
-  "project_id": 9,
-  "parameters": {
-    "config": {
-      "cash": 1000000,
-      "commission": 0.0003,
-      "tax": 0.001,
-      "syntheticSpread": 0.001,
-      "enableMinimumPerTransactionFee": true,
-      "outputOrderInfo": true
-    },
-    "params": {},
-    "codes_query": "<完整 FactorQuery 或 null>",
-    "dataset_query": "<完整 FactorQuery>",
-    "adj": "hfq",
-    "annual_trading_days": 250,
-    "risk_free_rate": 0.03,
-    "utils": "<完整 DolphinDB 脚本>",
-    "callbacks": "<八个同名完整函数定义>"
-  }
-}
-```
-
-实际提交必须用 JSON object 替换三个占位字符串。
-
 ## 输出
 
 普通项目固定请求四个 Parquet：
@@ -301,12 +190,12 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - 状态为 `RESULT_PENDING` 时调用 `calculate_backtest_research` 收集 Parquet 并计算报告指标。
 
 敏感性研究的 `parameter_sets` 必须是完整 `BacktestParameters` 数组。先用 `get_version` 读取
-基准参数，对每个网格点深拷贝并修改相应策略参数，再提交；不能只发送
+基准参数，对每个网格点深拷贝并修改相应用户参数，再提交；不能只发送
 `{"params": {"KEY": value}}` 这样的局部对象。精确工具字段见 `arena://docs/backtest/api`。
 
 ## 提交前检查
 
-- 静态股票池非空，或第一阶段能产生候选代码；
+- 静态代码域非空，或第一阶段能产生候选代码；
 - 第二阶段仍包含退出持仓所需的代码；
 - 所有信号通过 `getLastData` / `getHistoryData` 使用当前日期之前的数据；
 - `params` 的 key 均存在并在 initialize 转换类型；
@@ -314,8 +203,9 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - callbacks 恰好八个，名称和参数数量正确；
 - 目标仓位合计、费用和 spread 不会系统性造成资金不足；
 - 不把 `submitOrder` 返回订单号当作成交结果；
-- 不访问 Runtime 会话内部变量或把 DSL derivative 当成 message 列。
+- 不访问 Runtime 会话内部变量或把 DSL derivative 当成 message 列；
 - 价格型 DSL 指标与 message/持仓价格已转换到同一尺度；
 - 已设计挂单、部分成交、撤单拒绝和期末未成交的处理；
-- 已按 `arena://docs/backtest/results` 对四个输出执行回测后 QA。
-- 构造动态池、优化器或运行诊断时，已读取对应的可执行示例，而不是只根据函数名猜测数据结构。
+- 已按 `arena://docs/backtest/results` 对四个输出执行回测后 QA；
+- 动态数据域、优化数值和回调对象均按对应契约检查，不根据函数名猜测结构；
+- 已理解当前只有 Schema 与编译预检，没有独立工具自动验证业务时点、矩阵可行性或运行时目标值。

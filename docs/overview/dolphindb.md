@@ -47,7 +47,7 @@ execute_dolphindb_script(script, max_rows=200)
 绕过 `max_rows`。`truncated=true` 表示至少一项受行列或总预算截断。`print(...)` 进入 Backend 日志，
 不进入 `value`；需要读取的对象必须放在脚本最后一个表达式。
 
-## 可直接运行的安全诊断
+## 基础诊断
 
 标量：
 
@@ -55,16 +55,16 @@ execute_dolphindb_script(script, max_rows=200)
 {"script":"1 + 1","max_rows":20}
 ```
 
-表与当前数据库版本：
+读取当前数据库版本或函数定义时，只返回需要的元数据，不在共享实例中构造业务模型：
 
 ```json
 {
-  "script": "databaseVersion = version()\nselect name, syntax, minParamCount, maxParamCount from defs() where name in [`osqp, `quadprog]\nselect * from getLoadedPlugins()",
+  "script": "version()",
   "max_rows": 50
 }
 ```
 
-上例的最后表达式只返回插件表；要同时返回多个对象，应显式组成字典：
+脚本只返回最后一个表达式；要同时返回多个对象，应显式组成字典：
 
 ```dos
 result = dict(STRING, ANY)
@@ -73,21 +73,8 @@ result[`plugins] = getLoadedPlugins()
 result
 ```
 
-OSQP 的最小维度检查：
-
-```dos
-n = 3
-P = 2.0 * eye(n)
-q = -1.0 * [0.3, 0.2, 0.1]
-sumConstraint = matrix(take(1.0, n)).transpose()
-A = concatMatrix([sumConstraint, eye(n)], false)
-l = 1.0 join take(0.0, n)
-u = 1.0 join take(0.7, n)
-solution = osqp(q, P, A, l, u)
-[string(solution[0]), solution[1], rows(P), cols(P), rows(A), cols(A)]
-```
-
-预期 `status="solved"`，`P` 为 `3×3`，`A` 为 `4×3`，权重和约为 1 且每项在 `[0,0.7]`。
+二次规划的通用接口、维度和结果校验见 `arena://docs/backtest/optimization`。本页不提供具体矩阵或
+约束构造。
 
 ## 与工作流的关系
 

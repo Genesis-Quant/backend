@@ -1,150 +1,68 @@
-# 动态指数股票池与防未来泄漏
+# 动态数据域与时点契约
 
-本例完整展示两阶段动态指数股票池。第一阶段只取得整个回测区间内曾经入选的代码并集；第二阶段
-重新计算逐日成员状态，并故意保留 `filters=[]`。回调在 t 日 09:30 只读取 t 日以前最后一个完整
-截面，用该截面的成员状态和排名决策。这样既不把未来成分提前视为成员，也不会让调出指数的旧持仓
-从 message 中消失。
+本页只说明动态代码域的查询和时点约束，不提供任何具体标的、筛选方法或交易逻辑。请求字段见
+`arena://docs/backtest/request`，历史数据 helper 见 `arena://docs/backtest/dolphindb`。
 
-## 必须同时满足的四条规则
+## 两阶段职责
 
-1. `codes_query.filters=["stock_pool_member"]`：只用于得到期间候选代码并集；
-2. `dataset_query` 再定义同名逐日 `stock_pool_member`：它才是每日成员事实；
-3. 截面算符用 `on="stock_pool_member"`，但 `dataset_query.filters=[]`：非成员行仍留在数据和 message
-   中，已有持仓可以下目标 0；
-4. t 日回调使用 `backtest::getLastData(context, message, false)`：返回严格早于 t 日的最后完整截面。
+| 阶段 | 职责 | 不能代表 |
+| --- | --- | --- |
+| `codes_query` | 对整个请求区间的过滤结果取 `code` 去重并集，确定第二阶段需要加载的候选代码 | 某代码在每个交易日都有效 |
+| `dataset_query` | 为候选代码生成逐日字段和逐日有效状态 | 自动满足 point-in-time |
 
-只做第 1 条、然后把候选并集全部当成每天的成员，会产生未来成分泄漏。把每日成员放进第二阶段
-filters，则调出成分和必要价格缺失的证券可能无法在当日 message 中退出。
+第一阶段得到的是“区间候选并集”，不是每日有效集合。候选代码即使只在区间后部满足条件，也可能被
+加载更早的历史数据；是否能在某个决策日参与计算，必须由第二阶段的逐日 BOOL 字段和严格历史截面
+共同决定。
 
-## 可直接提交的完整请求
-
-先创建 Backtest 项目，然后把下面整个对象作为 `run_backtest` 的 `parameters`。日期、指数、排名阈值
-可以修改，但不能删除第二阶段成员门控或把它放进 filters。
-
-```json
-{
-  "config": {
-    "cash": 1000000,
-    "commission": 0.0003,
-    "tax": 0.001,
-    "syntheticSpread": 0.001,
-    "enableMinimumPerTransactionFee": true,
-    "enableSellCloseRestrict": true,
-    "outputOrderInfo": true
-  },
-  "params": {
-    "rebalanceDays": 20,
-    "maxPositions": 10,
-    "capitalRatio": 0.9,
-    "rankFloor": 0.8
-  },
-  "codes_query": {
-    "start_date": "2020-01-01",
-    "end_date": "2025-12-31",
-    "lookback": "PT0S",
-    "codes": [],
-    "factors": [],
-    "derivatives": {
-      "stock_pool_member": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "weight_000300SH", "right": 0},
-        "params": {}
-      }
-    },
-    "filters": ["stock_pool_member"]
-  },
-  "dataset_query": {
-    "start_date": "2020-01-01",
-    "end_date": "2025-12-31",
-    "lookback": "P120D",
-    "codes": [],
-    "factors": [],
-    "derivatives": {
-      "stock_pool_member": {
-        "type": "DIRECT",
-        "op": "binary.gt",
-        "fields": {"left": "weight_000300SH", "right": 0},
-        "params": {}
-      },
-      "return_1d": {
-        "type": "TS",
-        "op": "unary.pct_change",
-        "fields": {"col": "close"},
-        "params": {"periods": 1}
-      },
-      "momentum_60d": {
-        "type": "TS",
-        "op": "unary.pct_change",
-        "fields": {"col": "close"},
-        "params": {"periods": 60}
-      },
-      "volatility_20d": {
-        "type": "TS",
-        "op": "unary.rolling_std",
-        "fields": {"col": "return_1d"},
-        "params": {"window": 20, "min_periods": 20}
-      },
-      "member_momentum_rank": {
-        "type": "CS",
-        "op": "unary.rank_pct",
-        "fields": {"col": "momentum_60d"},
-        "params": {"ascending": true, "ties_method": "average"},
-        "on": "stock_pool_member"
-      }
-    },
-    "filters": []
-  },
-  "adj": "qfq",
-  "annual_trading_days": 250,
-  "risk_free_rate": 0.03,
-  "utils": "def selectedDynamicCodes(signal, maxPositions, rankFloor) {\n    eligible = select code, member_momentum_rank from signal where stock_pool_member == true, momentum_60d > 0, volatility_20d > 0, member_momentum_rank >= rankFloor\n    selectedCount = min(long(maxPositions), eligible.rows())\n    if (selectedCount == 0) return symbol(take(\"\", 0))\n    selectedIndexes = isort(eligible.member_momentum_rank, false)[0:selectedCount]\n    return symbol(string(eligible.code[selectedIndexes]))\n}\n\ndef rebalanceDynamicPool(mutable context, message, signal) {\n    selectedCodes = selectedDynamicCodes(signal, context[\"maxPositions\"], context[\"rankFloor\"])\n    portfolio = Backtest::getTotalPortfolios(context.engine)\n    totalEquity = double(portfolio[\"totalEquity\"])\n    targetValue = iif(size(selectedCodes) == 0, 0.0, totalEquity * context[\"capitalRatio\"] / size(selectedCodes))\n    for (rowIndex in 0..(message.rows() - 1)) {\n        stockCode = message.symbol[rowIndex]\n        if (!(stockCode in selectedCodes)) backtest::order_target(context, message, stockCode, 0l, \"memberExit\")\n    }\n    for (rowIndex in 0..(message.rows() - 1)) {\n        stockCode = message.symbol[rowIndex]\n        if (stockCode in selectedCodes) backtest::order_target_value(context, message, stockCode, targetValue, \"memberEntry\")\n    }\n}",
-  "callbacks": {
-    "initialize": "def initialize(mutable context) { params = getParams(); context[\"tradingDays\"] = 0l; context[\"rebalanceDays\"] = long(params[\"rebalanceDays\"]); context[\"maxPositions\"] = long(params[\"maxPositions\"]); context[\"capitalRatio\"] = double(params[\"capitalRatio\"]); context[\"rankFloor\"] = double(params[\"rankFloor\"]); context[\"orderEvents\"] = 0l; context[\"tradeEvents\"] = 0l }",
-    "beforeTrading": "def beforeTrading(mutable context) { Backtest::cancelOrder(context.engine); return NULL }",
-    "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
-    "onSnapshot": "def onSnapshot(mutable context, message, indicator) { if (message.rows() == 0 || time(message.timestamp[0]) != 09:30:00.000) return; context[\"tradingDays\"] = context[\"tradingDays\"] + 1l; if ((context[\"tradingDays\"] - 1l) % context[\"rebalanceDays\"] != 0l) return; signal = backtest::getLastData(context, message, false); if (signal.rows() == 0) return; rebalanceDynamicPool(context, message, signal) }",
-    "onOrder": "def onOrder(mutable context, orders) { context[\"orderEvents\"] = context[\"orderEvents\"] + 1l }",
-    "onTrade": "def onTrade(mutable context, trades) { context[\"tradeEvents\"] = context[\"tradeEvents\"] + 1l }",
-    "afterTrading": "def afterTrading(mutable context) { return NULL }",
-    "finalize": "def finalize(mutable context) { print(\"动态股票池回测完成：交易日=\" + string(context[\"tradingDays\"]) + \"，订单事件=\" + string(context[\"orderEvents\"]) + \"，成交事件=\" + string(context[\"tradeEvents\"])) }"
-  }
-}
-```
-
-## 执行时间线
+## 固定流程
 
 ```text
-全区间 codes_query
-  -> 对过滤结果 code 去重，形成“期间曾经入选”的候选并集
-  -> dataset_query 为候选并集计算每个交易日的 stock_pool_member 和排名
-  -> t 日 09:30 onSnapshot
-  -> getLastData(..., false) 取得严格早于 t 的最后完整截面
-  -> 只选择该截面 member=true 的证券
-  -> 先对未入选的 message 证券下目标 0，再提交目标市值买单
+codes_query 过滤后的区间代码
+  -> 去重并集
+  -> 覆盖 dataset_query.codes
+  -> dataset_query 重新计算逐日有效状态
+  -> 决策日 t 读取 date(time) < t 的历史截面
+  -> 按该历史截面的有效状态决定参与域
 ```
 
-`codes_query` 的结果并集可能包含区间后期才加入指数的证券。它们的历史数据被加载不等于它们提前成为
-成员；真正的 point-in-time 门控发生在第二阶段每日 BOOL、截面 `on` 和回调选择条件中。指数权重和
-财务基础数据仍可能被供应商回溯修订，Arena 不保存数据快照；严格复现必须固定基础数据版本。
+必须同时满足：
 
-## 预期结果与 QA
+- 逐日有效状态在 `dataset_query` 中重新计算，不能沿用第一阶段并集替代；
+- 横截面算符需要限定参与域时，使用 `on=<逐日 BOOL>`；`on` 不删除最终结果行；
+- 如果后续仍需观察或退出失效代码，`dataset_query.filters` 不得删除这些行，通常保持 `[]`；
+- 回调使用 `getLastData(..., false)` 或 `getHistoryData(..., false)` 读取 filters 前数据；两者只返回
+  `date(time) < 当前消息日期` 的数据；
+- 实际决策只能使用读取到的历史状态，不能把当前或未来状态回填到较早日期。
 
-请求校验、DolphinDB 编译和工作流成功后，应列出四个默认输出：`trade_details`、
-`daily_positions`、`daily_portfolios`、`daily_trading_statistics`。不能预先承诺交易笔数或收益。
+`filters=[]` 是保留行的要求，不等于所有行都有效。有效性仍由逐日 BOOL 字段控制。
 
-2026-08-15 使用本文原样请求的验证快照为：第一阶段候选并集 481 只，`trade_details` 2148 行、
-`daily_positions` 14705 行、`daily_portfolios` 1455 行、`daily_trading_statistics` 1063 行，Runtime
-回测完整结束。基础数据会更新，这些行数只用于证明示例完成了真实查询、撮合和结果读取，不是固定断言。
-至少验证：
+## 退出与不可交易
 
-- t 日选股所用 signal.time 严格小于 t；
-- 每日入选代码的 `stock_pool_member=true`，而候选并集中的非成员没有被选入；
-- 调出成员后，只要当日仍有有效快照，存在目标 0 的卖出订单或已无持仓；
-- 期末仍持有但已不满足成员的证券，应结合停牌/缺价检查是否无法退出；
-- `qfq` 只改变执行 message 的价格尺度；本例信号是无量纲收益和波动率，没有把原始价格水平直接与
-  复权持仓价混算。
+代码必须存在于当前 `message` 才能调用 `order_target*`。以下情况都可能使目标调整无法提交或完成：
 
-完整字段、撮合和 QA 见 `arena://docs/backtest/dolphindb` 与 `arena://docs/backtest/qa`。本文最后按
-DolphinDB Server `2.00.18`、Backtest `2.00.18.11`、MatchingEngineSimulator `2.00.18.11` 于
-2026-08-15 完成 Runtime Schema 与 DolphinDB 编译验证。
+- 第二阶段 filter 已删除该代码；
+- 当日必要行情缺失，没有生成合成快照；
+- 存在停牌、涨跌停、资金、可卖数量、延时或其他插件限制；
+- 旧订单仍处于活动状态。
+
+“目标集合已删除代码”不等于“实际持仓已退出”。必须以订单终态、成交事件和最终持仓为准。
+
+## Point-in-time 边界
+
+Arena 能保证上述 helper 的回调读取边界，但不能仅凭回调无前视证明输入数据完全 point-in-time：
+
+- 财务字段的可用性取决于数据源写入和填充规则；
+- 历史成员或权重可能被供应商修订；
+- Arena 当前不为每次运行冻结输入数据快照。
+
+基础字段来源、填充和修订边界见 `arena://docs/overview/dsl`。需要审计级复现时，应在运行时归档完整
+请求、输入数据版本、抓取时间和结果文件。
+
+## 提交前检查
+
+- 第一阶段结果只用于候选并集；
+- 第二阶段包含逐日有效状态；
+- 参与域与最终删行分别使用 `on` 和 `filters`；
+- 决策数据严格早于决策日；
+- 失效但仍持仓的代码在可交易时仍能进入 `message`；
+- 结果 QA 检查实际订单、成交和持仓，而不是只检查目标集合。

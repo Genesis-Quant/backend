@@ -8,6 +8,7 @@ Arena MCP 把网页中的 Query、Factor 和 Backtest 能力提供给 AI。它�
 
 - Endpoint：`{ARENA_PUBLIC_URL}/mcp`
 - 网页入口：`{ARENA_WEB_URL}`
+- MCP 页面：`{ARENA_WEB_URL}/mcp`，与 MCP Resources 读取同一组 Markdown
 - Transport：MCP Streamable HTTP，无状态模式
 - 每个 HTTP 请求都必须携带 `Authorization: Bearer <access_token>`
 - MCP 不提供登录、注册、用户管理或业务对象删除工具；管理员专用 DolphinDB 诊断工具见下文
@@ -49,10 +50,10 @@ CallToolResult.structuredContent.result
 | Backtest 请求与 API | `arena://docs/backtest/request`、`arena://docs/backtest/api`、`arena://schemas/backtest` |
 | Backtest 行情、回调和撮合 | `arena://docs/backtest/dolphindb` |
 | Backtest 四张结果表、费用和审计 | `arena://docs/backtest/results` |
-| 动态股票池完整示例 | `arena://docs/backtest/dynamic-pool` |
-| OSQP 约束组合优化完整示例 | `arena://docs/backtest/optimization` |
-| 回调、持仓、订单与成交诊断示例 | `arena://docs/backtest/callback-data` |
-| 端到端执行、指标复算与结果 QA | `arena://docs/backtest/qa` |
+| 动态数据域、两阶段查询与时点边界 | `arena://docs/backtest/dynamic-pool` |
+| 二次规划接口、数值处理与调仓顺序 | `arena://docs/backtest/optimization` |
+| 回调、持仓、订单、成交与拒单诊断边界 | `arena://docs/backtest/callback-data` |
+| 运行、结果 QA 与保存版本顺序 | `arena://docs/backtest/qa` |
 
 使用 `read_arena_document(name)` 可读取同名文档；`name` 与上述 `arena://docs/*` 路径一致，例如
 `overview/workflows`。Schema 定义顶层业务对象，某个 DSL 节点的精确 `fields`、`params` 和 `on`
