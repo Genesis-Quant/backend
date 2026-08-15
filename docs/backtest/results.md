@@ -3,6 +3,7 @@
 本文件定义 Arena 当前股票回测四张 Parquet 结果表的行粒度、字段语义、订单事件、费用、对账规则和
 已知限制。如何提交请求见 `arena://docs/backtest/request`，行情、回调和撮合见
 `arena://docs/backtest/dolphindb`，下载方法见 `arena://docs/overview/workflows`。
+可直接运行的下载后复算、账务检查和保存版本顺序见 `arena://docs/backtest/qa`。
 
 字段来源是 Runtime 当前调用的 DolphinDB Backtest 接口：
 
@@ -244,7 +245,7 @@ Arena 不在 Python 或 DOS 中重新计算费用，费用由 DolphinDB Backtest
 
 - `commission` 买卖双方收取；`tax` 只进入卖出费用；
 - 最低 5 元由插件按“每笔交易”规则执行，不是每日证券汇总最低 5 元；
-- `onTrade` 的 `trades[5]` 是该成交事件报告的费用；
+- `onTrade` 中每个 `event["totalFee"]` 是该成交事件报告的费用；
 - `daily_portfolios.totalFee` 是组合累计费用，日费用必须取差分；
 - `syntheticSpread` 已反映在买一/卖一成交价格中，不进入 `totalFee`；
 - 当前部署实测中，费用会减少现金并反映到已实现盈亏和总权益；不能在报告层重复扣除。

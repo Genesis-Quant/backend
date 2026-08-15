@@ -5,6 +5,10 @@ DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 
 事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`。
 四张结果表的字段、费用和对账规则见 `arena://docs/backtest/results`。
 
+可直接运行的完整契约示例按用途拆分：动态指数股票池见 `arena://docs/backtest/dynamic-pool`，约束组合
+优化见 `arena://docs/backtest/optimization`，回调对象与日志自省见
+`arena://docs/backtest/callback-data`，端到端保存与结果复算见 `arena://docs/backtest/qa`。
+
 DolphinDB 插件原始定义可直接查阅
 [股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)、
 [Backtest 接口说明](https://docs.dolphindb.com/zh/plugins/backtest/interface_description.html) 和
@@ -314,3 +318,4 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - 价格型 DSL 指标与 message/持仓价格已转换到同一尺度；
 - 已设计挂单、部分成交、撤单拒绝和期末未成交的处理；
 - 已按 `arena://docs/backtest/results` 对四个输出执行回测后 QA。
+- 构造动态池、优化器或运行诊断时，已读取对应的可执行示例，而不是只根据函数名猜测数据结构。

@@ -41,6 +41,15 @@ def register_resources(server: MCPServer) -> None:
         return document("overview/dsl")
 
     @server.resource(
+        "arena://docs/overview/dolphindb",
+        title="DolphinDB 脚本执行",
+        description="管理员任意 DolphinScript 测试接口、返回序列化、权限、副作用和诊断边界。",
+        mime_type="text/markdown",
+    )
+    def dolphindb_document() -> str:
+        return document("overview/dolphindb")
+
+    @server.resource(
         "arena://docs/overview/workflows",
         title="工作流与任务读取",
         description="Workspace 状态、Attempt 历史、Workflow、Task、日志分页、输出下载和控制。",
@@ -120,6 +129,42 @@ def register_resources(server: MCPServer) -> None:
     )
     def backtest_results_document() -> str:
         return document("backtest/results")
+
+    @server.resource(
+        "arena://docs/backtest/dynamic-pool",
+        title="动态指数股票池完整示例",
+        description="候选并集、逐日成员门控、退出保留和无未来函数的完整可运行请求。",
+        mime_type="text/markdown",
+    )
+    def backtest_dynamic_pool_document() -> str:
+        return document("backtest/dynamic-pool")
+
+    @server.resource(
+        "arena://docs/backtest/optimization",
+        title="OSQP 约束组合优化完整示例",
+        description="目标函数、矩阵维度、求解状态、失败回退和目标仓位执行的完整可运行请求。",
+        mime_type="text/markdown",
+    )
+    def backtest_optimization_document() -> str:
+        return document("backtest/optimization")
+
+    @server.resource(
+        "arena://docs/backtest/callback-data",
+        title="回调与交易对象诊断示例",
+        description="message、持仓、订单和成交字段的可运行自省请求及事件读取规则。",
+        mime_type="text/markdown",
+    )
+    def backtest_callback_data_document() -> str:
+        return document("backtest/callback-data")
+
+    @server.resource(
+        "arena://docs/backtest/qa",
+        title="回测端到端与结果 QA",
+        description="运行生命周期、四表下载、指标复算、账务对账和撮合限制的可运行检查。",
+        mime_type="text/markdown",
+    )
+    def backtest_qa_document() -> str:
+        return document("backtest/qa")
 
     @server.resource(
         "arena://schemas/query",

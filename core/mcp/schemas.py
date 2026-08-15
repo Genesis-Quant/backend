@@ -17,6 +17,7 @@ type DocumentName = Literal[
     "overview/overview",
     "overview/projects",
     "overview/dsl",
+    "overview/dolphindb",
     "overview/workflows",
     "query/request",
     "query/api",
@@ -26,6 +27,10 @@ type DocumentName = Literal[
     "backtest/api",
     "backtest/dolphindb",
     "backtest/results",
+    "backtest/dynamic-pool",
+    "backtest/optimization",
+    "backtest/callback-data",
+    "backtest/qa",
 ]
 type ProjectListResult = ProjectPage[QueryProjectListItem] | ProjectPage[FactorProjectListItem] | ProjectPage[BacktestProjectListItem]
 type ProjectResult = QueryProjectItem | FactorProjectItem | BacktestProjectItem
@@ -68,6 +73,16 @@ class DolphinFunctionDefinitions(BaseModel):
     missing: list[str]
 
 
+class DolphinScriptResult(BaseModel):
+    kind: Literal["null", "scalar", "table", "vector", "matrix", "mapping", "other"]
+    python_type: str
+    row_count: int | None = None
+    column_count: int | None = None
+    columns: list[str] = Field(default_factory=list)
+    truncated: bool = False
+    value: Any = None
+
+
 class WorkflowOutputFile(ResultFile[str]):
     download_path: str
 
@@ -101,6 +116,6 @@ class McpResult[T](BaseModel):
 __all__ = [
     "ApplicationName", "VersionedApplicationName", "DocumentName", "ProjectListResult", "ProjectResult",
     "VersionedProjectResult", "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "DslOperatorSummary",
-    "DslOperatorSearchResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions",
+    "DslOperatorSearchResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions", "DolphinScriptResult",
     "WorkflowOutputFile", "WorkflowOutputs", "TaskLogDownload", "McpBatchRunItem", "McpResult",
 ]

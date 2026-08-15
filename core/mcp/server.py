@@ -14,12 +14,15 @@ SERVER_INSTRUCTIONS = (
     "Start with arena://docs/overview/overview, arena://docs/overview/projects, and "
     "arena://docs/overview/workflows. Before run_* read that application's request and API documents plus its "
     "Schema; backtests must also read arena://docs/backtest/dolphindb before running and "
-    "arena://docs/backtest/results before interpreting outputs. Discover DSL operators "
+    "arena://docs/backtest/results before interpreting outputs. Read the applicable executable Backtest example "
+    "for dynamic pools, constrained optimization, callback diagnostics, or result QA instead of inventing a contract. "
+    "arena://docs/overview/dolphindb documents the administrator-only arbitrary DolphinScript diagnostic tool. Discover DSL operators "
     "and DolphinDB signatures instead of guessing. Business results are in structuredContent.result. Follow "
     "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
     "can be saved. Use Workspace Attempt history to inspect earlier submitted parameters. Project/version rename, "
     "browser batch queues, fee studies, sensitivity studies, task queries, and log downloads all have dedicated "
-    "tools documented under the owning application or overview/workflows. No deletion operation is exposed through MCP."
+    "tools documented under the owning application or overview/workflows. No dedicated business deletion tool is exposed; "
+    "the administrator-only arbitrary DolphinScript tool is a destructive exception and can modify or delete DolphinDB data."
 )
 
 mcp_server = MCPServer(

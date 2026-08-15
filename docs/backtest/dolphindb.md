@@ -19,6 +19,10 @@
 官方文档描述插件支持的全部配置；下文写的是 Arena Runtime 在这些能力中固定选择的子集。如果两
 者看似不同，应先检查 Arena 是否固定了某个参数，而不是把官方的其它模式套到当前运行环境。
 
+可执行示例：动态成员时序见 `arena://docs/backtest/dynamic-pool`，OSQP 维度和状态处理见
+`arena://docs/backtest/optimization`，真实回调对象自省见 `arena://docs/backtest/callback-data`，输出
+审计见 `arena://docs/backtest/qa`。
+
 ## 运行时字段自省
 
 DolphinDB 没有一个返回 Backtest 所有可用字段的统一接口。必须按对象的数据形式查询：
@@ -31,7 +35,7 @@ DolphinDB 没有一个返回 Backtest 所有可用字段的统一接口。必须
 | 挂单 | 对 `Backtest::getOpenOrders(context.engine)` 的表结果使用 `schema(...).colDefs` | 插件也可能返回由字典组成的 tuple；空结果和返回 form 必须先判断 |
 | 成交/每日结果 | `schema(Backtest::getTradeDetails(engine)).colDefs` 等 | 需要已创建的 engine；可选配置会增加列 |
 | 订阅指标 | `Backtest::getIndicatorSchema(engine, "snapshot")` | 只返回订阅指标表结构，不返回 message、订单或成交事件结构 |
-| `onOrder` / `onTrade` | 无字段名自省接口 | Arena 当前传入位置型 ANY VECTOR，只能依照当前配置下的固定位置契约 |
+| `onOrder` / `onTrade` | `typestr(events)`，并对每个 `event` 调用 `event.keys()` | 外层是 ANY VECTOR，元素是 STRING->ANY DICTIONARY；必须遍历全部元素 |
 
 表的通用 `schema` 返回 `colDefs`，包含 `name`、`typeString`、`typeInt` 等信息，官方说明见
 [DolphinDB schema](https://docs.dolphindb.com/zh/funcs/s/schema.html)。例如：
@@ -48,10 +52,10 @@ position = Backtest::getPosition(context.engine, stockCode)
 print(position.keys())
 ```
 
-`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum` 等配置会改变部分结果或事件的附加字段。
+`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum` 等配置会改变部分结果或事件字典的附加 key。
 `outputQueuePosition` 只适用于官方文档指定的含逐笔行情模式，不适用于 Arena 当前固定的
 `dataType=1`。因此“全部字段”必须绑定到当前 engine 配置；官方静态字段表和运行时自省应一起使用。
-Arena 文档下面列出的 message 与事件位置，针对的是 Runtime 当前固定配置。
+Arena 文档下面列出的 message 列和事件字典 key，针对的是 Runtime 当前固定配置。
 
 DolphinDB 普通内置函数的部署版本签名可用 `describe_dolphindb_functions` 查询。带
 `Backtest::` 或 `backtest::` 命名空间的接口不要传给该工具，其契约以本页为准。
@@ -120,6 +124,11 @@ executionPriceLikeValue = double(signal.rawPriceLikeValue[0]) * scale
 使用前必须确认代码一致、两端非 NULL 且大于 0。若信号行不是该代码的前一实际交易日（停牌、缺
 行或手工拼表），不能套用该比例。所有价格水平、价格差和以价格为单位的派生值都必须先转到
 message/持仓的执行价格尺度；无量纲比例不需要这一步。
+
+字段名也不代表自动对齐：`adj="qfq"` 只把 message 调整为前复权执行价；若 DSL 显式引用
+`close_hfq`，历史列仍是后复权尺度。直接比较二者的价格水平是错误的。对 `close_hfq` 做
+`pct_change` 得到的无量纲收益可以用于排名或协方差，但 ATR、价差、止损距离等有价格单位的派生值
+必须先换到 message 的执行尺度。
 
 代码在查询完成后统一映射：
 
@@ -377,6 +386,10 @@ order_target_value(mutable context, msg, stockCode, targetValue, orderLabel="ord
 
 组合调仓应先提交卖出目标，再提交买入目标，并为费用和价格变动保留现金。
 
+普通 A 股买入按 100 股整数手；目标 0 可以精确清仓不足一手的剩余持仓。科创板首次建立正持仓时
+实际目标不得少于 200 股。当前 `order_target_value` 的调整步长仍固定为 100，调用方必须保证科创板
+首次正目标至少 200，否则插件风控可能拒单。完整诊断示例见 `arena://docs/backtest/callback-data`。
+
 ## 直接提交普通限价单
 
 Runtime helper 无法表达订单时可调用：
@@ -410,7 +423,7 @@ openOrders = Backtest::getOpenOrders(context.engine)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `symbol` | STRING/SYMBOL | `.XSHG/.XSHE` 标准代码 |
+| `symbol` | STRING | `.XSHG/.XSHE` 标准代码 |
 | `lastDayLongPosition` | LONG | 昨日多头持仓 |
 | `lastDayShortPosition` | LONG | 昨日空头持仓 |
 | `longPosition` | LONG | 当前多头持仓 |
@@ -418,13 +431,17 @@ openOrders = Backtest::getOpenOrders(context.engine)
 | `longPositionAvgPrice` | DOUBLE | 当前多头成交均价，执行价格尺度 |
 | `shortPositionAvgPrice` | DOUBLE | 当前空头成交均价，执行价格尺度 |
 | `todayBuyVolume` | LONG | 当日买入成交数量 |
+| `todayBuyValue` | DOUBLE | 当日买入成交额 |
 | `todaySellVolume` | LONG | 当日卖出成交数量 |
-| `totalValue` | DOUBLE | 当前持仓市值 |
+| `todaySellValue` | DOUBLE | 当日卖出成交额 |
 
-组合总权益从 `portfolios["totalEquity"]` 读取；可用现金不等于总权益。不存在的代码或空持仓可能返
-回空/NULL，使用 `.sum()` 后也应 `nullFill(..., 0)`。
+当前部署的持仓表和单证券字典**不能假定存在 `totalValue`**。需要证券当前市值时，用真实
+`longPosition` 与同一执行尺度的当前 message 价格相乘；需要组合总权益时从
+`portfolios["totalEquity"]` 读取，不要把持仓均价当作当前市价。可用现金不等于总权益。不存在的
+代码或空持仓可能返回空/NULL，使用 `.sum()` 后也应 `nullFill(..., 0)`。字段实测和自省请求见
+`arena://docs/backtest/callback-data`。
 
-`getOpenOrders` 返回挂单表或由字典组成的 tuple。非债券订单的完整结构为：
+当前股票合成模式下 `getOpenOrders` 的非空结果实测为表。默认字段为：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -435,6 +452,12 @@ openOrders = Backtest::getOpenOrders(context.engine)
 | `totalQty` | LONG | 原始委托数量 |
 | `openQty` | LONG | 尚未成交数量 |
 | `direction` | INT | 1 买开、2 卖开、3 卖平、4 买平 |
+| `label` | STRING | 下单时的业务标签 |
+
+插件模式或队列位置配置可能追加以下字段，使用前必须以当前非空返回表的 Schema 为准：
+
+| 可选字段 | 类型 | 说明 |
+| --- | --- | --- |
 | `isMacthing` | INT | 是否已到达撮合时间；插件字段名即如此拼写 |
 | `openVolumeWithBetterPrice` | LONG | 更优价未成交量，仅输出队列位置时存在 |
 | `openVolumeWithWorsePrice` | LONG | 更差价未成交量，仅输出队列位置时存在 |
@@ -443,7 +466,8 @@ openOrders = Backtest::getOpenOrders(context.engine)
 | `depthVolumeWithBetterPrice` | INT | 更优价档位深度，仅输出队列位置时存在 |
 | `updateTime` | TIMESTAMP | 最新更新时间 |
 
-读取前先判断返回对象类型和是否为空，不要假定固定为非空表。
+空结果或其他插件模式的返回 form 仍需先判断；不要对空对象直接调用 `schema`。本文诊断版本的默认
+非空表实际列为 `orderId,timestamp,symbol,price,totalQty,openQty,direction,label`。
 
 撤单：
 
@@ -457,27 +481,28 @@ Backtest::cancelOrder(context.engine, , , "orderLabel")
 ## `onOrder` 事件
 
 插件通用事件结构见
-[Backtest 插件文档](https://docs.dolphindb.com/zh/plugins/backtest.html)；下表是 Arena 当前
-`msgAsTable=true`、未启用额外序号字段时实际收到的位置型 ANY VECTOR。
+[Backtest 插件文档](https://docs.dolphindb.com/zh/plugins/backtest.html)。Arena 当前实际收到的 `orders`
+是一个 ANY VECTOR，每个元素都是 STRING->ANY DICTIONARY。一次回调可能携带多个事件，必须遍历
+`orders`；`orders[0]` 是第一个事件字典，不是 orderId，`orders[5]` 也不是 status。
 
-当前创建方式下 `orders` 是 ANY VECTOR，必须按整数位置读取，不能写 `orders["status"]`。
-若请求启用 `outputSeqNum` 或 `outputTradeSeqNum`，插件会给事件参数增加序号字段；下表只对应两项均为
-false 的默认布局。启用前必须按部署插件版本核对新增位置并同步修改 callback，不能继续假定向量长度
-固定为 11。
+未启用额外序号字段时，每个事件字典包含：
 
-| 位置 | 字段 | 说明 |
-| ---: | --- | --- |
-| 0 | `orderId` | LONG 订单号 |
-| 1 | `symbol` | STRING 证券代码 |
-| 2 | `timestamp` | TIMESTAMP 委托时间 |
-| 3 | `qty` | LONG 委托数量 |
-| 4 | `price` | DOUBLE 委托价 |
-| 5 | `status` | INT 状态 |
-| 6 | `direction` | INT 方向 |
-| 7 | `tradeQty` | LONG 累计成交量 |
-| 8 | `tradeValue` | DOUBLE 累计成交额 |
-| 9 | `label` | STRING 标签 |
-| 10 | `updateTime` | TIMESTAMP 更新时间 |
+| key | 类型 | 说明 |
+| --- | --- | --- |
+| `orderId` | LONG | 订单号 |
+| `symbol` | STRING | 证券代码 |
+| `timestamp` | TIMESTAMP | 委托时间 |
+| `qty` | LONG | 委托数量 |
+| `price` | DOUBLE | 委托价 |
+| `status` | INT | 状态 |
+| `direction` | INT | 方向 |
+| `tradeQty` | LONG | 累计成交量 |
+| `tradeValue` | DOUBLE | 累计成交额 |
+| `label` | STRING | 标签 |
+| `updateTime` | TIMESTAMP | 更新时间 |
+
+使用 `event["status"]` 按 key 读取。额外输出选项可能增加 key；读取可选 key 前检查
+`key in event.keys()`，不能把字典强制转换成固定位置向量。
 
 完整 status：
 
@@ -493,11 +518,13 @@ false 的默认布局。启用前必须按部署插件版本核对新增位置�
 
 ```dos
 def onOrder(mutable context, orders) {
-    orderId = long(orders[0])
-    status = int(orders[5])
-    context["orderStates"][orderId] = status
-    if (status in [-1, -2, -3]) {
-        context["rejectedOrders"] = context["rejectedOrders"] + 1l
+    for (event in orders) {
+        orderId = long(event[`orderId])
+        status = int(event[`status])
+        context["orderStates"][orderId] = status
+        if (status in [-1, -2, -3]) {
+            context["rejectedOrders"] = context["rejectedOrders"] + 1l
+        }
     }
 }
 ```
@@ -510,32 +537,31 @@ def onOrder(mutable context, orders) {
 
 插件通用事件结构见
 [Backtest 插件文档](https://docs.dolphindb.com/zh/plugins/backtest.html)；下表是 Arena 当前配置下
-实际收到的位置型 ANY VECTOR。
+实际收到的事件字典 key。
 
-`trades` 同样是 ANY VECTOR：
+`trades` 同样是 ANY VECTOR，元素是 STRING->ANY DICTIONARY。默认每个事件字典包含：
 
-下表同样是 `outputSeqNum=false`、`outputTradeSeqNum=false` 的默认布局；启用序号字段后必须按实际
-插件版本重新核对向量位置。
-
-| 位置 | 字段 | 说明 |
-| ---: | --- | --- |
-| 0 | `orderId` | LONG 订单号 |
-| 1 | `symbol` | STRING 证券代码 |
-| 2 | `tradePrice` | DOUBLE 本次成交价 |
-| 3 | `tradeQty` | LONG 本次成交量 |
-| 4 | `tradeValue` | DOUBLE 本次成交额 |
-| 5 | `totalFee` | DOUBLE 本次费用 |
-| 6 | `totalVolume` | LONG 累计成交量 |
-| 7 | `totalValue` | DOUBLE 累计成交额 |
-| 8 | `direction` | INT 方向 |
-| 9 | `tradeTime` | TIMESTAMP 成交时间 |
-| 10 | `orderPrice` | DOUBLE 委托价 |
-| 11 | `label` | STRING 标签 |
+| key | 类型 | 说明 |
+| --- | --- | --- |
+| `orderId` | LONG | 订单号 |
+| `symbol` | STRING | 证券代码 |
+| `tradePrice` | DOUBLE | 本次成交价 |
+| `tradeQty` | LONG | 本次成交量 |
+| `tradeValue` | DOUBLE | 本次成交额 |
+| `totalFee` | DOUBLE | 本次费用 |
+| `totalVolume` | LONG | 累计成交量 |
+| `totalValue` | DOUBLE | 累计成交额 |
+| `direction` | INT | 方向 |
+| `tradeTime` | TIMESTAMP | 成交时间 |
+| `orderPrice` | DOUBLE | 委托价 |
+| `label` | STRING | 标签 |
 
 ```dos
 def onTrade(mutable context, trades) {
-    context["filledShares"] = context["filledShares"] + long(trades[3])
-    context["paidFees"] = context["paidFees"] + double(trades[5])
+    for (event in trades) {
+        context["filledShares"] = context["filledShares"] + long(event[`tradeQty])
+        context["paidFees"] = context["paidFees"] + double(event[`totalFee])
+    }
 }
 ```
 
@@ -630,7 +656,7 @@ DOS 输出重定向、Task 日志分页、完整日志下载和敏感信息限�
 - 第二阶段是否把目标股票从 message 删除；
 - 目标市值换算后是否小于 100 股；
 - 是否存在未撤销挂单；
-- `orders[5]`、`trade_details` 是否显示拒单或未成交；
+- `event["status"]`、`trade_details` 是否显示拒单或未成交；
 - 现金、可卖持仓、涨跌停、限价、延时和 `syntheticSpread` 是否允许当前或后续盘口成交。
 
 ## 结果读取与 QA

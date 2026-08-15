@@ -6,6 +6,10 @@
 `arena://docs/backtest/results`，Schema 见 `arena://schemas/backtest`。通用工作流诊断见
 `arena://docs/overview/workflows`。
 
+完整端到端运行、失败诊断、输出 QA 和保存顺序见 `arena://docs/backtest/qa`；动态池、优化器和回调
+字段示例分别见 `arena://docs/backtest/dynamic-pool`、`arena://docs/backtest/optimization`、
+`arena://docs/backtest/callback-data`。
+
 ## 项目与版本
 
 创建 Backtest 项目会创建当前未保存版本和一对一 Workspace。反复运行更新该未保存版本；保存成功
@@ -149,7 +153,8 @@ list_workflow_outputs("backtest", workflow_instance_id)
 ## 完整调用顺序
 
 ```text
-1. 读取 backtest/request、backtest/dolphindb、backtest/results、overview/dsl、schemas/backtest
+1. 读取 backtest/request、backtest/dolphindb、backtest/results、overview/dsl、schemas/backtest，及与
+   当前任务对应的 dynamic-pool、optimization、callback-data 或 qa 示例
 2. 发现 DSL 算符和需要的 DolphinDB 内置函数签名
 3. create_project("backtest", title)
 4. run_backtest(project_id, complete_parameters)
