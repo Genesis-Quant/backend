@@ -4,24 +4,35 @@ from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from pydantic import Field
-from runtime import BacktestParameters, FactorAnalysisParameters
+from runtime import (
+    BacktestParameters,
+    FactorAnalysisParameters,
+    OptimizationAlgorithm,
+    OptimizationSettings,
+)
 from runtime.apps.backtest.api import compile_backtest_scripts
 
 from core.apps.backtest.schemas import (
     BatchAnalysisType,
+    BacktestOptimizationPage,
+    BacktestOptimizationResponse,
     BatchResearchCreate,
     BatchResearchListResponse,
     BatchResearchResponse,
     FeeAnalysisCreate,
 )
 from core.apps.backtest.services import (
-    calculate_batch_research_results,
     create_batch_research,
+    create_backtest_optimization as create_backtest_optimization_record,
     create_fee_analysis,
     get_batch_research,
+    get_backtest_optimization as get_backtest_optimization_record,
     get_backtest_project,
     get_backtest_version,
     list_batch_research,
+    list_backtest_optimizations as list_backtest_optimization_records,
+    optimization_result_files,
+    sensitivity_result_files,
     submit_backtest_batch,
 )
 from core.apps.factor.services import submit_factor_batch
@@ -29,7 +40,7 @@ from core.apps.schemas import BatchRunAccepted, BatchRunRequest
 from core.database.session import database_session_factory
 
 from ..auth import current_user
-from ..schemas import McpBatchRunItem, McpResult, READ_ONLY, WRITE
+from ..schemas import McpBatchRunItem, McpResult, READ_ONLY, WRITE, WorkflowOutputFile, WorkflowOutputs
 
 
 def register_batch_tools(server: MCPServer) -> None:
@@ -82,6 +93,127 @@ def register_batch_tools(server: MCPServer) -> None:
             result = submit_backtest_batch(session, user.id, project_id, request.items)
             return McpResult(result=[BatchRunAccepted.model_validate(item) for item in result])
 
+    @server.tool(title="列出回测参数调优报告", annotations=READ_ONLY)
+    def list_backtest_optimizations(
+        project_id: Annotated[int, Field(gt=0, description="Backtest 项目 ID。")],
+        version: Annotated[int, Field(gt=0, description="已保存版本号。")],
+        page: Annotated[int, Field(ge=1, description="页码，从 1 开始。")] = 1,
+        page_size: Annotated[int, Field(ge=1, le=100, description="每页数量。")] = 20,
+    ) -> McpResult[BacktestOptimizationPage]:
+        """List walk-forward parameter-optimization reports for one saved version."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = list_backtest_optimization_records(
+                session,
+                user,
+                project_id,
+                version,
+                page,
+                page_size,
+            )
+            return McpResult(
+                result=BacktestOptimizationPage.model_validate(result)
+            )
+
+    @server.tool(title="创建回测参数调优报告", annotations=WRITE)
+    def create_backtest_optimization(
+        project_id: Annotated[int, Field(gt=0, description="Backtest 项目 ID。")],
+        version: Annotated[int, Field(gt=0, description="作为来源的已保存版本号。")],
+        parameter_space: Annotated[
+            dict[str, list[int | float]],
+            Field(description="待调优 params 字段及其 2 到 100 个有限数值候选。"),
+        ],
+        algorithms: Annotated[
+            list[OptimizationAlgorithm],
+            Field(min_length=1, description="需要比较的调优算法，不能重复。"),
+        ],
+        start_date: Annotated[str, Field(description="第一段样本外区间起点，YYYY-MM-DD。")],
+        end_date: Annotated[str, Field(description="最后一段样本外区间终点，YYYY-MM-DD。")],
+        lookback_period: Annotated[str, Field(description="训练窗口长度，例如 6M。")],
+        holding_period: Annotated[str, Field(description="样本外持有窗口长度，例如 2W。")],
+        repetitions: Annotated[int, Field(ge=1, le=100, description="每种算法的独立随机起点次数。")] = 1,
+        evaluation_budget: Annotated[int, Field(ge=2, le=100, description="每个训练窗口最多评价的候选组合数。")] = 12,
+        seed: Annotated[int, Field(ge=0, le=2_147_483_647, description="非负随机种子。")] = 20260815,
+    ) -> McpResult[BacktestOptimizationResponse]:
+        """Create one shared-data walk-forward parameter-optimization workflow."""
+        settings = OptimizationSettings.model_validate({
+            "parameter_space": parameter_space,
+            "algorithms": algorithms,
+            "start_date": start_date,
+            "end_date": end_date,
+            "lookback_period": lookback_period,
+            "holding_period": holding_period,
+            "repetitions": repetitions,
+            "evaluation_budget": evaluation_budget,
+            "seed": seed,
+        })
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = create_backtest_optimization_record(
+                session,
+                user,
+                project_id,
+                version,
+                settings,
+            )
+            return McpResult(
+                result=BacktestOptimizationResponse.model_validate(result)
+            )
+
+    @server.tool(title="获取回测参数调优报告", annotations=READ_ONLY)
+    def get_backtest_optimization(
+        optimization_id: Annotated[int, Field(gt=0, description="参数调优报告 ID。")],
+    ) -> McpResult[BacktestOptimizationResponse]:
+        """Get one parameter-optimization report and its current workflow state."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            result = get_backtest_optimization_record(
+                session,
+                user,
+                optimization_id,
+            )
+            return McpResult(
+                result=BacktestOptimizationResponse.model_validate(result)
+            )
+
+    @server.tool(title="列出回测参数调优输出", annotations=READ_ONLY)
+    def list_backtest_optimization_outputs(
+        optimization_id: Annotated[int, Field(gt=0, description="参数调优报告 ID。")],
+    ) -> McpResult[WorkflowOutputs]:
+        """List one Parquet path output for each selected optimization algorithm."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            optimization = get_backtest_optimization_record(
+                session,
+                user,
+                optimization_id,
+            )
+            workflow_instance_id = optimization["workflow_instance_id"]
+            if workflow_instance_id is None:
+                raise FileNotFoundError(
+                    f"参数调优报告尚未关联工作流实例: {optimization_id}"
+                )
+            items = optimization_result_files(
+                session,
+                user.id,
+                optimization_id,
+            )
+            outputs = [
+                WorkflowOutputFile(
+                    **item,
+                    download_path=(
+                        f"/api/v1/backtest/optimizations/{optimization_id}"
+                        f"/outputs/{item['name']}"
+                    ),
+                )
+                for item in items
+            ]
+            return McpResult(result=WorkflowOutputs(
+                application="optimization",
+                workflow_instance_id=workflow_instance_id,
+                outputs=outputs,
+            ))
+
     @server.tool(title="列出策略批量研究", annotations=READ_ONLY)
     def list_backtest_researches(
         page: Annotated[int, Field(ge=1, description="页码，从 1 开始。")] = 1,
@@ -122,7 +254,7 @@ def register_batch_tools(server: MCPServer) -> None:
         ],
         description: Annotated[str, Field(max_length=512, description="研究备注。")] = "",
     ) -> McpResult[BatchResearchResponse]:
-        """Create a fee or sensitivity study from complete Backtest parameter sets."""
+        """Create one sensitivity workflow that reuses data for all parameter sets."""
         validated_parameters = [BacktestParameters.model_validate(parameters) for parameters in parameter_sets]
         request = BatchResearchCreate.model_validate({
             "analysis_type": BatchAnalysisType(analysis_type),
@@ -136,8 +268,7 @@ def register_batch_tools(server: MCPServer) -> None:
             source = get_backtest_version(session, user.id, project_id, version)
             if not source["saved"]:
                 raise FileNotFoundError(f"策略回测版本不存在: {project_id}/v{version}")
-        for parameters in validated_parameters:
-            compile_backtest_scripts(parameters)
+        compile_backtest_scripts(validated_parameters[0])
         with database_session_factory()() as session:
             user = current_user(session)
             return McpResult(result=BatchResearchResponse.model_validate(create_batch_research(session, user, request)))
@@ -146,20 +277,35 @@ def register_batch_tools(server: MCPServer) -> None:
     def get_backtest_research(
         research_id: Annotated[int, Field(gt=0, description="批量研究 ID。")],
     ) -> McpResult[BatchResearchResponse]:
-        """Get every execution and metric in one batch research."""
+        """Get the single shared-data workflow for one sensitivity study."""
         with database_session_factory()() as session:
             user = current_user(session)
             return McpResult(result=BatchResearchResponse.model_validate(get_batch_research(session, user, research_id)))
 
-    @server.tool(title="计算策略批量研究结果", annotations=WRITE)
-    def calculate_backtest_research(
-        research_id: Annotated[int, Field(gt=0, description="工作流已结束的批量研究 ID。")],
-    ) -> McpResult[BatchResearchResponse]:
-        """Collect successful Parquet outputs and calculate metrics for one research."""
+    @server.tool(title="列出策略研究结果", annotations=READ_ONLY)
+    def list_backtest_research_outputs(
+        research_id: Annotated[int, Field(gt=0, description="手续费或参数敏感性研究 ID。")],
+    ) -> McpResult[WorkflowOutputs]:
+        """List the shared sensitivity result Parquet and its authenticated download path."""
         with database_session_factory()() as session:
             user = current_user(session)
-            result = calculate_batch_research_results(session, user, research_id)
-            return McpResult(result=BatchResearchResponse.model_validate(result))
+            research = get_batch_research(session, user, research_id)
+            workflow_instance_id = research["workflow_instance_id"]
+            if workflow_instance_id is None:
+                raise FileNotFoundError(f"批量研究尚未关联工作流实例: {research_id}")
+            items = sensitivity_result_files(session, user.id, research_id)
+            outputs = [
+                WorkflowOutputFile(
+                    **item,
+                    download_path=f"/api/v1/backtest/batch-research/{research_id}/outputs/{item['name']}",
+                )
+                for item in items
+            ]
+            return McpResult(result=WorkflowOutputs(
+                application="sensitivity",
+                workflow_instance_id=workflow_instance_id,
+                outputs=outputs,
+            ))
 
     @server.tool(title="创建手续费分析", annotations=WRITE)
     def create_backtest_fee_analysis(

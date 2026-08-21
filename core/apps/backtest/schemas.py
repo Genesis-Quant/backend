@@ -2,9 +2,11 @@
 
 from datetime import datetime
 from enum import StrEnum
+from math import isfinite
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from runtime import OptimizationAlgorithm, OptimizationParameters, OptimizationSettings, SensitivityParameters
 from core.apps.schemas import DraftVersionSummary
 from core.utils.validation import (
     normalize_text,
@@ -19,6 +21,8 @@ type BacktestOutput = Literal[
     "daily_trading_statistics",
     "engine_stat",
 ]
+type OptimizationOutput = OptimizationAlgorithm
+type SensitivityOutput = Literal["results"]
 
 
 class BacktestProjectCreate(BaseModel):
@@ -90,6 +94,30 @@ class BacktestVersionListItem(BaseModel):
     created_at: datetime
 
 
+class BacktestOptimizationCreate(OptimizationSettings):
+    """基于一个已保存回测版本创建参数调优报告。"""
+
+
+class BacktestOptimizationResponse(BaseModel):
+    id: int
+    project_id: int
+    version: int
+    workflow_workspace_id: int
+    workflow_instance_id: int | None
+    state: str
+    error: str | None
+    parameters: OptimizationParameters
+    created_at: datetime
+    updated_at: datetime
+
+
+class BacktestOptimizationPage(BaseModel):
+    items: list[BacktestOptimizationResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class BatchAnalysisType(StrEnum):
     FEE_ANALYSIS = "fee_analysis"
     SENSITIVITY = "sensitivity"
@@ -119,23 +147,12 @@ class FeeAnalysisCreate(BaseModel):
     @field_validator("rates")
     @classmethod
     def normalize_rates(cls, value: list[float]) -> list[float]:
-        if any(rate < 0 or rate > 1 for rate in value):
+        if any(not isfinite(rate) or rate < 0 or rate > 1 for rate in value):
             raise ValueError("手续费率必须位于 0 到 1 之间")
         rates = sorted(set(value))
         if not rates:
             raise ValueError("至少提供一个手续费率")
         return rates
-
-
-class BatchResearchItemResponse(BaseModel):
-    id: int
-    workflow_workspace_id: int
-    workflow_instance_id: int | None
-    state: str
-    parameters: dict[str, Any]
-    error: str | None
-    metrics: dict[str, float | None] | None
-    result_error: str | None
 
 
 class BatchResearchListItem(BaseModel):
@@ -145,11 +162,16 @@ class BatchResearchListItem(BaseModel):
     project_id: int
     version: int
     description: str
+    workflow_workspace_id: int
+    workflow_instance_id: int | None
     state: str
     requested_count: int
     completed_count: int
     failed_count: int
+    error: str | None
+    parameters: SensitivityParameters
     created_at: datetime
+    updated_at: datetime
 
 
 class BatchResearchListResponse(BaseModel):
@@ -160,5 +182,4 @@ class BatchResearchListResponse(BaseModel):
 
 
 class BatchResearchResponse(BatchResearchListItem):
-    error: str | None
-    items: list[BatchResearchItemResponse]
+    pass

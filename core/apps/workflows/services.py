@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, aliased, load_only
 
 from config import DolphinSchedulerSettings
 from core.apps.admin.models import IncrementalWorkflowWorkspace
-from core.apps.backtest.models import BacktestProject, BacktestResearch, BacktestResearchItem, BacktestVersion
+from core.apps.backtest.models import BacktestOptimization, BacktestProject, BacktestResearch, BacktestVersion
 from core.apps.factor.models import FactorProject, FactorVersion
 from core.apps.query.models import QueryProject
 from core.apps.users.models import User
@@ -42,6 +42,7 @@ from core.scheduler.applications.incremental import (
 from core.scheduler.client import DolphinSchedulerClient
 from core.scheduler.domain import (
     APPLICATION_START_PARAMETERS,
+    APPLICATIONS,
     FAILURE_STATES,
     INCREMENTAL_START_PARAMETERS,
     TERMINAL_STATES,
@@ -65,7 +66,7 @@ AUTO_SAVE_PENDING_STATE = "AUTO_SAVE_PENDING"
 ATTEMPT_FAILURE_STATES = frozenset({"SUBMIT_FAILED", "AUTO_SAVE_FAILED"})
 WORKSPACE_FAILURE_STATES = FAILURE_STATES | ATTEMPT_FAILURE_STATES
 WORKSPACE_TERMINAL_STATES = TERMINAL_STATES | {"AUTO_SAVE_FAILED"}
-ATTEMPT_CONTEXT_EVENTS = frozenset({"AUTO_SAVE_VERSION", "BACKTEST_RESEARCH_ITEM"})
+ATTEMPT_CONTEXT_EVENTS = frozenset({"AUTO_SAVE_VERSION", "BACKTEST_RESEARCH"})
 PROCESS_ACTIONS = {
     WorkflowAction.STOP: "STOP",
     WorkflowAction.PAUSE: "PAUSE",
@@ -472,7 +473,7 @@ class WorkflowGatewayService:
     def __init__(self) -> None:
         self.executors: dict[str, WorkflowExecutionService] = {
             application: WorkflowExecutionService(application)
-            for application in ("query", "factor", "backtest")
+            for application in APPLICATIONS
         }
         self.executors["incremental"] = IncrementalWorkflowExecutionService("incremental")
 
@@ -1018,8 +1019,10 @@ class WorkflowGatewayService:
         if instance_count > 1 and attempt.is_current:
             raise RuntimeError("存在历史实例时不能单独删除当前 workflow instance")
         last_instance = instance_count <= 1
-        if last_instance and session.scalar(select(BacktestResearchItem.id).where(BacktestResearchItem.workflow_workspace_id == workspace.id).limit(1)) is not None:
+        if last_instance and session.scalar(select(BacktestResearch.id).where(BacktestResearch.workflow_workspace_id == workspace.id).limit(1)) is not None:
             raise RuntimeError("批量研究关联的工作流不能单独删除")
+        if last_instance and session.scalar(select(BacktestOptimization.id).where(BacktestOptimization.workflow_workspace_id == workspace.id).limit(1)) is not None:
+            raise RuntimeError("参数调优报告关联的工作流不能单独删除")
         artifacts = resolve_workspace_artifacts(workspace) if last_instance else None
         application = workspace.application
         workspace_id = workspace.id
@@ -1154,6 +1157,10 @@ def finalize_project_auto_save_workspace(session: Session, run: WorkflowWorkspac
         from core.apps.backtest.services import finalize_backtest_auto_save_workspace
 
         finalize_backtest_auto_save_workspace(session, run)
+    elif run.application == "sensitivity":
+        from core.apps.backtest.services import finalize_sensitivity_workspace
+
+        finalize_sensitivity_workspace(session, run)
 
 
 async def poll_workflow_statuses(stop_event: asyncio.Event) -> None:
@@ -1363,12 +1370,21 @@ def workspace_project_references(
             .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
             .where(BacktestVersion.workflow_workspace_id.in_(backtest_ids))
         )
+    sensitivity_ids = workspace_ids.get("sensitivity", [])
+    if sensitivity_ids:
         statements.append(
-            select(BacktestResearchItem.workflow_workspace_id, BacktestProject.id, BacktestProject.title)
-            .join(BacktestResearch, BacktestResearch.id == BacktestResearchItem.research_id)
+            select(BacktestResearch.workflow_workspace_id, BacktestProject.id, BacktestProject.title)
             .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
             .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
-            .where(BacktestResearchItem.workflow_workspace_id.in_(backtest_ids))
+            .where(BacktestResearch.workflow_workspace_id.in_(sensitivity_ids))
+        )
+    optimization_ids = workspace_ids.get("optimization", [])
+    if optimization_ids:
+        statements.append(
+            select(BacktestOptimization.workflow_workspace_id, BacktestProject.id, BacktestProject.title)
+            .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
+            .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+            .where(BacktestOptimization.workflow_workspace_id.in_(optimization_ids))
         )
     if not statements:
         return {}

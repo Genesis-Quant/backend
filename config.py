@@ -129,16 +129,22 @@ class DolphinSchedulerSettings:
         "query": "query",
         "factor": "factor",
         "backtest": "backtest",
+        "optimization": "optimization",
+        "sensitivity": "sensitivity",
     }
     APPLICATION_TASK_GROUP_NAMES: ClassVar[dict[str, str]] = {
         "query": "query-tasks",
         "factor": "factor-tasks",
         "backtest": "backtest-tasks",
+        "optimization": "optimization-tasks",
+        "sensitivity": "sensitivity-tasks",
     }
     APPLICATION_TASK_GROUP_SIZES: ClassVar[dict[str, int]] = {
         "query": positive_integer_environment("DOLPHINSCHEDULER_QUERY_TASK_GROUP_SIZE", 1),
         "factor": positive_integer_environment("DOLPHINSCHEDULER_FACTOR_TASK_GROUP_SIZE", 1),
         "backtest": positive_integer_environment("DOLPHINSCHEDULER_BACKTEST_TASK_GROUP_SIZE", 1),
+        "optimization": positive_integer_environment("DOLPHINSCHEDULER_OPTIMIZATION_TASK_GROUP_SIZE", 1),
+        "sensitivity": positive_integer_environment("DOLPHINSCHEDULER_SENSITIVITY_TASK_GROUP_SIZE", 1),
     }
 
     @classmethod

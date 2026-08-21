@@ -6,13 +6,15 @@ from config import DolphinSchedulerSettings
 from core.scheduler.applications.backtest import create_backtest_workflow
 from core.scheduler.applications.common import ensure_application_project
 from core.scheduler.applications.factor import create_factor_workflow
+from core.scheduler.applications.optimization import create_optimization_workflow
 from core.scheduler.applications.query import create_query_workflow
+from core.scheduler.applications.sensitivity import create_sensitivity_workflow
 from core.scheduler.domain import APPLICATIONS
 from core.scheduler.task_groups import ensure_application_task_groups
 
 
 def create_application_workflows() -> dict[str, Any]:
-    """Create or update the query, factor, and backtest workflows."""
+    """Create or update Runtime application workflows."""
     ensure_application_project()
     task_groups = ensure_application_task_groups()
     workflow_codes = {
@@ -24,6 +26,12 @@ def create_application_workflows() -> dict[str, Any]:
         ),
         "backtest": create_backtest_workflow(
             task_group_id=int(task_groups["backtest"]["id"])
+        ),
+        "optimization": create_optimization_workflow(
+            task_group_id=int(task_groups["optimization"]["id"])
+        ),
+        "sensitivity": create_sensitivity_workflow(
+            task_group_id=int(task_groups["sensitivity"]["id"])
         ),
     }
     return {

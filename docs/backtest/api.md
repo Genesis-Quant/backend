@@ -81,7 +81,9 @@ run_backtest_batch(project_id, items)
 
 ## 手续费与参数敏感性研究
 
-专项研究基于一个已保存 Backtest 版本，属于该项目/版本，但每个研究项有独立 Workspace。
+专项研究基于一个已保存 Backtest 版本。一次研究只创建一条 `BacktestResearch`、一个
+`sensitivity` Workspace 和一个工作流实例；全部手续费率或参数组合在该工作流的同一 DolphinDB
+session 中运行，完整区间数据和合成消息表只生成一次。
 
 ### 列出研究
 
@@ -111,7 +113,9 @@ create_backtest_research(
 
 `version` 必须是已保存版本；`parameter_sets` 为 1 到 100 份完整 BacktestParameters。服务端不会把
 局部字典合并进基准参数，因此调用方必须先读取基准 `get_version(...).parameters`，在本地生成每个
-完整请求，再提交。全部参数和 DolphinDB 脚本通过预检后才创建研究及 Workspace。
+完整请求，再提交。参数敏感性分析只允许各请求的 `params` 不同，手续费分析只允许
+`config.commission` 不同；其余数据查询、代码和回测配置必须与来源版本一致。校验通过后只创建一个
+研究 Workspace。
 
 ### 创建手续费分析
 
@@ -121,16 +125,52 @@ create_backtest_fee_analysis(project_id, version, rates)
 
 `rates` 为 1 到 100 个 `[0, 1]` 内费率，服务端去重排序，并从基准版本生成完整请求。
 
-### 读取和计算研究结果
+### 读取研究结果
 
 ```text
 get_backtest_research(research_id)
-calculate_backtest_research(research_id)
+list_backtest_research_outputs(research_id)
 ```
 
-先轮询 `get_backtest_research` 中所有 Workspace。调度完成但指标尚未生成时，研究状态为
-`RESULT_PENDING`；此时调用 `calculate_backtest_research` 收集成功 Parquet 并计算指标。单项
-`result_error` 会进入失败计数和总错误，不能把工作流 `SUCCESS` 等同于研究结果可用。
+轮询返回的唯一 `workflow_workspace_id`；运行中可通过通用 Workspace、Attempt、Task 和日志工具查看
+进度。工作流成功后，Runtime 已经生成 `results.parquet`，不再需要调用后端二次计算接口。网页通过
+研究输出接口下载该文件，并用 DuckDB 读取每个 case 的参数、状态、错误和指标。单个 case 失败会以
+`status=FAILURE` 行保留；至少一个 case 成功时工作流仍可成功，因此必须检查每一行的 `status`。
+`list_backtest_research_outputs` 在成功后返回固定的 `results` 输出及认证下载路径。
+
+Backend 会在工作流成功后校验 `results.parquet` 的行数、`case_index` 完整性和逐行 `status`，再把
+`completed_count`、`failed_count` 与当前 workflow instance 绑定。校验完成前研究状态为
+`RESULT_PENDING`；读取或结构校验失败时为 `RESULT_FAILED` 并在 `error` 返回原因。重跑 Workspace
+产生新 Attempt 后，旧实例的计数不会用于新实例。即使全部 case 都失败，Runtime 仍保存逐行错误，
+工作流可以成功且 `completed_count=0`，因此业务有效性必须以这两个计数和结果行状态为准。
+
+## 滚动参数调优
+
+参数调优同样基于已保存 Backtest 版本，每份报告对应一个 `optimization` Workspace。可用工具：
+
+```text
+list_backtest_optimizations(project_id, version, page=1, page_size=20)
+create_backtest_optimization(
+  project_id,
+  version,
+  parameter_space,
+  algorithms,
+  start_date,
+  end_date,
+  lookback_period,
+  holding_period,
+  repetitions=1,
+  evaluation_budget=12,
+  seed=20260815
+)
+get_backtest_optimization(optimization_id)
+list_backtest_optimization_outputs(optimization_id)
+```
+
+`parameter_space` 只能引用来源版本 `params` 中已有的数值字段，每个字段提供 2 到 100 个有限候选，
+笛卡尔积最多 100000 个组合；`algorithms` 不能重复。日期为 `YYYY-MM-DD`，周期使用 `D/W/M/Y`，
+随机种子为非负 32 位整数。Runtime 只查询一次覆盖最早训练窗口至最后持有窗口的完整数据；每个算法
+生成一个同名 Parquet。先轮询报告的 `workflow_workspace_id`，仅 `SUCCESS` 后读取输出。
 
 ## 输出
 
@@ -161,7 +201,7 @@ list_workflow_outputs("backtest", workflow_instance_id)
 5. 按 Workspace 轮询；失败时读 Attempt、Task 和完整日志
 6. SUCCESS 后列出四个输出并执行订单/成交/持仓/现金/费用 QA
 7. 需要固化时 save_version("backtest", ...)
-8. 需要网格研究时从已保存版本创建 research，并在 RESULT_PENDING 计算结果
+8. 需要网格研究时从已保存版本创建 research，轮询唯一 Workspace，成功后下载 `results.parquet`
 ```
 
 MCP 不提供 Backtest 项目、版本、研究、Workspace、Attempt 或输出删除功能。

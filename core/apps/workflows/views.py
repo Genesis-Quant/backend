@@ -33,7 +33,7 @@ def list_workflows(
     session: Annotated[Session, Depends(get_database_session)],
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    application: Literal["query", "factor", "backtest", "incremental"] | None = None,
+    application: Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"] | None = None,
     state: Literal["active", "success", "failure"] | None = None,
 ) -> WorkflowWorkspaceListResponse:
     return WorkflowWorkspaceListResponse.model_validate(WorkflowGatewayService().list(session, user, page, page_size, application, state))

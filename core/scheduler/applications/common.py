@@ -31,6 +31,7 @@ def submit_application_workflow(
     application: ApplicationName,
     *,
     task_group_id: int,
+    include_output_argument: bool = True,
 ) -> int:
     """Submit one Runtime application workflow definition."""
     DolphinSchedulerSettings.configure_sdk_environment()
@@ -54,13 +55,14 @@ def submit_application_workflow(
             param={name: "" for name in APPLICATION_START_PARAMETERS},
         )
         with workflow:
+            output_argument = " --output ${output}" if include_output_argument else ""
             Shell(
                 name=application,
                 command=(
                     f"exec {DolphinSchedulerSettings.RUNTIME_COMMAND} "
                     f'apps {application} --input-file "${{input_file}}" '
                     '--output-dir "${output_dir}" '
-                    '--output ${output} --cloud "${cloud}"'
+                    f'--cloud "${{cloud}}"{output_argument}'
                 ),
                 description=(
                     f"从共享目录 input.json 运行 {application}，"

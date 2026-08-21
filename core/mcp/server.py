@@ -16,13 +16,14 @@ SERVER_INSTRUCTIONS = (
     "Schema; backtests must also read arena://docs/backtest/dolphindb before running and "
     "arena://docs/backtest/results before interpreting outputs. Read the applicable Backtest contract for dynamic "
     "data domains, quadratic-program outputs, callback objects, or result QA instead of guessing runtime behavior. "
-    "arena://docs/overview/dolphindb documents the administrator-only arbitrary DolphinScript diagnostic tool. Discover DSL operators "
+    "arena://docs/overview/dolphindb documents the authenticated read-only DolphinScript diagnostic tool. Discover DSL operators "
     "and DolphinDB signatures instead of guessing. Business results are in structuredContent.result. Follow "
     "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
     "can be saved. Use Workspace Attempt history to inspect earlier submitted parameters. Project/version rename, "
-    "browser batch queues, fee studies, sensitivity studies, task queries, and log downloads all have dedicated "
-    "tools documented under the owning application or overview/workflows. No dedicated business deletion tool is exposed; "
-    "the administrator-only arbitrary DolphinScript tool is a destructive exception and can modify or delete DolphinDB data."
+    "browser batch queues, fee studies, sensitivity studies, parameter optimization, task queries, and log downloads all have dedicated "
+    "tools documented under the owning application or overview/workflows. No business deletion tool is exposed. "
+    "The arbitrary DolphinScript tool uses a database account that cannot write or manage persistent data and limits "
+    "each DolphinDB session to a ten-minute total lifetime, but it has no compute-resource sandbox."
 )
 
 mcp_server = MCPServer(

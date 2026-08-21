@@ -20,7 +20,7 @@ APPLICATION_TASK_GROUP_DESCRIPTIONS = {
 
 
 def ensure_application_task_groups() -> dict[ApplicationName, dict[str, Any]]:
-    """Create or update the Query, Factor, and Backtest Task Groups."""
+    """Create or update every Runtime application Task Group."""
     return {
         application: ensure_task_group(
             name=DolphinSchedulerSettings.APPLICATION_TASK_GROUP_NAMES[application],

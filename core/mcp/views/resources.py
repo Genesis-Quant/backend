@@ -43,7 +43,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/dolphindb",
         title="DolphinDB 脚本执行",
-        description="管理员任意 DolphinScript 测试接口、返回序列化、权限、副作用和诊断边界。",
+        description="认证用户只读 DolphinScript 测试接口、返回序列化、权限与计算资源边界。",
         mime_type="text/markdown",
     )
     def dolphindb_document() -> str:

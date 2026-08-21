@@ -3,11 +3,14 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from runtime import BacktestParameters
+from runtime import BacktestParameters, OptimizationAlgorithm
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.schemas import (
     BacktestOutput,
+    BacktestOptimizationCreate,
+    BacktestOptimizationPage,
+    BacktestOptimizationResponse,
     BacktestProjectCreate,
     BacktestProjectItem,
     BacktestProjectListItem,
@@ -21,11 +24,13 @@ from core.apps.backtest.schemas import (
     BatchResearchListResponse,
     BatchResearchResponse,
     FeeAnalysisCreate,
+    OptimizationOutput,
+    SensitivityOutput,
 )
 from core.apps.backtest.services import (
     backtest_result_files,
     backtest_result_response,
-    calculate_batch_research_results,
+    create_backtest_optimization,
     create_batch_research,
     create_backtest_project,
     create_backtest_version,
@@ -33,13 +38,19 @@ from core.apps.backtest.services import (
     delete_backtest_project,
     delete_backtest_version,
     get_backtest_project,
+    get_backtest_optimization,
     get_backtest_version,
     get_batch_research,
     list_batch_research,
     list_backtest_projects,
+    list_backtest_optimizations,
     list_backtest_versions,
     submit_backtest_batch,
     submit_project_backtest,
+    optimization_result_files,
+    optimization_result_response,
+    sensitivity_result_files,
+    sensitivity_result_response,
     update_backtest_project,
     update_backtest_version,
 )
@@ -167,6 +178,109 @@ def delete_version(project_id: int, version_number: int, user: Annotated[User, D
         raise_api_http_error(error)
 
 
+@router.get(
+    "/projects/{project_id}/versions/{version_number}/optimizations",
+    response_model=BacktestOptimizationPage,
+)
+def optimizations(
+    project_id: int,
+    version_number: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> BacktestOptimizationPage:
+    try:
+        return BacktestOptimizationPage.model_validate(
+            list_backtest_optimizations(
+                session,
+                user,
+                project_id,
+                version_number,
+                page,
+                page_size,
+            )
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.post(
+    "/projects/{project_id}/versions/{version_number}/optimizations",
+    response_model=BacktestOptimizationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_optimization(
+    project_id: int,
+    version_number: int,
+    request: BacktestOptimizationCreate,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> BacktestOptimizationResponse:
+    try:
+        return BacktestOptimizationResponse.model_validate(
+            create_backtest_optimization(
+                session,
+                user,
+                project_id,
+                version_number,
+                request,
+            )
+        )
+    except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/optimizations/{optimization_id}", response_model=BacktestOptimizationResponse)
+def optimization(
+    optimization_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> BacktestOptimizationResponse:
+    try:
+        return BacktestOptimizationResponse.model_validate(
+            get_backtest_optimization(session, user, optimization_id)
+        )
+    except (FileNotFoundError, RuntimeError) as error:
+        raise_api_http_error(error)
+
+
+@router.get(
+    "/optimizations/{optimization_id}/outputs",
+    response_model=list[ResultFile[OptimizationOutput]],
+)
+def optimization_outputs(
+    optimization_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> list[ResultFile[OptimizationOutput]]:
+    try:
+        return [
+            ResultFile[OptimizationOutput].model_validate(item)
+            for item in optimization_result_files(session, user.id, optimization_id)
+        ]
+    except (FileNotFoundError, RuntimeError, OSError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/optimizations/{optimization_id}/outputs/{name}")
+def download_optimization_output(
+    optimization_id: int,
+    name: OptimizationAlgorithm,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> Response:
+    try:
+        return optimization_result_response(
+            session,
+            user.id,
+            optimization_id,
+            name.value,
+        )
+    except (FileNotFoundError, RuntimeError, OSError) as error:
+        raise_api_http_error(error)
+
+
 @router.get("/batch-research", response_model=BatchResearchListResponse)
 def batch_researches(
     user: Annotated[User, Depends(get_current_user)],
@@ -198,11 +312,34 @@ def backtest_research(research_id: int, user: Annotated[User, Depends(get_curren
         raise_api_http_error(error)
 
 
-@router.post("/batch-research/{research_id}/results", response_model=BatchResearchResponse)
-def calculate_backtest_research_results(research_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BatchResearchResponse:
+@router.get(
+    "/batch-research/{research_id}/outputs",
+    response_model=list[ResultFile[SensitivityOutput]],
+)
+def batch_research_outputs(
+    research_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> list[ResultFile[SensitivityOutput]]:
     try:
-        return BatchResearchResponse.model_validate(calculate_batch_research_results(session, user, research_id))
-    except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        return [
+            ResultFile[SensitivityOutput].model_validate(item)
+            for item in sensitivity_result_files(session, user.id, research_id)
+        ]
+    except (FileNotFoundError, RuntimeError, OSError) as error:
+        raise_api_http_error(error)
+
+
+@router.get("/batch-research/{research_id}/outputs/{name}")
+def download_batch_research_output(
+    research_id: int,
+    name: SensitivityOutput,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> Response:
+    try:
+        return sensitivity_result_response(session, user.id, research_id, name)
+    except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
 

@@ -2,9 +2,9 @@
 
 from typing import Literal
 
-type ApplicationName = Literal["query", "factor", "backtest"]
-type RunApplication = Literal["query", "factor", "backtest", "incremental"]
-APPLICATIONS: tuple[ApplicationName, ...] = ("query", "factor", "backtest")
+type ApplicationName = Literal["query", "factor", "backtest", "optimization", "sensitivity"]
+type RunApplication = Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"]
+APPLICATIONS: tuple[ApplicationName, ...] = ("query", "factor", "backtest", "optimization", "sensitivity")
 APPLICATION_START_PARAMETERS = (
     "input_file",
     "output_dir",

@@ -1,7 +1,6 @@
 """Backtest workflow submission, strategy projects, versions, and results."""
 
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from math import isfinite
 from typing import Any
@@ -9,13 +8,19 @@ from typing import Any
 from fastapi import Response
 import numpy as np
 import pandas as pd
-from runtime import BacktestParameters
-from sqlalchemy import and_, delete, func, select, update
+from runtime import (
+    BacktestParameters,
+    OptimizationAlgorithm,
+    OptimizationParameters,
+    OptimizationSettings,
+    SensitivityParameters,
+)
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.models import (
+    BacktestOptimization,
     BacktestResearch,
-    BacktestResearchItem,
     BacktestProject,
     BacktestVersion,
 )
@@ -23,13 +28,11 @@ from core.apps.schemas import BatchRunItem
 from core.apps.backtest.schemas import (
     BatchAnalysisType,
     BatchResearchCreate,
-    BatchResearchItemCreate,
     FeeAnalysisCreate,
 )
 from core.apps.users.models import User
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
-    BATCH_PENDING_STATE,
     WORKSPACE_FAILURE_STATES,
     WORKSPACE_TERMINAL_STATES,
     WorkflowExecutionService,
@@ -41,12 +44,11 @@ from core.apps.workflows.services import (
     record_event,
     remove_workspace_artifacts,
     resolve_workspace_artifacts,
-    submit_workspaces_now,
     require_current_workflow_attempt,
     workflow_attempt_state,
     workflow_workspace_state,
 )
-from core.utils.results import read_result_dataframe, result_dataframe, result_files, result_response
+from core.utils.results import result_dataframe, result_files, result_response
 from core.utils.time import utc_now
 
 OUTPUT_FILES = {
@@ -57,6 +59,11 @@ OUTPUT_FILES = {
     "daily_trading_statistics": "daily_trading_statistics.parquet",
     "engine_stat": "engine_stat.parquet",
 }
+OPTIMIZATION_OUTPUT_FILES = {
+    algorithm.value: f"{algorithm.value}.parquet"
+    for algorithm in OptimizationAlgorithm
+}
+SENSITIVITY_OUTPUT_FILES = {"results": "results.parquet"}
 PROJECT_OUTPUTS = [
     "trade_details",
     "daily_positions",
@@ -65,8 +72,8 @@ PROJECT_OUTPUTS = [
 ]
 PROJECT_SUMMARY_FIELDS = ("totalReturn", "annualReturn", "sharpeRatio", "annualVolatility", "maxDrawdown", "dailyWinningRate")
 BATCH_ANALYSIS_LABELS = {"fee_analysis": "手续费分析", "sensitivity": "参数敏感性"}
-BATCH_SUCCESS_STATES = frozenset({"SUCCESS", "FORCED_SUCCESS"})
-BATCH_OUTPUTS = {"fee_analysis": ("daily_portfolios",), "sensitivity": ("daily_portfolios",)}
+BATCH_SUCCESS_STATES = frozenset({"SUCCESS"})
+BATCH_OUTPUTS = ["results"]
 
 
 def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
@@ -75,6 +82,26 @@ def backtest_result_files(session: Session, user_id: int, workflow_instance_id: 
 
 def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
     return result_response(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
+
+
+def optimization_result_files(session: Session, user_id: int, optimization_id: int) -> list[dict[str, Any]]:
+    workflow_instance_id = optimization_workflow_instance_id(session, user_id, optimization_id)
+    return result_files(session, user_id, workflow_instance_id, "optimization", OPTIMIZATION_OUTPUT_FILES)
+
+
+def optimization_result_response(session: Session, user_id: int, optimization_id: int, name: str) -> Response:
+    workflow_instance_id = optimization_workflow_instance_id(session, user_id, optimization_id)
+    return result_response(session, user_id, workflow_instance_id, name, "optimization", OPTIMIZATION_OUTPUT_FILES)
+
+
+def sensitivity_result_files(session: Session, user_id: int, research_id: int) -> list[dict[str, Any]]:
+    workflow_instance_id = sensitivity_workflow_instance_id(session, user_id, research_id)
+    return result_files(session, user_id, workflow_instance_id, "sensitivity", SENSITIVITY_OUTPUT_FILES)
+
+
+def sensitivity_result_response(session: Session, user_id: int, research_id: int, name: str) -> Response:
+    workflow_instance_id = sensitivity_workflow_instance_id(session, user_id, research_id)
+    return result_response(session, user_id, workflow_instance_id, name, "sensitivity", SENSITIVITY_OUTPUT_FILES)
 
 
 def list_backtest_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
@@ -109,12 +136,17 @@ def delete_backtest_project(session: Session, user_id: int, project_id: int) -> 
     project = owned_project(session, user_id, project_id)
     version_workspace_ids = select(BacktestVersion.workflow_workspace_id).where(BacktestVersion.project_id == project.id)
     research_workspace_ids = (
-        select(BacktestResearchItem.workflow_workspace_id)
-        .join(BacktestResearch, BacktestResearch.id == BacktestResearchItem.research_id)
+        select(BacktestResearch.workflow_workspace_id)
         .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
         .where(BacktestVersion.project_id == project.id)
     )
-    runs = list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(version_workspace_ids.union_all(research_workspace_ids)))))
+    optimization_workspace_ids = (
+        select(BacktestOptimization.workflow_workspace_id)
+        .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
+        .where(BacktestVersion.project_id == project.id)
+    )
+    owned_workspace_ids = version_workspace_ids.union_all(research_workspace_ids).union_all(optimization_workspace_ids)
+    runs = list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(owned_workspace_ids))))
     running = [state for run in runs if (state := workflow_workspace_state(session, run)) != "DRAFT" and state not in WORKSPACE_TERMINAL_STATES]
     if running:
         raise RuntimeError(f"项目仍有运行中的回测工作流: {sorted(set(running))}")
@@ -260,19 +292,21 @@ def delete_backtest_version(session: Session, user_id: int, project_id: int, ver
         raise RuntimeError(f"回测版本 v{version_number} 关联的工作流不存在")
 
     research_ids = list(session.scalars(select(BacktestResearch.id).where(BacktestResearch.version_id == version.id)))
-    research_workspace_ids = [] if not research_ids else list(session.scalars(select(BacktestResearchItem.workflow_workspace_id).where(BacktestResearchItem.research_id.in_(research_ids))))
-    research_workspaces = [] if not research_workspace_ids else list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(research_workspace_ids), WorkflowWorkspace.application == "backtest")))
-    active_states = [state for workspace in research_workspaces if (state := workflow_workspace_state(session, workspace)) not in WORKSPACE_TERMINAL_STATES]
+    research_workspace_ids = [] if not research_ids else list(session.scalars(select(BacktestResearch.workflow_workspace_id).where(BacktestResearch.id.in_(research_ids))))
+    research_workspaces = [] if not research_workspace_ids else list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(research_workspace_ids), WorkflowWorkspace.application == "sensitivity")))
+    optimization_workspace_ids = list(session.scalars(select(BacktestOptimization.workflow_workspace_id).where(BacktestOptimization.version_id == version.id)))
+    optimization_workspaces = [] if not optimization_workspace_ids else list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(optimization_workspace_ids), WorkflowWorkspace.application == "optimization")))
+    dependent_workspaces = [*research_workspaces, *optimization_workspaces]
+    active_states = [state for workspace in dependent_workspaces if (state := workflow_workspace_state(session, workspace)) not in WORKSPACE_TERMINAL_STATES]
     if active_states:
-        raise RuntimeError(f"版本仍有运行中的批量分析工作流: {sorted(set(active_states))}")
+        raise RuntimeError(f"版本仍有运行中的分析工作流: {sorted(set(active_states))}")
 
-    artifacts = [resolve_workspace_artifacts(workspace) for workspace in [source_workspace, *research_workspaces]]
+    artifacts = [resolve_workspace_artifacts(workspace) for workspace in [source_workspace, *dependent_workspaces]]
     if research_ids:
-        session.execute(delete(BacktestResearchItem).where(BacktestResearchItem.research_id.in_(research_ids)))
         session.execute(delete(BacktestResearch).where(BacktestResearch.id.in_(research_ids)))
     session.delete(version)
     session.flush()
-    for workspace in [source_workspace, *research_workspaces]:
+    for workspace in [source_workspace, *dependent_workspaces]:
         session.delete(workspace)
     project.updated_at = utc_now()
     session.commit()
@@ -516,37 +550,202 @@ def backtest_metrics(parameters: dict[str, Any], portfolios: pd.DataFrame) -> di
     }
 
 
+def create_backtest_optimization(
+    session: Session,
+    user: User,
+    project_id: int,
+    version_number: int,
+    settings: OptimizationSettings,
+) -> dict[str, Any]:
+    """基于一个已保存版本提交一次滚动参数调优工作流。"""
+    version = owned_batch_version(session, user, project_id, version_number)
+    parameters = OptimizationParameters.model_validate({
+        **version.parameters,
+        **settings.model_dump(mode="json"),
+    })
+    workspace = WorkflowWorkspace(user_id=user.id, application="optimization")
+    session.add(workspace)
+    session.flush()
+    optimization = BacktestOptimization(
+        version_id=version.id,
+        workflow_workspace_id=workspace.id,
+    )
+    session.add(optimization)
+    session.flush()
+    create_workflow_attempt(
+        session,
+        workspace,
+        parameters.model_dump(mode="json"),
+        [algorithm.value for algorithm in parameters.algorithms],
+    )
+    session.commit()
+    WorkflowExecutionService("optimization").submit_workspace(
+        session,
+        workspace,
+        create_directory=True,
+    )
+    session.expire_all()
+    return get_backtest_optimization(session, user, optimization.id)
+
+
+def list_backtest_optimizations(
+    session: Session,
+    user: User,
+    project_id: int,
+    version_number: int,
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """分页读取一个回测版本的全部参数调优报告。"""
+    version = owned_batch_version(session, user, project_id, version_number)
+    total = int(session.scalar(select(func.count(BacktestOptimization.id)).where(BacktestOptimization.version_id == version.id)) or 0)
+    rows = session.execute(
+        optimization_statement()
+        .where(BacktestOptimization.version_id == version.id)
+        .order_by(BacktestOptimization.created_at.desc(), BacktestOptimization.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return {
+        "items": [serialize_backtest_optimization(*row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_backtest_optimization(
+    session: Session,
+    user: User,
+    optimization_id: int,
+) -> dict[str, Any]:
+    """读取当前用户的一条参数调优报告。"""
+    row = session.execute(
+        optimization_statement().where(
+            BacktestOptimization.id == optimization_id,
+            BacktestProject.user_id == user.id,
+        )
+    ).one_or_none()
+    if row is None:
+        raise FileNotFoundError(f"参数调优报告不存在: {optimization_id}")
+    return serialize_backtest_optimization(*row)
+
+
+def optimization_statement() -> Any:
+    return (
+        select(
+            BacktestOptimization,
+            BacktestVersion.project_id,
+            BacktestVersion.version,
+            WorkflowWorkspace,
+            WorkflowAttempt,
+            WorkflowInstance,
+        )
+        .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .join(WorkflowWorkspace, WorkflowWorkspace.id == BacktestOptimization.workflow_workspace_id)
+        .outerjoin(
+            WorkflowAttempt,
+            and_(
+                WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id,
+                WorkflowAttempt.is_current.is_(True),
+            ),
+        )
+        .outerjoin(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
+    )
+
+
+def serialize_backtest_optimization(
+    optimization: BacktestOptimization,
+    project_id: int,
+    version: int,
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt | None,
+    workflow: WorkflowInstance | None,
+) -> dict[str, Any]:
+    if attempt is None:
+        raise RuntimeError(f"参数调优报告 {optimization.id} 缺少工作流提交尝试")
+    updated_at = max(
+        attempt.updated_at,
+        workflow.updated_at if workflow is not None else attempt.updated_at,
+    )
+    return {
+        "id": optimization.id,
+        "project_id": project_id,
+        "version": version,
+        "workflow_workspace_id": workspace.id,
+        "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
+        "state": workflow_attempt_state(attempt, workflow),
+        "error": (workflow.error if workflow is not None else None) or attempt.error,
+        "parameters": attempt.input_json,
+        "created_at": optimization.created_at,
+        "updated_at": updated_at,
+    }
+
+
+def optimization_workflow_instance_id(
+    session: Session,
+    user_id: int,
+    optimization_id: int,
+) -> int:
+    workflow_instance_id = session.scalar(
+        select(WorkflowInstance.workflow_instance_id)
+        .join(WorkflowAttempt, WorkflowAttempt.id == WorkflowInstance.workflow_attempt_id)
+        .join(WorkflowWorkspace, WorkflowWorkspace.id == WorkflowAttempt.workflow_workspace_id)
+        .join(BacktestOptimization, BacktestOptimization.workflow_workspace_id == WorkflowWorkspace.id)
+        .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .where(
+            BacktestOptimization.id == optimization_id,
+            BacktestProject.user_id == user_id,
+            WorkflowAttempt.is_current.is_(True),
+        )
+    )
+    if workflow_instance_id is None:
+        raise FileNotFoundError(f"参数调优报告尚未关联工作流实例: {optimization_id}")
+    return int(workflow_instance_id)
+
+
 def create_batch_research(session: Session, user: User, request: BatchResearchCreate) -> dict[str, Any]:
-    outputs = batch_outputs(request.analysis_type)
     version = owned_batch_version(session, user, request.project_id, request.version)
-    base_parameters = BacktestParameters.model_validate(version.parameters).model_dump(mode="json")
-    parameters = [BacktestParameters.model_validate(item.parameters).model_dump(mode="json") for item in request.items]
-    research = BacktestResearch(version_id=version.id, analysis_type=request.analysis_type, description=request.description)
+    base = BacktestParameters.model_validate(version.parameters)
+    cases = []
+    for number, item in enumerate(request.items, start=1):
+        candidate = BacktestParameters.model_validate(item.parameters)
+        validate_research_parameter_set(base, candidate, request.analysis_type, number)
+        cases.append({
+            "params": candidate.params,
+            "commission": float(candidate.config["commission"]),
+        })
+    parameters = SensitivityParameters.model_validate({
+        **base.model_dump(mode="json"),
+        "analysis_type": request.analysis_type,
+        "cases": cases,
+    })
+    workspace = WorkflowWorkspace(user_id=user.id, application="sensitivity")
+    session.add(workspace)
+    session.flush()
+    research = BacktestResearch(
+        version_id=version.id,
+        workflow_workspace_id=workspace.id,
+        analysis_type=request.analysis_type,
+        description=request.description,
+    )
     session.add(research)
     session.flush()
-    workspace_ids: list[int] = []
-    for item_parameters in parameters:
-        workspace = WorkflowWorkspace(user_id=user.id, application="backtest")
-        session.add(workspace)
-        session.flush()
-        attempt = create_workflow_attempt(
-            session,
-            workspace,
-            item_parameters,
-            outputs,
-            submission_state=BATCH_PENDING_STATE,
-        )
-        record_event(attempt, "BACKTEST_RESEARCH_ITEM", research_id=research.id)
-        workspace_ids.append(workspace.id)
-        session.add(
-            BacktestResearchItem(
-                research_id=research.id,
-                workflow_workspace_id=workspace.id,
-                parameter_overrides=parameter_overrides(base_parameters, item_parameters),
-            )
-        )
+    attempt = create_workflow_attempt(
+        session,
+        workspace,
+        parameters.model_dump(mode="json"),
+        BATCH_OUTPUTS,
+    )
+    record_event(attempt, "BACKTEST_RESEARCH", research_id=research.id)
     session.commit()
-    submit_workspaces_now(workspace_ids)
+    WorkflowExecutionService("sensitivity").submit_workspace(
+        session,
+        workspace,
+        create_directory=True,
+    )
     session.expire_all()
     return get_batch_research(session, user, research.id)
 
@@ -554,7 +753,6 @@ def create_batch_research(session: Session, user: User, request: BatchResearchCr
 def create_fee_analysis(session: Session, user: User, project_id: int, version: int, request: FeeAnalysisCreate) -> dict[str, Any]:
     source = owned_batch_version(session, user, project_id, version)
     base = BacktestParameters.model_validate(source.parameters).model_dump(mode="json")
-    items = [BatchResearchItemCreate(parameters=with_commission(base, rate)) for rate in request.rates]
     return create_batch_research(
         session,
         user,
@@ -562,7 +760,7 @@ def create_fee_analysis(session: Session, user: User, project_id: int, version: 
             analysis_type=BatchAnalysisType.FEE_ANALYSIS,
             project_id=project_id,
             version=version,
-            items=items,
+            items=[{"parameters": with_commission(base, rate)} for rate in request.rates],
         ),
     )
 
@@ -577,12 +775,7 @@ def list_batch_research(
     version: int | None = None,
     analysis_type: str | None = None,
 ) -> dict[str, Any]:
-    statement = (
-        select(BacktestResearch, BacktestVersion.project_id, BacktestVersion.version)
-        .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
-        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
-        .where(BacktestProject.user_id == user.id)
-    )
+    statement = batch_research_statement().where(BacktestProject.user_id == user.id)
     if project_id is not None:
         statement = statement.where(BacktestVersion.project_id == project_id)
     if version is not None:
@@ -590,10 +783,13 @@ def list_batch_research(
     if analysis_type is not None:
         statement = statement.where(BacktestResearch.analysis_type == analysis_type)
     total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-    rows = session.execute(statement.order_by(BacktestResearch.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-    executions = batch_execution_rows(session, [research.id for research, _, _ in rows])
+    rows = session.execute(
+        statement.order_by(BacktestResearch.created_at.desc(), BacktestResearch.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return {
-        "items": [serialize_batch_research(research, row_project_id, row_version, executions.get(research.id, [])) for research, row_project_id, row_version in rows],
+        "items": [serialize_batch_research(*row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -601,78 +797,26 @@ def list_batch_research(
 
 
 def get_batch_research(session: Session, user: User, research_id: int) -> dict[str, Any]:
-    row = session.execute(
-        select(BacktestResearch, BacktestVersion.project_id, BacktestVersion.version)
-        .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
-        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
-        .where(BacktestResearch.id == research_id, BacktestProject.user_id == user.id)
-    ).one_or_none()
+    statement = batch_research_statement().where(
+        BacktestResearch.id == research_id,
+        BacktestProject.user_id == user.id,
+    )
+    row = session.execute(statement).one_or_none()
     if row is None:
         raise FileNotFoundError(f"批量研究不存在: {research_id}")
-    research, project_id, version = row
-    executions = batch_execution_rows(session, [research.id]).get(research.id, [])
-    return serialize_batch_research(research, project_id, version, executions, include_items=True)
-
-
-def calculate_batch_research_results(session: Session, user: User, research_id: int) -> dict[str, Any]:
-    research = get_batch_research(session, user, research_id)
-    rows = session.execute(
-        select(BacktestResearchItem, WorkflowWorkspace, WorkflowAttempt, WorkflowInstance)
-        .join(WorkflowWorkspace, WorkflowWorkspace.id == BacktestResearchItem.workflow_workspace_id)
-        .join(WorkflowAttempt, and_(WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id, WorkflowAttempt.is_current.is_(True)))
-        .join(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
-        .where(BacktestResearchItem.research_id == research_id)
-        .order_by(BacktestResearchItem.id)
-    ).all()
-    pending: list[tuple[int, str, str, int, list[str], dict[str, Any]]] = []
-    for research_item, workspace, attempt, workflow in rows:
-        if workflow.state not in BATCH_SUCCESS_STATES:
-            continue
-        if research_item.result_workflow_instance_id == workflow.workflow_instance_id and research_item.metrics is not None:
-            continue
-        pending.append((research_item.id, workspace.application, workspace.workspace_key, workflow.workflow_instance_id, list(attempt.requested_outputs), attempt.input_json))
-    if pending:
-        with ThreadPoolExecutor(max_workers=min(4, len(pending))) as executor:
-            calculated = list(executor.map(calculate_batch_research_item, pending))
-        for research_item_id, workflow_instance_id, metrics, result_error in calculated:
-            current_workspace_ids = (
-                select(WorkflowAttempt.workflow_workspace_id)
-                .join(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
-                .where(
-                    WorkflowAttempt.is_current.is_(True),
-                    WorkflowInstance.workflow_instance_id == workflow_instance_id,
-                    WorkflowInstance.state.in_(BATCH_SUCCESS_STATES),
-                )
-            )
-            session.execute(
-                update(BacktestResearchItem)
-                .where(
-                    BacktestResearchItem.id == research_item_id,
-                    BacktestResearchItem.research_id == research_id,
-                    BacktestResearchItem.workflow_workspace_id.in_(current_workspace_ids),
-                )
-                .values(
-                    result_workflow_instance_id=workflow_instance_id,
-                    metrics=metrics,
-                    result_error=result_error,
-                )
-                .execution_options(synchronize_session=False)
-            )
-        session.commit()
-        session.expire_all()
-        return get_batch_research(session, user, research_id)
-    return research
-
-
-def calculate_batch_research_item(item: tuple[int, str, str, int, list[str], dict[str, Any]]) -> tuple[int, int, dict[str, float | None] | None, str | None]:
-    research_item_id, application, workspace_key, workflow_instance_id, outputs, parameters = item
-    try:
-        if "daily_portfolios" not in outputs:
-            raise FileNotFoundError("批量回测未请求结果: daily_portfolios")
-        portfolios = read_result_dataframe(application, workspace_key, workflow_instance_id, "daily_portfolios", OUTPUT_FILES)
-        return research_item_id, workflow_instance_id, backtest_metrics(parameters, portfolios), None
-    except Exception as error:
-        return research_item_id, workflow_instance_id, None, str(error)
+    research, _, _, workspace, _, workflow = row
+    if (
+        workflow is not None
+        and workflow.state == "SUCCESS"
+        and (
+            research.result_workflow_instance_id != workflow.workflow_instance_id
+            or research.completed_count is None
+            or research.failed_count is None
+        )
+    ):
+        finalize_sensitivity_workspace(session, workspace)
+        row = session.execute(statement).one()
+    return serialize_batch_research(*row)
 
 
 def owned_batch_version(session: Session, user: User, project_id: int, version: int) -> BacktestVersion:
@@ -686,16 +830,6 @@ def owned_batch_version(session: Session, user: User, project_id: int, version: 
     return row
 
 
-def parameter_overrides(base: Any, parameters: Any) -> Any:
-    if not isinstance(base, dict) or not isinstance(parameters, dict):
-        return deepcopy(parameters)
-    return {
-        name: parameter_overrides(base.get(name), value)
-        for name, value in parameters.items()
-        if name not in base or base[name] != value
-    }
-
-
 def with_commission(parameters: dict[str, Any], rate: float) -> dict[str, Any]:
     result = deepcopy(parameters)
     config = dict(result["config"])
@@ -704,80 +838,233 @@ def with_commission(parameters: dict[str, Any], rate: float) -> dict[str, Any]:
     return result
 
 
-def batch_outputs(analysis_type: str) -> list[str]:
-    outputs = BATCH_OUTPUTS.get(analysis_type)
-    if outputs is None:
-        raise ValueError(f"未配置回测批量分析 {analysis_type} 所需的输出")
-    return list(outputs)
-
-
-def batch_execution_rows(session: Session, research_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-    result = {research_id: [] for research_id in research_ids}
-    if not research_ids:
-        return result
-    rows = session.execute(
-        select(BacktestResearchItem, WorkflowWorkspace, WorkflowAttempt, WorkflowInstance)
-        .join(WorkflowWorkspace, WorkflowWorkspace.id == BacktestResearchItem.workflow_workspace_id)
-        .join(WorkflowAttempt, and_(WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id, WorkflowAttempt.is_current.is_(True)))
-        .outerjoin(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
-        .where(BacktestResearchItem.research_id.in_(research_ids))
-        .order_by(BacktestResearchItem.research_id, BacktestResearchItem.id)
-    ).all()
-    for research_item, workspace, attempt, workflow in rows:
-        workflow_instance_id = workflow.workflow_instance_id if workflow is not None else None
-        result_is_current = workflow_instance_id is not None and research_item.result_workflow_instance_id == workflow_instance_id
-        result[research_item.research_id].append(
-            {
-                "id": research_item.id,
-                "workflow_workspace_id": workspace.id,
-                "workflow_instance_id": workflow_instance_id,
-                "state": workflow_attempt_state(attempt, workflow),
-                "parameters": attempt.input_json,
-                "error": (workflow.error if workflow is not None else None) or attempt.error,
-                "metrics": research_item.metrics if result_is_current else None,
-                "result_error": research_item.result_error if result_is_current else None,
-            }
-        )
-    return result
-
-
 def serialize_batch_research(
     research: BacktestResearch,
     project_id: int,
     version: int,
-    items: list[dict[str, Any]],
-    *,
-    include_items: bool = False,
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt | None,
+    workflow: WorkflowInstance | None,
 ) -> dict[str, Any]:
-    completed = sum(item["state"] in BATCH_SUCCESS_STATES and item.get("metrics") is not None and not item.get("result_error") for item in items)
-    failed = sum(item["state"] in WORKSPACE_FAILURE_STATES or bool(item.get("result_error")) for item in items)
-    workflow_pending = any(item["state"] not in WORKSPACE_TERMINAL_STATES for item in items)
-    result_pending = any(item["state"] in BATCH_SUCCESS_STATES and item.get("metrics") is None and not item.get("result_error") for item in items)
-    if not items or workflow_pending:
-        state = "RUNNING"
-    elif result_pending:
-        state = "RESULT_PENDING"
-    elif failed == 0:
-        state = "SUCCESS"
-    elif completed == 0:
-        state = "FAILURE"
+    if attempt is None:
+        raise RuntimeError(f"批量研究 {research.id} 缺少工作流提交尝试")
+    state = workflow_attempt_state(attempt, workflow)
+    requested_count = len(attempt.input_json.get("cases", []))
+    result_is_current = (
+        workflow is not None
+        and research.result_workflow_instance_id == workflow.workflow_instance_id
+        and research.completed_count is not None
+        and research.failed_count is not None
+    )
+    current_result_error = (
+        research.result_error
+        if workflow is not None
+        and workflow.state == "SUCCESS"
+        and research.result_workflow_instance_id == workflow.workflow_instance_id
+        and not result_is_current
+        else None
+    )
+    if state in BATCH_SUCCESS_STATES and result_is_current:
+        completed = int(research.completed_count or 0)
+        failed = int(research.failed_count or 0)
+    elif state in BATCH_SUCCESS_STATES:
+        completed = 0
+        failed = 0
+        state = "RESULT_FAILED" if current_result_error else "RESULT_PENDING"
     else:
-        state = "PARTIAL_SUCCESS"
-    result: dict[str, Any] = {
+        completed = 0
+        failed = requested_count if state in WORKSPACE_FAILURE_STATES else 0
+    updated_at = max(
+        attempt.updated_at,
+        workflow.updated_at if workflow is not None else attempt.updated_at,
+    )
+    return {
         "id": research.id,
         "analysis_type": research.analysis_type,
         "analysis_type_label": BATCH_ANALYSIS_LABELS.get(research.analysis_type, research.analysis_type),
         "project_id": project_id,
         "version": version,
         "description": research.description,
+        "workflow_workspace_id": workspace.id,
+        "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": state,
-        "requested_count": len(items),
+        "requested_count": requested_count,
         "completed_count": completed,
         "failed_count": failed,
+        "error": current_result_error or (workflow.error if workflow is not None else None) or attempt.error,
+        "parameters": attempt.input_json,
         "created_at": research.created_at,
+        "updated_at": updated_at,
     }
-    if include_items:
-        errors = [message for item in items for message in (item.get("error"), item.get("result_error")) if message]
-        result["error"] = "; ".join(dict.fromkeys(errors)) or None
-        result["items"] = items
-    return result
+
+
+def finalize_sensitivity_workspace(
+    session: Session,
+    workspace: WorkflowWorkspace,
+) -> None:
+    """校验当前敏感性结果文件，并把真实组合计数绑定到当前实例。"""
+    if workspace.application != "sensitivity":
+        return
+    research = session.scalar(
+        select(BacktestResearch)
+        .where(BacktestResearch.workflow_workspace_id == workspace.id)
+        .with_for_update()
+    )
+    if research is None:
+        raise RuntimeError(f"敏感性工作空间 {workspace.id} 缺少研究记录")
+    attempt = require_current_workflow_attempt(session, workspace.id)
+    workflow = session.scalar(
+        select(WorkflowInstance).where(
+            WorkflowInstance.workflow_attempt_id == attempt.id
+        )
+    )
+    if workflow is None or workflow.state != "SUCCESS":
+        return
+    if (
+        research.result_workflow_instance_id == workflow.workflow_instance_id
+        and research.completed_count is not None
+        and research.failed_count is not None
+    ):
+        return
+
+    try:
+        requested_cases = attempt.input_json.get("cases")
+        if not isinstance(requested_cases, list) or not requested_cases:
+            raise ValueError("敏感性分析请求缺少 cases")
+        table = result_dataframe(
+            session,
+            workspace.user_id,
+            workflow.workflow_instance_id,
+            "sensitivity",
+            "results",
+            SENSITIVITY_OUTPUT_FILES,
+        )
+        missing = {"case_index", "status"} - set(table)
+        if missing:
+            raise ValueError(
+                f"敏感性分析结果缺少列: {', '.join(sorted(missing))}"
+            )
+        if len(table) != len(requested_cases):
+            raise ValueError(
+                "敏感性分析结果行数与请求组合数不一致: "
+                f"{len(table)} != {len(requested_cases)}"
+            )
+        indices = pd.to_numeric(table["case_index"], errors="coerce")
+        if indices.isna().any() or (indices % 1 != 0).any():
+            raise ValueError("敏感性分析结果包含无效 case_index")
+        actual_indices = [int(value) for value in indices]
+        expected_indices = list(range(1, len(requested_cases) + 1))
+        if sorted(actual_indices) != expected_indices:
+            raise ValueError("敏感性分析结果 case_index 不完整或重复")
+        statuses = table["status"].astype("string")
+        invalid_statuses = sorted(
+            set(statuses.dropna().astype(str)) - {"SUCCESS", "FAILURE"}
+        )
+        if statuses.isna().any() or invalid_statuses:
+            raise ValueError(
+                f"敏感性分析结果包含无效状态: {invalid_statuses}"
+            )
+        completed_count = int((statuses == "SUCCESS").sum())
+        failed_count = int((statuses == "FAILURE").sum())
+        if completed_count + failed_count != len(requested_cases):
+            raise ValueError("敏感性分析结果状态数量与请求组合数不一致")
+    except Exception as error:
+        previous_error = research.result_error
+        research.result_workflow_instance_id = workflow.workflow_instance_id
+        research.completed_count = None
+        research.failed_count = None
+        research.result_error = str(error)
+        if previous_error != str(error):
+            record_event(
+                attempt,
+                "SENSITIVITY_RESULT_FAILED",
+                workflow_instance_id=workflow.workflow_instance_id,
+                error=str(error),
+            )
+        session.commit()
+        return
+
+    research.result_workflow_instance_id = workflow.workflow_instance_id
+    research.completed_count = completed_count
+    research.failed_count = failed_count
+    research.result_error = None
+    record_event(
+        attempt,
+        "SENSITIVITY_RESULT_COLLECTED",
+        workflow_instance_id=workflow.workflow_instance_id,
+        completed_count=completed_count,
+        failed_count=failed_count,
+    )
+    session.commit()
+
+
+def batch_research_statement() -> Any:
+    return (
+        select(
+            BacktestResearch,
+            BacktestVersion.project_id,
+            BacktestVersion.version,
+            WorkflowWorkspace,
+            WorkflowAttempt,
+            WorkflowInstance,
+        )
+        .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .join(WorkflowWorkspace, WorkflowWorkspace.id == BacktestResearch.workflow_workspace_id)
+        .outerjoin(
+            WorkflowAttempt,
+            and_(
+                WorkflowAttempt.workflow_workspace_id == WorkflowWorkspace.id,
+                WorkflowAttempt.is_current.is_(True),
+            ),
+        )
+        .outerjoin(WorkflowInstance, WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id)
+    )
+
+
+def validate_research_parameter_set(
+    base: BacktestParameters,
+    candidate: BacktestParameters,
+    analysis_type: BatchAnalysisType,
+    number: int,
+) -> None:
+    """限制批量研究只能改变目标手续费或策略参数。"""
+    base_data = base.model_dump(mode="json")
+    candidate_data = candidate.model_dump(mode="json")
+    if analysis_type == BatchAnalysisType.FEE_ANALYSIS:
+        if candidate.params != base.params:
+            raise ValueError(f"items[{number}] 手续费分析不能修改 params")
+        base_config = dict(base_data.pop("config"))
+        candidate_config = dict(candidate_data.pop("config"))
+        base_config.pop("commission", None)
+        candidate_config.pop("commission", None)
+        if base_data != candidate_data or base_config != candidate_config:
+            raise ValueError(f"items[{number}] 手续费分析只能修改 config.commission")
+    else:
+        base_data.pop("params")
+        candidate_data.pop("params")
+        if base_data != candidate_data:
+            raise ValueError(f"items[{number}] 参数敏感性分析只能修改 params")
+
+
+def sensitivity_workflow_instance_id(
+    session: Session,
+    user_id: int,
+    research_id: int,
+) -> int:
+    workflow_instance_id = session.scalar(
+        select(WorkflowInstance.workflow_instance_id)
+        .join(WorkflowAttempt, WorkflowAttempt.id == WorkflowInstance.workflow_attempt_id)
+        .join(WorkflowWorkspace, WorkflowWorkspace.id == WorkflowAttempt.workflow_workspace_id)
+        .join(BacktestResearch, BacktestResearch.workflow_workspace_id == WorkflowWorkspace.id)
+        .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .where(
+            BacktestResearch.id == research_id,
+            BacktestProject.user_id == user_id,
+            WorkflowAttempt.is_current.is_(True),
+        )
+    )
+    if workflow_instance_id is None:
+        raise FileNotFoundError(f"批量研究尚未关联工作流实例: {research_id}")
+    return int(workflow_instance_id)

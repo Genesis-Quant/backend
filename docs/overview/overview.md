@@ -11,7 +11,7 @@ Arena MCP 把网页中的 Query、Factor 和 Backtest 能力提供给 AI。它�
 - MCP 页面：`{ARENA_WEB_URL}/mcp`，与 MCP Resources 读取同一组 Markdown
 - Transport：MCP Streamable HTTP，无状态模式
 - 每个 HTTP 请求都必须携带 `Authorization: Bearer <access_token>`
-- MCP 不提供登录、注册、用户管理或业务对象删除工具；管理员专用 DolphinDB 诊断工具见下文
+- MCP 不提供登录、注册、用户管理或业务对象删除工具；认证用户可使用只读 DolphinDB 诊断工具
 
 Token 由 REST 登录接口签发：
 
@@ -43,7 +43,7 @@ CallToolResult.structuredContent.result
 | --- | --- |
 | 项目、版本、Workspace、Attempt、Workflow Instance 关系 | `arena://docs/overview/projects` |
 | DSL 节点、依赖、过滤与算符发现 | `arena://docs/overview/dsl` |
-| 管理员执行任意 DolphinDB 测试脚本 | `arena://docs/overview/dolphindb` |
+| 执行只读 DolphinDB 测试脚本 | `arena://docs/overview/dolphindb` |
 | 工作流状态、运行历史、Task、日志、输出和控制 | `arena://docs/overview/workflows` |
 | Query 请求与 API | `arena://docs/query/request`、`arena://docs/query/api`、`arena://schemas/query` |
 | Factor 请求与 API | `arena://docs/factor/request`、`arena://docs/factor/api`、`arena://schemas/factor` |
@@ -66,8 +66,8 @@ CallToolResult.structuredContent.result
 - `describe_dsl_operator(operator)`：读取一个算符的精确节点 Schema。
 - `describe_dolphindb_functions(names)`：查询 DolphinDB 内置函数签名和官方文档链接；Arena 回测
   helper 在 `arena://docs/backtest/dolphindb` 中说明。
-- `execute_dolphindb_script(script, max_rows=200)`：仅管理员可用，在共享 DolphinDB 中执行任意测试
-  脚本；其无沙箱和无回滚边界必须先读 `arena://docs/overview/dolphindb`。
+- `execute_dolphindb_script(script, max_rows=200)`：所有认证用户可用，使用只读运行账号在共享
+  DolphinDB 中执行测试脚本；其无计算资源沙箱和超时边界必须先读 `arena://docs/overview/dolphindb`。
 - `get_current_user()`：读取当前认证用户。
 
 发现结果不是执行结果。先完成发现和请求校验，再创建项目并运行。
@@ -125,5 +125,6 @@ Workspace 是稳定的业务执行容器，重跑会创建新的 Attempt 和新�
 ## 权限与副作用
 
 普通用户只能访问自己的资源。创建项目、提交工作流、保存/重命名版本、批量研究及工作流控制会改变
-状态；查询工具只读。MCP 不提供项目、版本、工作流或研究的专用删除工具。管理员任意 DolphinScript
-工具是明确的例外：脚本本身可以修改或删除 DolphinDB 数据，调用前必须按其独立安全契约处理。
+状态；查询工具只读。MCP 不提供项目、版本、工作流或研究的专用删除工具。任意 DolphinScript
+工具使用只读数据库账号，持久化写入、删改和管理操作会被 DolphinDB 拒绝；但脚本仍可能消耗大量
+CPU、内存和执行时间，调用前必须按其独立资源边界处理。

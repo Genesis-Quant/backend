@@ -11,7 +11,7 @@ from core.apps.query.schemas import QueryProjectItem, QueryProjectListItem
 from core.apps.schemas import ProjectPage
 from core.utils.results import ResultFile
 
-type ApplicationName = Literal["query", "factor", "backtest"]
+type ApplicationName = Literal["query", "factor", "backtest", "optimization", "sensitivity"]
 type VersionedApplicationName = Literal["factor", "backtest"]
 type DocumentName = Literal[
     "overview/overview",
@@ -41,6 +41,7 @@ type VersionResult = FactorVersionResponse | BacktestVersionResponse
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True)
+SCRIPT = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 
 class DslOperatorSummary(BaseModel):
@@ -115,7 +116,7 @@ class McpResult[T](BaseModel):
 
 __all__ = [
     "ApplicationName", "VersionedApplicationName", "DocumentName", "ProjectListResult", "ProjectResult",
-    "VersionedProjectResult", "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "DslOperatorSummary",
+    "VersionedProjectResult", "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "SCRIPT", "DslOperatorSummary",
     "DslOperatorSearchResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions", "DolphinScriptResult",
     "WorkflowOutputFile", "WorkflowOutputs", "TaskLogDownload", "McpBatchRunItem", "McpResult",
 ]

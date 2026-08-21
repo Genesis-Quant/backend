@@ -34,7 +34,7 @@ def register_workflow_tools(server: MCPServer) -> None:
 
     @server.tool(title="列出工作流", annotations=READ_ONLY)
     def list_workflows(
-        application: Annotated[Literal["query", "factor", "backtest", "incremental"] | None, Field(description="可选应用筛选。")] = None,
+        application: Annotated[Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"] | None, Field(description="可选应用筛选。")] = None,
         state: Annotated[Literal["active", "success", "failure"] | None, Field(description="可选状态分组筛选。")] = None,
         page: Annotated[int, Field(ge=1, description="页码，从 1 开始。")] = 1,
         page_size: Annotated[int, Field(ge=1, le=100, description="每页数量。")] = 20,

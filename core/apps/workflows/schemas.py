@@ -60,7 +60,7 @@ class WorkflowTasks(BaseModel):
 
 
 class WorkflowInformation(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
+    application: Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"]
     workspace_id: int
     user_id: int
     workflow_instance_id: int
@@ -101,7 +101,7 @@ class WorkflowAttemptSummary(BaseModel):
 
 
 class WorkflowWorkspaceListItem(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
+    application: Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"]
     workspace_id: int
     user_id: int
     project_id: int | None
@@ -126,7 +126,7 @@ class WorkflowAttemptListResponse(BaseModel):
 
 
 class WorkflowAttemptInformation(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
+    application: Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"]
     workspace_id: int
     project_title: str | None
     attempt_id: int
@@ -155,6 +155,6 @@ class WorkflowActionResponse(BaseModel):
 
 
 class WorkflowDeletedResponse(BaseModel):
-    application: Literal["query", "factor", "backtest", "incremental"]
+    application: Literal["query", "factor", "backtest", "optimization", "sensitivity", "incremental"]
     workspace_id: int
     workflow_instance_id: int

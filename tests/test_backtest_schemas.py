@@ -7,6 +7,11 @@ from runtime import BacktestParameters
 
 from core.apps.backtest.models import BacktestResearch
 from core.apps.backtest.services import serialize_batch_research
+from core.apps.workflows.models import (
+    WorkflowAttempt,
+    WorkflowInstance,
+    WorkflowWorkspace,
+)
 
 CALLBACKS = {
     "initialize": "def initialize(mutable context) { return NULL }",
@@ -58,31 +63,82 @@ def test_workflow_api_rejects_missing_callback() -> None:
         BacktestParameters.model_validate(payload)
 
 
-def test_batch_research_waits_for_metrics_and_reports_result_errors() -> None:
+def batch_research_objects() -> tuple[
+    BacktestResearch,
+    WorkflowWorkspace,
+    WorkflowAttempt,
+    WorkflowInstance,
+]:
+    timestamp = datetime(2026, 8, 21, tzinfo=UTC)
     research = BacktestResearch(
         id=1,
         version_id=1,
+        workflow_workspace_id=2,
         analysis_type="sensitivity",
         description="",
-        created_at=datetime(2026, 8, 10, tzinfo=UTC),
+        created_at=timestamp,
     )
-    pending = serialize_batch_research(
-        research,
-        1,
-        1,
-        [{"state": "SUCCESS", "metrics": None, "result_error": None, "error": None}],
+    workspace = WorkflowWorkspace(
+        id=2,
+        user_id=3,
+        application="sensitivity",
+        created_at=timestamp,
     )
-    failed = serialize_batch_research(
+    attempt = WorkflowAttempt(
+        id=4,
+        workflow_workspace_id=workspace.id,
+        is_current=True,
+        submission_state="SUBMITTED",
+        input_json={"cases": [{}, {}]},
+        start_parameters={},
+        requested_outputs=["results"],
+        events=[],
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    workflow = WorkflowInstance(
+        workflow_instance_id=5,
+        workflow_attempt_id=attempt.id,
+        state="SUCCESS",
+        state_history=[],
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    return research, workspace, attempt, workflow
+
+
+def test_batch_research_waits_for_current_result_summary() -> None:
+    research, workspace, attempt, workflow = batch_research_objects()
+
+    response = serialize_batch_research(
         research,
+        10,
         1,
-        1,
-        [
-            {"state": "SUCCESS", "metrics": {"totalReturn": 0.1}, "result_error": None, "error": None},
-            {"state": "SUCCESS", "metrics": None, "result_error": "invalid parquet", "error": None},
-        ],
-        include_items=True,
+        workspace,
+        attempt,
+        workflow,
     )
 
-    assert (pending["state"], pending["completed_count"], pending["failed_count"]) == ("RESULT_PENDING", 0, 0)
-    assert (failed["state"], failed["completed_count"], failed["failed_count"]) == ("PARTIAL_SUCCESS", 1, 1)
-    assert failed["error"] == "invalid parquet"
+    assert response["state"] == "RESULT_PENDING"
+    assert response["completed_count"] == 0
+    assert response["failed_count"] == 0
+
+
+def test_batch_research_ignores_summary_from_superseded_instance() -> None:
+    research, workspace, attempt, workflow = batch_research_objects()
+    research.result_workflow_instance_id = workflow.workflow_instance_id - 1
+    research.completed_count = 2
+    research.failed_count = 0
+
+    response = serialize_batch_research(
+        research,
+        10,
+        1,
+        workspace,
+        attempt,
+        workflow,
+    )
+
+    assert response["state"] == "RESULT_PENDING"
+    assert response["completed_count"] == 0
+    assert response["failed_count"] == 0

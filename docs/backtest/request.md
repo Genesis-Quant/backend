@@ -186,8 +186,10 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - `run_backtest_batch` 对应网页执行队列，每个成功项自动保存成版本；
 - `create_backtest_fee_analysis` 从已保存版本生成手续费率网格；
 - `create_backtest_research(analysis_type="sensitivity", ...)` 提交参数敏感性网格；
-- `get_backtest_research` 轮询每个子任务；
-- 状态为 `RESULT_PENDING` 时调用 `calculate_backtest_research` 收集 Parquet 并计算报告指标。
+- 每条研究只创建一个 `sensitivity` Workspace，所有 case 复用同一份完整区间数据和消息表；
+- `get_backtest_research` 读取该研究和唯一 Workspace，运行过程继续使用通用工作流、Task、日志接口；
+- 工作流成功时 Runtime 已写出一份 `results.parquet`，其中每行对应一个 case，前端直接用 DuckDB
+  生成报告，不再由后端逐项下载普通回测结果或二次计算指标。
 
 敏感性研究的 `parameter_sets` 必须是完整 `BacktestParameters` 数组。先用 `get_version` 读取
 基准参数，对每个网格点深拷贝并修改相应用户参数，再提交；不能只发送

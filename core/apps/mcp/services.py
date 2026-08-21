@@ -34,7 +34,7 @@ MCP_DOCUMENT_SECTIONS = (
             DocumentDefinition("overview/projects", "Arena 对象关系", "Project、Version、Workspace、Attempt、Workflow 与 Task 的关系。"),
             DocumentDefinition("overview/dsl", "Factor Query DSL", "字段、派生节点、依赖、过滤器与时序边界。"),
             DocumentDefinition("overview/workflows", "工作流与任务读取", "运行历史、任务、日志分页、输出下载与控制。"),
-            DocumentDefinition("overview/dolphindb", "DolphinDB 脚本执行", "管理员脚本测试接口、权限、副作用与诊断边界。"),
+            DocumentDefinition("overview/dolphindb", "DolphinDB 脚本执行", "认证用户只读脚本测试接口、权限与计算资源边界。"),
         ),
     ),
     SectionDefinition(

@@ -11,7 +11,6 @@ from config import ArenaSettings
 from core.apps.backtest.models import (
     BacktestProject,
     BacktestResearch,
-    BacktestResearchItem,
     BacktestVersion,
 )
 from core.apps.backtest.services import (
@@ -21,7 +20,6 @@ from core.apps.backtest.services import (
     PROJECT_OUTPUTS as BACKTEST_PROJECT_OUTPUTS,
 )
 from core.apps.backtest.services import (
-    calculate_batch_research_results,
     create_backtest_version,
     create_backtest_project,
     submit_project_backtest,
@@ -77,7 +75,6 @@ def session() -> Session:
             FactorVersion.__table__,
             BacktestVersion.__table__,
             BacktestResearch.__table__,
-            BacktestResearchItem.__table__,
         ],
     )
     with Session(engine, expire_on_commit=False) as active_session:
@@ -367,92 +364,6 @@ def test_factor_maximum_drawdown_includes_initial_wealth() -> None:
 
     assert growth == pytest.approx(0.55)
     assert maximum_drawdown == pytest.approx(0.5)
-
-
-def test_batch_metric_calculation_discards_result_from_superseded_attempt(
-    session: Session,
-    user: User,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    created = create_backtest_project(session, user.id, "backtest")
-    project = session.get(BacktestProject, created["id"])
-    assert project is not None
-    source_version = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == project.id))
-    assert source_version is not None
-    research = BacktestResearch(version_id=source_version.id, analysis_type="sensitivity", description="race")
-    workspace = WorkflowWorkspace(user_id=user.id, application="backtest")
-    stable_workspace = WorkflowWorkspace(user_id=user.id, application="backtest")
-    session.add_all([research, workspace, stable_workspace])
-    session.flush()
-    item = BacktestResearchItem(research_id=research.id, workflow_workspace_id=workspace.id, parameter_overrides={})
-    stable_item = BacktestResearchItem(research_id=research.id, workflow_workspace_id=stable_workspace.id, parameter_overrides={})
-    session.add_all([item, stable_item])
-    old_attempt = create_workflow_attempt(
-        session,
-        workspace,
-        {"annual_trading_days": 252, "risk_free_rate": 0},
-        ["daily_portfolios"],
-        submission_state="WORKFLOW_CREATED",
-    )
-    old_workflow = WorkflowInstance(workflow_instance_id=1001, workflow_attempt_id=old_attempt.id, state="SUCCESS", state_history=[])
-    stable_attempt = create_workflow_attempt(
-        session,
-        stable_workspace,
-        old_attempt.input_json,
-        old_attempt.requested_outputs,
-        submission_state="WORKFLOW_CREATED",
-    )
-    stable_workflow = WorkflowInstance(workflow_instance_id=2001, workflow_attempt_id=stable_attempt.id, state="SUCCESS", state_history=[])
-    session.add_all([old_workflow, stable_workflow])
-    session.commit()
-
-    monkeypatch.setattr(
-        "core.apps.backtest.services.calculate_batch_research_item",
-        lambda pending: (pending[0], pending[3], {"totalReturn": 0.25}, None),
-    )
-
-    class RacingExecutor:
-        def __init__(self, **ignored: object) -> None:
-            return None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *ignored: object) -> None:
-            return None
-
-        def map(self, function, values):
-            calculated = [function(value) for value in values]
-            new_attempt = create_workflow_attempt(
-                session,
-                workspace,
-                old_attempt.input_json,
-                old_attempt.requested_outputs,
-                submission_state="WORKFLOW_CREATED",
-            )
-            session.add(WorkflowInstance(workflow_instance_id=1002, workflow_attempt_id=new_attempt.id, state="SUCCESS", state_history=[]))
-            session.flush()
-            return calculated
-
-    monkeypatch.setattr("core.apps.backtest.services.ThreadPoolExecutor", RacingExecutor)
-
-    result = calculate_batch_research_results(session, user, research.id)
-    stored = session.get(BacktestResearchItem, item.id)
-    stored_stable = session.get(BacktestResearchItem, stable_item.id)
-    response_items = {entry["workflow_workspace_id"]: entry for entry in result["items"]}
-
-    assert stored is not None
-    assert stored_stable is not None
-    assert stored.result_workflow_instance_id is None
-    assert stored.metrics is None
-    assert stored_stable.result_workflow_instance_id == 2001
-    assert stored_stable.metrics == {"totalReturn": 0.25}
-    assert result["state"] == "RESULT_PENDING"
-    assert result["completed_count"] == 1
-    assert response_items[workspace.id]["workflow_instance_id"] == 1002
-    assert response_items[workspace.id]["metrics"] is None
-    assert response_items[stable_workspace.id]["workflow_instance_id"] == 2001
-    assert response_items[stable_workspace.id]["metrics"] == {"totalReturn": 0.25}
 
 
 def test_reusing_cloud_workspace_clears_existing_output_prefix(

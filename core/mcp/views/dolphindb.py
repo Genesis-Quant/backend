@@ -1,9 +1,10 @@
-"""Authenticated DolphinDB script execution for MCP diagnostics."""
+"""Authenticated read-only DolphinDB script execution for MCP diagnostics."""
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 import hashlib
 import math
+from time import monotonic
 from typing import Annotated, Any
 
 from mcp.server import MCPServer
@@ -16,11 +17,12 @@ from runtime.utils import logger
 from core.database.session import database_session_factory
 
 from ..auth import current_user
-from ..schemas import CONTROL, DolphinScriptResult, McpResult
+from ..schemas import DolphinScriptResult, McpResult, SCRIPT
 
 MAX_RESULT_VALUES = 100_000
 MAX_RESULT_CHARACTERS = 1_000_000
 MAX_RESULT_DEPTH = 32
+MAX_SCRIPT_TIME_SECONDS = 10 * 60
 
 
 def text_value(value: str, budget: list[int]) -> tuple[str, bool]:
@@ -218,9 +220,9 @@ def serialize_dolphindb_result(value: Any, max_rows: int) -> DolphinScriptResult
 
 
 def register_dolphindb_tools(server: MCPServer) -> None:
-    """Register the administrator-only arbitrary script tool."""
+    """Register the authenticated read-only arbitrary script tool."""
 
-    @server.tool(title="执行 DolphinDB 测试脚本", annotations=CONTROL)
+    @server.tool(title="执行 DolphinDB 测试脚本", annotations=SCRIPT)
     def execute_dolphindb_script(
         script: Annotated[
             str,
@@ -228,8 +230,10 @@ def register_dolphindb_tools(server: MCPServer) -> None:
                 min_length=1,
                 max_length=200_000,
                 description=(
-                    "要在服务端共享 DolphinDB 上原样执行的 DolphinScript。没有沙箱、事务或自动回滚；"
-                    "工具返回脚本最后一个表达式的值。仅 Arena 管理员可调用。"
+                    "要使用只读运行账号在服务端共享 DolphinDB 上原样执行的 DolphinScript。"
+                    "任何已认证 Arena 用户均可调用；数据库写入、删改和管理操作会被 DolphinDB 拒绝。"
+                    "DolphinDB session 从连接成功起最多使用 10 分钟；"
+                    "工具返回脚本最后一个表达式的值。"
                 ),
             ),
         ],
@@ -251,18 +255,30 @@ def register_dolphindb_tools(server: MCPServer) -> None:
             raise ValueError("script 不能为空白")
         with database_session_factory()() as database_session:
             user = current_user(database_session)
-            if not user.is_admin:
-                raise PermissionError("只有 Arena 管理员可以执行任意 DolphinDB 脚本")
             user_id = user.id
 
         digest = hashlib.sha256(script.encode("utf-8")).hexdigest()[:16]
-        logger.warning(f"MCP DolphinDB 任意脚本：user_id={user_id}, sha256={digest}, length={len(script)}")
-        session = create_dolphindb_session()
+        audit = f"user_id={user_id}, sha256={digest}, length={len(script)}"
+        started_at = monotonic()
+        logger.warning(f"MCP DolphinDB 任意脚本开始：{audit}")
         try:
-            result = session.run(script)
-        finally:
-            session.close()
-        return McpResult(result=serialize_dolphindb_result(result, max_rows))
+            session = create_dolphindb_session(max_time=MAX_SCRIPT_TIME_SECONDS)
+            try:
+                result = session.run(script)
+                response = McpResult(result=serialize_dolphindb_result(result, max_rows))
+            finally:
+                session.close()
+        except Exception as error:
+            logger.warning(
+                f"MCP DolphinDB 任意脚本失败：{audit}, "
+                f"duration={monotonic() - started_at:.3f}s, error={type(error).__name__}"
+            )
+            raise
+        logger.warning(
+            f"MCP DolphinDB 任意脚本完成：{audit}, "
+            f"duration={monotonic() - started_at:.3f}s"
+        )
+        return response
 
 
 __all__ = ["register_dolphindb_tools", "serialize_dolphindb_result"]

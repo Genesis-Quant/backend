@@ -9,7 +9,7 @@ from uuid import uuid4
 from config import ArenaSettings
 
 WORKSPACE_KEY_PATTERN = re.compile(r"^[0-9a-f]{32}$")
-WORKSPACE_APPLICATIONS = frozenset({"query", "factor", "backtest", "incremental"})
+WORKSPACE_APPLICATIONS = frozenset({"query", "factor", "backtest", "optimization", "sensitivity", "incremental"})
 LOCAL_ONLY_APPLICATIONS = frozenset({"incremental"})
 
 
