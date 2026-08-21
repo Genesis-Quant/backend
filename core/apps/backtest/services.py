@@ -1,5 +1,6 @@
 """Backtest workflow submission, strategy projects, versions, and results."""
 
+import logging
 from collections.abc import Sequence
 from copy import deepcopy
 from math import isfinite
@@ -51,6 +52,7 @@ from core.apps.workflows.services import (
 from core.utils.results import result_dataframe, result_files, result_response
 from core.utils.time import utc_now
 
+LOGGER = logging.getLogger(__name__)
 OUTPUT_FILES = {
     "trade_details": "trade_details.parquet",
     "daily_positions": "daily_positions.parquet",
@@ -631,6 +633,39 @@ def get_backtest_optimization(
     return serialize_backtest_optimization(*row)
 
 
+def delete_backtest_optimization(
+    session: Session,
+    user: User,
+    optimization_id: int,
+) -> int:
+    """删除当前用户的一条参数调优报告及其独占工作空间。"""
+    row = session.execute(
+        select(BacktestOptimization, WorkflowWorkspace)
+        .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .join(
+            WorkflowWorkspace,
+            WorkflowWorkspace.id == BacktestOptimization.workflow_workspace_id,
+        )
+        .where(
+            BacktestOptimization.id == optimization_id,
+            BacktestProject.user_id == user.id,
+        )
+        .with_for_update()
+    ).one_or_none()
+    if row is None:
+        raise FileNotFoundError(f"参数调优报告不存在: {optimization_id}")
+    optimization, workspace = row
+    delete_analysis_workspace(
+        session,
+        optimization,
+        workspace,
+        expected_application="optimization",
+        label="参数调优报告",
+    )
+    return optimization_id
+
+
 def optimization_statement() -> Any:
     return (
         select(
@@ -817,6 +852,64 @@ def get_batch_research(session: Session, user: User, research_id: int) -> dict[s
         finalize_sensitivity_workspace(session, workspace)
         row = session.execute(statement).one()
     return serialize_batch_research(*row)
+
+
+def delete_batch_research(session: Session, user: User, research_id: int) -> int:
+    """删除当前用户的一条手续费或参数敏感性分析及其独占工作空间。"""
+    row = session.execute(
+        select(BacktestResearch, WorkflowWorkspace)
+        .join(BacktestVersion, BacktestVersion.id == BacktestResearch.version_id)
+        .join(BacktestProject, BacktestProject.id == BacktestVersion.project_id)
+        .join(
+            WorkflowWorkspace,
+            WorkflowWorkspace.id == BacktestResearch.workflow_workspace_id,
+        )
+        .where(
+            BacktestResearch.id == research_id,
+            BacktestProject.user_id == user.id,
+        )
+        .with_for_update()
+    ).one_or_none()
+    if row is None:
+        raise FileNotFoundError(f"批量研究不存在: {research_id}")
+    research, workspace = row
+    delete_analysis_workspace(
+        session,
+        research,
+        workspace,
+        expected_application="sensitivity",
+        label=BATCH_ANALYSIS_LABELS.get(research.analysis_type, "批量研究"),
+    )
+    return research_id
+
+
+def delete_analysis_workspace(
+    session: Session,
+    record: BacktestOptimization | BacktestResearch,
+    workspace: WorkflowWorkspace,
+    *,
+    expected_application: str,
+    label: str,
+) -> None:
+    if workspace.application != expected_application:
+        raise RuntimeError(f"{label}关联的工作空间类型错误: {workspace.application}")
+    state = workflow_workspace_state(session, workspace)
+    if state != "DRAFT" and state not in WORKSPACE_TERMINAL_STATES:
+        raise RuntimeError(f"{state} 状态的{label}不能删除")
+    artifacts = resolve_workspace_artifacts(workspace)
+    session.delete(record)
+    session.flush()
+    session.delete(workspace)
+    session.commit()
+    try:
+        remove_workspace_artifacts(*artifacts)
+    except OSError:
+        LOGGER.exception(
+            "数据库记录已删除，但清理%s工作空间产物失败: %s/%s",
+            label,
+            artifacts[1],
+            artifacts[2],
+        )
 
 
 def owned_batch_version(session: Session, user: User, project_id: int, version: int) -> BacktestVersion:

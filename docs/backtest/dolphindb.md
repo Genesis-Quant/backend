@@ -118,7 +118,7 @@ Runtime 从 `dataset_query` filters 后的表生成消息。每个有效交易�
 | 对象 | 是否受 `adj` 影响 | 价格尺度 |
 | --- | --- | --- |
 | `dataset_query` factors/derivatives | 否 | CoreData 查询尺度 |
-| `getHistoryData` / `getLastData` | 否 | 与 `dataset_query` 相同 |
+| `getHistoryData` / `getLastData` / `history` | 否 | 与 `dataset_query` 相同 |
 | 回调 `message` | 是 | 选择的执行复权尺度 |
 | 委托、成交和持仓价格 | 是 | 继承 `message` 执行尺度 |
 | 结果表中的估值、成交和组合金额 | 是 | 继承执行链路及插件账户口径 |
@@ -290,12 +290,17 @@ t 日 15:00
 ```text
 backtest::getHistoryData(context, msg, filter=true)
 backtest::getLastData(context, msg, filter=true)
+backtest::history(context, msg, count, codes=NULL, fields=NULL, filter=true)
 ```
 
 - `filter=false`：读取 derivatives 计算后、`dataset_query.filters` 执行前的表；
 - `filter=true`：读取 filters 后的表；
 - 两者只返回 `date(time) < date(msg.timestamp[0])`；
 - `getLastData` 从历史中取得最后一个实际存在的 `time` 截面；
+- `history` 只返回最近 `count` 个实际 `time` 截面，而不是 `count` 行或
+  `count` 个自然日；
+- `history` 的 `codes` 可限定证券，`fields` 可限定数据列；`time` 和
+  `code` 始终保留，不存在的列会直接报错；
 - 返回表含 `dataset_query` 请求的 factors 和命名 derivatives；
 - 返回代码已经转换为 `.XSHG/.XSHE`。
 
@@ -318,6 +323,60 @@ t-20 ... t-2  t-1       t 日 09:30 callback / submitOrder
   由具体算符定义决定，应读取 `describe_dsl_operator`，不能根据算符名字猜测；
 - 负 shift、未来收益标签或在 09:30 使用当日 high/low/close 都是未来数据。
 - `getLastData` 取最后实际存在日期，不保证自然日相邻；依赖严格连续交易日时需检查 signal.time。
+
+## 交易日历
+
+```text
+backtest::get_trading_days(startDate, endDate, exchange="XSHG")
+backtest::is_trading_day(targetDate, exchange="XSHG")
+backtest::shift_trading_day(targetDate, offset, exchange="XSHG")
+backtest::previous_trading_day(targetDate, count=1, exchange="XSHG")
+backtest::next_trading_day(targetDate, count=1, exchange="XSHG")
+```
+
+这些函数直接使用 DolphinDB 部署节点的 `getMarketCalendar`，不从当前回测
+message 或 DSL 结果推断交易日。`exchange` 只允许 `XSHG` 和 `XSHE`；返回值为
+DATE 标量或 DATE 向量。`shift_trading_day(..., 0)` 要求输入本身是交易日，
+正数向后、负数向前移动。`previous_trading_day` 和 `next_trading_day` 都是严格移动，
+`count` 是正整数；它们不会在输入已是交易日时返回原日期。
+
+## 当前快照与可交易性
+
+```text
+backtest::current_snapshot(message, codes=NULL)
+backtest::can_trade(message, stockCode, direction=0)
+```
+
+`current_snapshot` 只过滤当前回调的 message，不读取历史数据。`can_trade` 只检查
+当前合成快照是否有该代码和有效盘口：`direction=0` 检查 `lastPrice`，`1`
+检查卖一价、卖一量及涨停价，`3` 检查买一价、买一量及跌停价。它不代表账户一定
+可下单：资金、可卖持仓、整手规则和插件风控仍由调用方和 Backtest 插件校验。
+
+## 策略调度
+
+```text
+backtest::run_daily(mutable context, callback, phase="open")
+backtest::run_weekly(mutable context, callback, tradingDay=1, phase="open")
+backtest::run_monthly(mutable context, callback, tradingDay=1, phase="open")
+```
+
+只能在 `initialize` 中注册。调度回调统一签名为：
+
+```dos
+def scheduledCallback(mutable context, message, indicator) {
+    // before_trading / after_trading 阶段的 message 和 indicator 为 NULL
+}
+```
+
+`phase` 只允许 `before_trading`、`open`、`after_trading`。`open` 在当日 09:30
+合成快照到达后、用户 `onSnapshot` 之前运行，因此可读取 message 并下单；
+`before_trading` 在用户 `beforeTrading` 之后运行，`after_trading` 在用户
+`afterTrading` 之后运行。
+
+周/月 `tradingDay` 以 XSHG 交易日历计数：`1` 是首个交易日，`-1` 是最后一个
+交易日，不允许 `0`。若指定的交易日不在本次 message 回放日期中，该周/月
+不会补触发。不提供 `close` 阶段：当前插件不保证区间最后一日再触发 15:00
+`onSnapshot`，伪造 close 阶段会造成月末/区间末漏执行。
 
 ## 参数与 context
 
@@ -373,6 +432,28 @@ order_target_value(mutable context, msg, stockCode, targetValue, orderLabel="ord
 - 不做组合层资金预算，不保证多只买单合计小于可用现金；
 - 内部继续调用 `order_target`。
 
+### `backtest::order_target_percent`
+
+```text
+order_target_percent(mutable context, msg, stockCode, targetPercent, orderLabel="order_target_percent")
+```
+
+以 `get_total_equity(context)` 返回的当前组合总权益为分母，将单只证券调整到
+`[0, 1]` 内的目标权重。它是 `order_target_value` 的权重封装，不会为同一
+快照中的多只证券自动做资金预算。
+
+### `backtest::order_target_portfolio`
+
+```text
+order_target_portfolio(mutable context, msg, targetWeights, orderLabel="order_target_portfolio")
+```
+
+`targetWeights` 是 `.XSHG/.XSHE` 代码到非负权重的字典，权重总和不能超过
+`1`。函数把字典外的已有多头持仓视为目标 `0`，先提交清仓/减仓，再以
+当前真实可用资金及费用上限提交整手加仓；返回本次实际提交的订单号向量。
+不在当前 message 或当前方向无有效盘口的证券会跳过。有延时、挂单或部分成交
+时，等订单状态更新后在后续快照再调用，不要在同一未成交状态下重复提交。
+
 调用前还应检查 `targetValue` 有限。优化输出转换成非负目标时，应先按统一容差截断数值噪声，并在
 需要时重新归一化和复核约束；不能把极小负数直接传入 helper。完整数值契约见
 `arena://docs/backtest/optimization`。
@@ -408,12 +489,18 @@ orderId = Backtest::submitOrder(
 [Backtest 接口说明](https://docs.dolphindb.com/zh/plugins/backtest/interface_description.html)。
 
 ```dos
-allPositions = Backtest::getPosition(context.engine)
-position = Backtest::getPosition(context.engine, stockCode, "stock")
-cash = Backtest::getAvailableCash(context.engine, "stock")
-portfolios = Backtest::getTotalPortfolios(context.engine)
-openOrders = Backtest::getOpenOrders(context.engine)
+portfolio = backtest::get_portfolio(context)
+totalEquity = backtest::get_total_equity(context)
+allPositions = backtest::get_positions(context)
+position = backtest::get_position(context, stockCode)
+cash = backtest::get_available_cash(context)
+openOrders = backtest::get_open_orders(context)
 ```
+
+上述 Runtime helper 统一了 Arena 股票引擎的账户类型和返回入口；返回值仍是
+Backtest 插件的原始字典/表，不重命名字段也不伪造空持仓。`get_total_equity`
+和 `get_available_cash` 返回 DOUBLE 标量；其余函数的字段应按下文 Schema 或运行时
+自省使用。
 
 不传 symbol 时 `getPosition` 返回表；指定 symbol 时返回字典。Arena 股票回测使用的持仓结构为：
 

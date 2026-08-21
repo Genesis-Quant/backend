@@ -35,6 +35,8 @@ from core.apps.backtest.services import (
     create_backtest_project,
     create_backtest_version,
     create_fee_analysis,
+    delete_backtest_optimization,
+    delete_batch_research,
     delete_backtest_project,
     delete_backtest_version,
     get_backtest_project,
@@ -245,6 +247,18 @@ def optimization(
         raise_api_http_error(error)
 
 
+@router.delete("/optimizations/{optimization_id}")
+def delete_optimization(
+    optimization_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> dict[str, int]:
+    try:
+        return {"id": delete_backtest_optimization(session, user, optimization_id)}
+    except (FileNotFoundError, RuntimeError, OSError) as error:
+        raise_api_http_error(error)
+
+
 @router.get(
     "/optimizations/{optimization_id}/outputs",
     response_model=list[ResultFile[OptimizationOutput]],
@@ -309,6 +323,18 @@ def backtest_research(research_id: int, user: Annotated[User, Depends(get_curren
     try:
         return BatchResearchResponse.model_validate(get_batch_research(session, user, research_id))
     except (FileNotFoundError, RuntimeError, OSError, ValueError) as error:
+        raise_api_http_error(error)
+
+
+@router.delete("/batch-research/{research_id}")
+def delete_backtest_research(
+    research_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> dict[str, int]:
+    try:
+        return {"id": delete_batch_research(session, user, research_id)}
+    except (FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
 
