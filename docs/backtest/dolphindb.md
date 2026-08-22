@@ -288,13 +288,15 @@ t 日 15:00
 ## 历史数据 helper
 
 ```text
-backtest::getHistoryData(context, msg, filter=true)
+backtest::getHistoryData(context, msg, filter=true, start=NULL, end=NULL)
 backtest::getLastData(context, msg, filter=true)
 ```
 
 - `filter=false`：读取 derivatives 计算后、`dataset_query.filters` 执行前的表；
 - `filter=true`：读取 filters 后的表；
+- `start`、`end`：可选的 DATE 兼容标量，按闭区间限制返回日期；可只传一侧；
 - 两者只返回 `date(time) < date(msg.timestamp[0])`；
+- `end` 即使晚于当前回调日，也不会放宽上述严格历史边界；`start > end` 会立即报错；
 - `getLastData` 从历史中取得最后一个实际存在的 `time` 截面；
 - 返回表含 `dataset_query` 请求的 factors 和命名 derivatives；
 - 返回代码已经转换为 `.XSHG/.XSHE`。
@@ -319,15 +321,29 @@ t-20 ... t-2  t-1       t 日 09:30 callback / submitOrder
 - 负 shift、未来收益标签或在 09:30 使用当日 high/low/close 都是未来数据。
 - `getLastData` 取最后实际存在日期，不保证自然日相邻；依赖严格连续交易日时需检查 signal.time。
 
-## 参数与 context
+## 参数、交易日期与 context
 
 ```text
 getParams() -> parameters.params 对应的 DolphinDB 字典
+getParam(key) -> parameters.params 中指定 key 的值；缺失时抛错
+getTradeDates() -> 当前运行实际回放的有序 DATE 向量
 ```
 
-`initialize` 必须检查需要的 key 并显式转换类型；缺失 key 不会自动获得业务默认值。插件提供
-`context.engine`，调用方自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入 Factor 表、
-message、params 或任何 `coreBacktest*` 变量。
+三个函数只能在回测运行期间使用，包括 `initialize` 和后续回调。`getTradeDates()` 读取的是当前
+运行传给插件的 message 中实际存在的日期，并已去重、升序排列；参数调优或批量研究传入子区间时，
+它只返回该次子区间的日期。它不是对交易所官方日历的额外查询，缺少行情的日期不会被补入。
+
+`initialize` 应读取参数并显式转换类型。`getParam(key)` 只接受标量 STRING 或 SYMBOL，并对空 key
+或缺失 key 直接抛错；如果需要一次遍历全部参数再使用 `getParams()`。插件提供
+`context.engine`，调用方自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入 Factor 表、message、params 或任何
+`coreBacktest*` 变量。
+
+```dolphindb
+def initialize(mutable context) {
+    context["window"] = long(getParam("window"))
+    context["tradeDates"] = getTradeDates()
+}
+```
 
 每个任务使用独立 DolphinDB session。`utils` 中定义的函数和顶层变量只在本次任务有效。
 

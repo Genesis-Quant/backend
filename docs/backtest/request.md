@@ -36,7 +36,7 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `config` | object | 否 | 见下文 | 插件资金、费用和可开放选项 |
-| `params` | object | 否 | `{}` | 用户回调参数，通过 `getParams()` 读取 |
+| `params` | object | 否 | `{}` | 用户回调参数，通过 `getParams()` 或 `getParam(key)` 读取 |
 | `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询 |
 | `adj` | `hfq`、`qfq` 或 null | 否 | `null` | 合成快照价格复权方式 |
@@ -139,8 +139,9 @@ matchingRatio, orderBookMatchingRatio
 
 ## `params`
 
-`params` 只上传给用户回调，不传给插件。在 `initialize` 中调用 `getParams()`，检查必需 key 并进行
-`long()`、`double()`、`bool()` 等明确类型转换；缺失 key 不会自动获得业务默认值。
+`params` 只上传给用户回调，不传给插件。`getParams()` 返回完整字典；`getParam(key)` 返回指定值，
+key 为空或不存在时直接报错，不提供隐式默认值。在 `initialize` 中读取参数后，应进行 `long()`、
+`double()`、`bool()` 等明确类型转换。
 
 ## `utils` 与 callbacks
 
