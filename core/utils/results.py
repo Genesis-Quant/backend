@@ -1,8 +1,10 @@
 """Result-file access keyed by DolphinScheduler workflow instance ID."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -67,35 +69,53 @@ def result_files(
     workflow_instance_id: int,
     application: str,
     output_files: dict[str, str],
+    optional_outputs: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
+    optional_outputs = optional_outputs or {}
     if uses_cloud_output(workspace.application):
         storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         try:
-            return [
-                cloud_result_file(
-                    storage,
-                    output_key,
-                    name,
-                    result_filename(workflow_instance_id, name, output_files),
-                )
-                for name in attempt.requested_outputs
-            ]
+            files: list[dict[str, Any]] = []
+            for name in attempt.requested_outputs:
+                try:
+                    files.append(
+                        cloud_result_file(
+                            storage,
+                            output_key,
+                            name,
+                            result_filename(workflow_instance_id, name, output_files),
+                        )
+                    )
+                except ClientError as error:
+                    if name in optional_outputs and is_missing_object(error):
+                        continue
+                    raise
+            return files
         except (BotoCoreError, ClientError) as error:
-            raise OSError(f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}") from error
+            raise OSError(
+                f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}"
+            ) from error
         finally:
             storage.close()
 
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
-    return [
-        local_result_file(
-            workflow_instance_id,
-            output_dir,
-            name,
-            result_filename(workflow_instance_id, name, output_files),
-        )
-        for name in attempt.requested_outputs
-    ]
+    files = []
+    for name in attempt.requested_outputs:
+        try:
+            files.append(
+                local_result_file(
+                    workflow_instance_id,
+                    output_dir,
+                    name,
+                    result_filename(workflow_instance_id, name, output_files),
+                )
+            )
+        except FileNotFoundError:
+            if name in optional_outputs:
+                continue
+            raise
+    return files
 
 
 def result_response(
@@ -105,10 +125,12 @@ def result_response(
     name: str,
     application: str,
     output_files: dict[str, str],
+    optional_outputs: Mapping[str, str] | None = None,
 ) -> Response:
     if name not in output_files:
         raise FileNotFoundError(f"未知结果: {name}")
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
+    optional_outputs = optional_outputs or {}
     if name not in attempt.requested_outputs:
         raise FileNotFoundError(f"工作流未请求结果: {name}")
     filename = output_files[name]
@@ -118,16 +140,28 @@ def result_response(
         try:
             storage.object_info(key)
             url = storage.download_url(key)
-        except (BotoCoreError, ClientError) as error:
+        except ClientError as error:
+            if name in optional_outputs and is_missing_object(error):
+                raise FileNotFoundError(optional_outputs[name]) from error
+            raise OSError(f"工作流 {workflow_instance_id} 成功但无法读取结果 {name}: {error}") from error
+        except BotoCoreError as error:
             raise OSError(f"工作流 {workflow_instance_id} 成功但无法读取结果 {name}: {error}") from error
         finally:
             storage.close()
         return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
-    path = (output_dir / filename).resolve()
-    if path.parent != output_dir or not path.is_file():
-        raise OSError(f"工作流 {workflow_instance_id} 成功但缺少结果: {name}")
+    try:
+        path = local_result_path(
+            workflow_instance_id,
+            output_dir,
+            name,
+            filename,
+        )
+    except FileNotFoundError as error:
+        if name in optional_outputs:
+            raise FileNotFoundError(optional_outputs[name]) from error
+        raise
     return FileResponse(path, filename=filename, media_type=PARQUET_CONTENT_TYPE)
 
 
@@ -201,16 +235,40 @@ def local_result_file(
     name: str,
     filename: str,
 ) -> dict[str, Any]:
-    path = (output_dir / filename).resolve()
-    if path.parent != output_dir or not path.is_file():
-        raise OSError(f"工作流 {workflow_instance_id} 成功但缺少结果: {name}")
-    stat = path.stat()
+    path = local_result_path(
+        workflow_instance_id,
+        output_dir,
+        name,
+        filename,
+    )
+    file_stat = path.stat()
     return {
         "name": name,
         "filename": filename,
-        "size": stat.st_size,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC),
+        "size": file_stat.st_size,
+        "modified_at": datetime.fromtimestamp(file_stat.st_mtime, UTC),
     }
+
+
+def local_result_path(
+    workflow_instance_id: int,
+    output_dir: Path,
+    name: str,
+    filename: str,
+) -> Path:
+    """返回经过目录边界和普通文件校验的本地结果路径。"""
+    path = (output_dir / filename).resolve()
+    if path.parent != output_dir:
+        raise OSError(f"工作流 {workflow_instance_id} 的结果路径越界: {name}")
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError as error:
+        raise FileNotFoundError(
+            f"工作流 {workflow_instance_id} 成功但缺少结果: {name}"
+        ) from error
+    if not S_ISREG(mode):
+        raise OSError(f"工作流 {workflow_instance_id} 的结果不是普通文件: {name}")
+    return path
 
 
 def cloud_result_file(
@@ -226,6 +284,14 @@ def cloud_result_file(
         "size": info.size,
         "modified_at": info.modified_at,
     }
+
+
+def is_missing_object(error: ClientError) -> bool:
+    """判断 S3 兼容接口是否明确返回对象不存在。"""
+    response = error.response
+    code = str(response.get("Error", {}).get("Code", ""))
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return status == 404 or code in {"404", "NoSuchKey", "NotFound"}
 
 
 def cloud_storage(application: str, workspace_key: str) -> tuple[ObjectStorage, str]:

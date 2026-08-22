@@ -61,6 +61,12 @@ OUTPUT_FILES = {
     "daily_trading_statistics": "daily_trading_statistics.parquet",
     "engine_stat": "engine_stat.parquet",
 }
+OPTIONAL_OUTPUTS = {
+    "daily_trading_statistics": (
+        "当前 DolphinDB Backtest 插件不支持每日交易统计接口，"
+        "本次运行未生成 daily_trading_statistics.parquet"
+    ),
+}
 OPTIMIZATION_OUTPUT_FILES = {
     algorithm.value: f"{algorithm.value}.parquet"
     for algorithm in OptimizationAlgorithm
@@ -79,11 +85,26 @@ BATCH_OUTPUTS = ["results"]
 
 
 def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
-    return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
+    return result_files(
+        session,
+        user_id,
+        workflow_instance_id,
+        "backtest",
+        OUTPUT_FILES,
+        OPTIONAL_OUTPUTS,
+    )
 
 
 def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
-    return result_response(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
+    return result_response(
+        session,
+        user_id,
+        workflow_instance_id,
+        name,
+        "backtest",
+        OUTPUT_FILES,
+        OPTIONAL_OUTPUTS,
+    )
 
 
 def optimization_result_files(session: Session, user_id: int, optimization_id: int) -> list[dict[str, Any]]:

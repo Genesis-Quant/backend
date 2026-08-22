@@ -176,7 +176,7 @@ def finalize(mutable context)
 | `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单可有多行 |
 | `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、权益、净值、费用和盈亏 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日按证券和成交方向汇总 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 可选；仅在运行节点插件支持对应接口时生成 |
 
 Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价格尺度一致或成交逻辑可信。统一 QA
 清单、字段字典、费用和指标口径见 `arena://docs/backtest/results`。

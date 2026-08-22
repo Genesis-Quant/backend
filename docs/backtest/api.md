@@ -185,7 +185,7 @@ list_workflow_outputs("backtest", workflow_instance_id)
 | `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单多行，当前没有费用列 |
 | `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓；当前卖出量/额字段有已知限制 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、市值、权益、净值、累计收益和累计费用 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日按证券和买开/卖平成交方向汇总 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 可选；仅在运行节点插件支持对应接口时生成 |
 
 下载与鉴权见 `arena://docs/overview/workflows`。读取报告前必须执行
 `arena://docs/backtest/results` 的字段解释、已知限制、对账公式和 QA 清单。

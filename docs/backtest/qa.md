@@ -49,7 +49,7 @@ Workspace 前编译 `utils` 与 callbacks。
 | `trade_details` | 一次订单状态事件 | 按 `orderId` 聚合生命周期；识别拒单、撤单、撤单拒绝和期末未成交 |
 | `daily_positions` | 证券 × 交易日的盘后持仓记录 | 数量、估值价、零仓行、缺行和无法退出持仓 |
 | `daily_portfolios` | 组合 × 交易日 | 现金、市值、权益、净值、收益、盈亏和累计费用 |
-| `daily_trading_statistics` | 有成交统计的证券 × 交易日 | 实际成交量、成交额和方向均价 |
+| `daily_trading_statistics`（可选） | 有成交统计的证券 × 交易日 | 插件支持时用于核对实际成交量、成交额和方向均价 |
 
 `trade_details` 不是“一笔订单一行”。同一 `orderId` 可有多个状态事件，事件行数不能当作唯一订单数。
 字段、状态码和关联键见 `arena://docs/backtest/results`。

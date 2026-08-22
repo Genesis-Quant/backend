@@ -71,6 +71,6 @@ totalVolume, totalValue, direction, tradeTime, orderPrice, label
 最终审计必须使用：
 
 - `trade_details` 的订单生命周期；
-- `daily_trading_statistics` 或 `onTrade` 的实际成交；
+- 插件支持时使用 `daily_trading_statistics`，运行中也可从 `onTrade` 读取实际成交；
 - `daily_positions` 的实际持仓；
 - `daily_portfolios` 的现金、权益和累计费用。

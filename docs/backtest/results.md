@@ -1,7 +1,8 @@
 # Backtest 结果与审计契约
 
-本页定义当前四张 Parquet 的行粒度、关联字段、订单状态和账务口径。附加列可能随插件版本及
-`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum` 配置变化，读取时必须先检查实际 Schema。
+本页定义标准 Parquet 的行粒度、关联字段、订单状态和账务口径。结果表及附加列可能随插件版本及
+`outputOrderInfo`、`outputSeqNum`、`outputTradeSeqNum` 配置变化，读取时必须先检查实际输出列表和
+Parquet Schema。当前部署不支持 `daily_trading_statistics`，Runtime 会跳过该文件，其余结果仍然有效。
 
 ## 行粒度与关联
 
@@ -10,7 +11,7 @@
 | `trade_details` | 一次订单状态事件 | `orderId` 关联同一订单；默认没有单行稳定主键 | 订单生命周期、拒单和未成交审计 |
 | `daily_positions` | 证券 × 交易日的盘后持仓记录 | `(symbol, tradeDate)` | 持仓数量和估值 |
 | `daily_portfolios` | 组合 × 交易日 | `tradeDate` | 现金、权益、净值、盈亏和费用 |
-| `daily_trading_statistics` | 有交易统计的证券 × 交易日 | `(symbol, tradeDate)` | 实际成交量、成交额和均价 |
+| `daily_trading_statistics`（可选） | 有交易统计的证券 × 交易日 | `(symbol, tradeDate)` | 实际成交量、成交额和均价 |
 
 四表没有统一的成交主键。使用 `orderId` 还原订单事件；使用 `symbol` 和 `tradeDate` 关联持仓与日成交；
 再按 `tradeDate` 汇总到组合表。`NULL`、数值 0 和缺行含义不同，聚合时只能按明确口径补值。时间戳
@@ -51,7 +52,8 @@
 - 按 `orderId` 聚合，事件行数与唯一订单数分别报告；
 - 终态集合为 `{1, 2, -1, -3}`，不能按状态码大小判断；
 - 不对同一订单各事件行的 `tradeQty` 求和；
-- 实际成交优先使用 `onTrade` 或 `daily_trading_statistics`；
+- `daily_trading_statistics` 可用时优先用它核对实际成交；不可用时只能按 `orderId` 结合
+  `trade_details` 的累计成交字段审计，并披露缺少稳定事件序号时的限制；
 - 默认没有序号列时，Parquet 物理行顺序不是稳定业务顺序；
 - 当前 MCP 不合成目标金额、可用现金和具体拒绝规则。拒单详情仅在实际 `orderInfo` 或日志可用时辅助
   解释，不能假定每笔拒单都有完整原因。
@@ -60,15 +62,18 @@
 
 ## `daily_positions`
 
-核心字段包括 `symbol`、`tradeDate`、昨日/当日多空数量、持仓均价、当日买卖量额和 `closePrice`。
-这是盘后时点表，不是完整的“全部代码 × 全部日期”矩阵；零仓行可能存在，也可能缺行。
+核心字段包括 `symbol`、`tradeDate`、昨日/当日多空数量、持仓均价和当日买卖量额。
+这是盘后时点表，不是完整的“全部代码 × 全部日期”矩阵；零仓行可能存在，也可能缺行。结果列以
+实际 Parquet schema 为准：当前部署的插件不输出 `closePrice`，不得假定该列存在，也不得把
+`longPositionAvgPrice` 当作当日估值价。
 
 当前部署已观察到 `todaySellVolume` 和 `todaySellValue` 不能可靠反映真实卖出，因此不得用它们单独
-审计卖出，也不得强制使用它们验证持仓数量恒等式。卖出应以
-`daily_trading_statistics.todaySellCloseTradeVolume/Value` 为主，再与订单方向和终态交叉核对。
+审计卖出，也不得强制使用它们验证持仓数量恒等式。插件支持交易统计接口时，以
+`daily_trading_statistics.todaySellCloseTradeVolume/Value` 为主；当前部署不支持该接口，只能结合
+`trade_details` 的订单方向、累计成交字段和终态核对，并明确这一审计限制。
 
-停牌或必要价格缺失时，持仓仍可能存在，`closePrice` 可能沿用最近可用估值价；它不代表当日新行情，
-不能回填为因子数据。
+停牌或必要价格缺失时，持仓仍可能存在；当前持仓结果表不提供可用于判断当日行情是否有效的估值价，
+不能用持仓均价回填因子数据。
 
 ## `daily_portfolios`
 
@@ -103,6 +108,9 @@ feeIncrement[t] = totalFee[t] - totalFee[t-1]
 
 ## `daily_trading_statistics`
 
+这是插件能力决定的可选输出。当前部署的 Backtest 插件不支持对应接口，因此成功运行不会生成该文件；
+调用输出列表时也不会返回它。升级到支持该接口的插件后，字段仍应以实际 Parquet Schema 为准。
+
 该表按证券和交易日汇总实际成交。核心字段按买开、卖开、卖平和买平分别提供成交量、成交额和均价。
 完全没有成交统计的 `(symbol, tradeDate)` 可以缺行。
 
@@ -128,9 +136,9 @@ averagePrice ≈ tradeValue / tradeVolume
 ## 最低审计顺序
 
 ```text
-检查四表 Schema 和日期
+检查实际输出列表、各表 Schema 和日期
   -> 按 orderId 还原订单生命周期
-  -> 用成交统计核对真实方向、量、额和均价
+  -> 成交统计可用时核对真实方向、量、额和均价，否则披露 trade_details 审计限制
   -> 用持仓表核对盘后数量和无法退出状态
   -> 用组合表核对现金、权益、净值、PnL 和费用
   -> 披露拒单、撤单拒绝、期末未成交和期末持仓
