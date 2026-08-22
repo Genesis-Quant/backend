@@ -190,12 +190,14 @@ class AdminService:
         user_id: int,
         workers: Sequence[str] | None = None,
         channel: str | None = None,
+        overwrite: bool = False,
     ) -> dict[str, Any]:
         run, submission = WorkflowGatewayService().submit_incremental(
             session,
             user_id,
             workers,
             channel,
+            overwrite,
         )
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
@@ -207,6 +209,7 @@ class AdminService:
             "job_id": start_parameters["job_id"],
             "workers": start_parameters["workers"].split(","),
             "channel": start_parameters["channel"],
+            "overwrite": start_parameters["overwrite"] == "true",
             "workspace_id": run.id,
             "workflow_instance_id": workflow.workflow_instance_id,
             "project_code": int(attempt.project_code or 0),

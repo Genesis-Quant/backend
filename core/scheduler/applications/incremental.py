@@ -78,11 +78,14 @@ def submit_incremental_update_workflow(
                     Shell(
                         name=worker_name,
                         command=(
+                            'if [ "${overwrite}" = "true" ]; then '
+                            'set -- --overwrite; else set --; fi; '
                             f"exec {DolphinSchedulerSettings.RUNTIME_COMMAND} "
                             f"workers {worker_name} "
                             '--job-id "${job_id}" '
                             '--output-dir "${output_dir}" '
-                            '--selected-workers "${workers}"'
+                            '--selected-workers "${workers}" '
+                            '"$@"'
                         ),
                         description=f"{worker_name} 增量更新",
                         worker_group=DolphinSchedulerSettings.WORKER_GROUP,

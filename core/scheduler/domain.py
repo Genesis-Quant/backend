@@ -17,6 +17,7 @@ INCREMENTAL_START_PARAMETERS = (
     "output_dir",
     "workers",
     "channel",
+    "overwrite",
 )
 FAILURE_STATES = frozenset({"FAILURE", "STOP", "KILL"})
 TERMINAL_STATES = frozenset({"SUCCESS", "FAILURE", "STOP", "KILL", "FORCED_SUCCESS", "SUBMIT_FAILED"})

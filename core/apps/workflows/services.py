@@ -412,6 +412,7 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
         user_id: int,
         workers: Sequence[str] | None = None,
         channel: str | None = None,
+        overwrite: bool = False,
     ) -> tuple[WorkflowWorkspace, Any]:
         selected_workers = normalize_incremental_workers(workers)
         selected_channel = normalize_incremental_channel(channel)
@@ -438,6 +439,7 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
                     "output_dir": str(output_dir),
                     "workers": ",".join(selected_workers),
                     "channel": selected_channel,
+                    "overwrite": "true" if overwrite else "false",
                 },
                 INCREMENTAL_START_PARAMETERS,
             )
@@ -483,6 +485,7 @@ class WorkflowGatewayService:
         user_id: int,
         workers: Sequence[str] | None = None,
         channel: str | None = None,
+        overwrite: bool = False,
     ) -> tuple[WorkflowWorkspace, Any]:
         executor = self.executors["incremental"]
         if not isinstance(executor, IncrementalWorkflowExecutionService):
@@ -492,6 +495,7 @@ class WorkflowGatewayService:
             user_id,
             workers,
             channel,
+            overwrite,
         )
 
     def status(

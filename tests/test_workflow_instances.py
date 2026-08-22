@@ -709,6 +709,7 @@ def test_incremental_submission_passes_optional_worker_output_directory(
         owner.id,
         ["daily", "limit"],
         "console",
+        True,
     )
     attempt = session.scalar(select(WorkflowAttempt).where(WorkflowAttempt.workflow_workspace_id == run.id, WorkflowAttempt.is_current.is_(True)))
     assert attempt is not None
@@ -722,6 +723,7 @@ def test_incremental_submission_passes_optional_worker_output_directory(
         "output_dir": str(output_dir),
         "workers": "daily,limit",
         "channel": "console",
+        "overwrite": "true",
     }
     assert attempt.start_parameters == captured["start_params"]
 

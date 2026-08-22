@@ -119,6 +119,7 @@ def run_incremental_update(
             user.id,
             None if body is None else body.workers,
             None if body is None else body.channel,
+            False if body is None else body.overwrite,
         )
     except ValueError as error:
         raise HTTPException(

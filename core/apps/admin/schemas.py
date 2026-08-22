@@ -144,6 +144,7 @@ class IncrementalUpdateRunCreate(BaseModel):
 
     workers: list[str] | None = None
     channel: str = "console"
+    overwrite: bool = False
 
     @field_validator("workers")
     @classmethod
@@ -163,6 +164,7 @@ class IncrementalUpdateRunResponse(BaseModel):
     job_id: str
     workers: list[str]
     channel: str
+    overwrite: bool
     workspace_id: int
     workflow_instance_id: int
     project_code: int
