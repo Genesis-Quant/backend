@@ -27,6 +27,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询 |
 | `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
+| `return_specs` | object | 是 | — | 每个收益标签的口径与覆盖期数，键必须与 `return_columns` 完全一致 |
 | `n_groups` | integer | 否 | `5` | 每日等数量分组数，至少 2 |
 | `preprocess` | boolean | 否 | `true` | 是否执行 Runtime 内置预处理 |
 | `market_value_column` | string | 否 | `circ_mv` | 中性化控制变量和分组收益权重 |
@@ -76,6 +77,28 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 收益标签由 DSL 生成，Runtime 不假定固定名称。其字段必须与请求中的 `return_columns` 完全一致，
 方向和时间对齐由调用方定义并核验。
 
+`return_specs` 必须逐列说明后处理如何解释收益值：
+
+```json
+{
+  "return_specs": {
+    "future_return": { "kind": "simple", "periods": 1 },
+    "future_log_return": { "kind": "log", "periods": 5 }
+  }
+}
+```
+
+- `kind="simple"`：列值是简单收益率；单期财富按 `1 + return` 累乘；
+- `kind="log"`：列值是对数收益率；单期财富按收益值累加后取指数；
+- `periods`：一个观测覆盖的交易期数，必须为正整数，不是 derivative 名称中的数字或 shift 偏移量；
+- `periods=1` 时可以计算累计多空收益、年化收益、年化波动率、Sharpe 和最大回撤；
+- `periods>1` 时服务端将观测视为可能重叠。Runtime 仍输出逐日 IC、Rank IC 和原始分组收益，但
+  Backend 与浏览器一律不把它们连续复利，相关累计和年化指标返回空值。
+
+服务端不会根据列名猜测简单收益、对数收益或覆盖期数。旧请求缺少 `return_specs` 时，仅为兼容历史
+数据识别直接的 `unary.log(binary.div(shift(...), shift(...)))` 和 `unary.pct_change` 结构；无法从该结构
+精确确定时会明确报错，必须人工补充口径。新请求必须显式提供，避免工作流成功但报告口径错误。
+
 因子分析允许使用未来收益作为标签，但这些列不能再作为回测交易信号。
 
 ## 请求构造
@@ -117,6 +140,7 @@ time
 - 两阶段都分别满足完整 `FactorQuery` 契约；
 - 第二阶段仍包含需要逐日生效的成员和状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
+- `return_specs` 与 `return_columns` 一一对应，并与 DSL 实际收益公式一致；
 - 收益标签的方向和 shift 符合研究定义；
 - `lookback` 覆盖所有滚动窗口；
 - 内置预处理的样本数量足以进行市值和行业回归；

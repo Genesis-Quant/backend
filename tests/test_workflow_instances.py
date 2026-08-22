@@ -396,6 +396,9 @@ def test_retry_failed_preserves_attempt_context_events(
         def execute_process_instance(self, *ignored: object):
             return {"success": True}
 
+        def process_instance_tasks(self, **ignored: object):
+            return [{"id": 90}]
+
     monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", Client)
     monkeypatch.setattr(WorkflowExecutionService, "synchronize", lambda *ignored, **kwargs: None)
 
@@ -403,10 +406,16 @@ def test_retry_failed_preserves_attempt_context_events(
 
     current = current_workflow_attempt(session, workspace.id)
     assert current is not None
-    assert current.id != previous.id
+    assert current.id == previous.id
     assert current.input_json == previous.input_json
     assert auto_save_metadata(current) == previous.events[0]
-    assert [event["event"] for event in current.events] == ["AUTO_SAVE_VERSION", "WORKFLOW_CONTROL_REQUESTED"]
+    assert current.submission_state == "RETRYING"
+    assert [event["event"] for event in current.events] == [
+        "AUTO_SAVE_VERSION",
+        "WORKFLOW_SUBMIT_FAILED",
+        "WORKFLOW_CONTROL_REQUESTED",
+    ]
+    assert current.events[-1]["previous_task_instance_id"] == 90
 
 
 def test_submission_retry_reconciles_existing_scheduler_instance_before_start(

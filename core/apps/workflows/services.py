@@ -60,7 +60,10 @@ from core.utils.time import utc_now
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
 POLLER_LOCK_ID = 280284398913
-SUBMISSION_ACTIVE_STATES = frozenset({"CREATED", "SUBMITTING", "SUBMITTED"})
+WORKFLOW_RETRY_PENDING_STATE = "RETRYING"
+SUBMISSION_ACTIVE_STATES = frozenset(
+    {"CREATED", "SUBMITTING", "SUBMITTED", WORKFLOW_RETRY_PENDING_STATE}
+)
 BATCH_PENDING_STATE = "QUEUED"
 AUTO_SAVE_PENDING_STATE = "AUTO_SAVE_PENDING"
 ATTEMPT_FAILURE_STATES = frozenset({"SUBMIT_FAILED", "AUTO_SAVE_FAILED"})
@@ -71,7 +74,6 @@ PROCESS_ACTIONS = {
     WorkflowAction.STOP: "STOP",
     WorkflowAction.PAUSE: "PAUSE",
     WorkflowAction.RESUME: "RECOVER_SUSPENDED_PROCESS",
-    WorkflowAction.RERUN: "REPEAT_RUNNING",
     WorkflowAction.RETRY_FAILED: "START_FAILURE_TASK_PROCESS",
 }
 
@@ -118,15 +120,38 @@ def prepare_workspace(
     create_directory: bool,
 ) -> None:
     """Create or reset one validated workspace before starting an attempt."""
-    run_directory = workspace_directory(workspace.application, workspace.workspace_key)
     input_file = workspace_input_file(workspace.application, workspace.workspace_key)
+    temporary = input_file.with_suffix(".json.tmp")
+    if input_file.is_symlink() or temporary.is_symlink():
+        raise ValueError(f"workspace 输入文件不能是符号链接: {input_file}")
+
+    prepare_workspace_output(workspace, create_directory=create_directory)
+
+    temporary.write_text(
+        json.dumps(
+            attempt.input_json,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(input_file)
+
+
+def prepare_workspace_output(
+    workspace: WorkflowWorkspace,
+    *,
+    create_directory: bool,
+) -> None:
+    """Create or reset only the output area of a validated workspace."""
+    run_directory = workspace_directory(
+        workspace.application,
+        workspace.workspace_key,
+    )
     output_directory = workspace_output_directory(
         workspace.application,
         workspace.workspace_key,
     )
-    temporary = input_file.with_suffix(".json.tmp")
-    if input_file.is_symlink() or temporary.is_symlink():
-        raise ValueError(f"workspace 输入文件不能是符号链接: {input_file}")
 
     if create_directory:
         if uses_cloud_output(workspace.application):
@@ -148,16 +173,6 @@ def prepare_workspace(
             shutil.rmtree(output_directory)
         if not uses_cloud_output(workspace.application):
             output_directory.mkdir(parents=True)
-
-    temporary.write_text(
-        json.dumps(
-            attempt.input_json,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    temporary.replace(input_file)
 
 
 class WorkflowExecutionService:
@@ -338,7 +353,13 @@ class WorkflowExecutionService:
 
         workflow = current_workflow_instance(session, workspace.id)
         scheduler_instance = None
-        if workflow is None or attempt.submission_state in SUBMISSION_ACTIVE_STATES:
+        retrying_failed_tasks = (
+            attempt.submission_state == WORKFLOW_RETRY_PENDING_STATE
+        )
+        if workflow is None or (
+            attempt.submission_state in SUBMISSION_ACTIVE_STATES
+            and not retrying_failed_tasks
+        ):
             scheduler_instance = self.locate_new_workflow_instance(session, client, workspace, attempt)
             if scheduler_instance is not None:
                 workflow_instance_id = int(scheduler_instance["id"])
@@ -362,10 +383,24 @@ class WorkflowExecutionService:
                 int(attempt.project_code),
                 workflow.workflow_instance_id,
             )
-            if (
-                attempt.submission_state in SUBMISSION_ACTIVE_STATES
-                and str(scheduler_instance.get("state") or workflow.state) not in TERMINAL_STATES
-            ):
+            scheduler_state = str(
+                scheduler_instance.get("state") or workflow.state
+            )
+            if retrying_failed_tasks:
+                baseline_task_id = retry_baseline_task_instance_id(attempt)
+                latest_task_id = max(
+                    (
+                        int(item.get("id") or 0)
+                        for item in client.process_instance_tasks(
+                            project_code=int(attempt.project_code),
+                            process_instance_id=workflow.workflow_instance_id,
+                        )
+                    ),
+                    default=0,
+                )
+                if scheduler_state != "FAILURE" or latest_task_id > baseline_task_id:
+                    attempt.submission_state = "WORKFLOW_CREATED"
+            elif attempt.submission_state in SUBMISSION_ACTIVE_STATES:
                 attempt.submission_state = "WORKFLOW_CREATED"
 
         synchronize_workflow_state(client, workspace, attempt, workflow, scheduler_instance)
@@ -421,13 +456,89 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
         session.flush()
         session.add(IncrementalWorkflowWorkspace(id=workspace.id))
         attempt = create_workflow_attempt(session, workspace, {}, [])
+        submission = self.submit_incremental_attempt(
+            session,
+            workspace,
+            attempt,
+            selected_workers,
+            selected_channel,
+            overwrite,
+            create_directory=True,
+        )
+        return workspace, submission
+
+    def rerun_incremental(
+        self,
+        session: Session,
+        workspace: WorkflowWorkspace,
+        previous_attempt: WorkflowAttempt,
+    ) -> tuple[WorkflowWorkspace, Any]:
+        """Rerun an incremental workspace with its previous validated options."""
+        if workspace.application != "incremental":
+            raise ValueError("只能用增量更新执行器重跑 incremental workspace")
+        parameters = previous_attempt.start_parameters
+        workers = parameters.get("workers")
+        channel = parameters.get("channel")
+        overwrite = parameters.get("overwrite")
+        if not workers or not channel or overwrite not in {"true", "false"}:
+            raise RuntimeError("增量更新历史 Attempt 缺少可重跑的提交参数")
+        selected_workers = normalize_incremental_workers(workers.split(","))
+        selected_channel = normalize_incremental_channel(channel)
+        previous_workflow = workflow_instance_for_attempt(
+            session,
+            previous_attempt.id,
+        )
+        attempt = create_workflow_attempt(
+            session,
+            workspace,
+            {},
+            [],
+            events=attempt_context_events(previous_attempt),
+        )
+        record_event(
+            attempt,
+            "WORKFLOW_CONTROL_REQUESTED",
+            action=WorkflowAction.RERUN.value,
+            previous_attempt_id=previous_attempt.id,
+            workflow_instance_id=(
+                previous_workflow.workflow_instance_id
+                if previous_workflow is not None
+                else None
+            ),
+        )
+        submission = self.submit_incremental_attempt(
+            session,
+            workspace,
+            attempt,
+            selected_workers,
+            selected_channel,
+            overwrite == "true",
+            create_directory=False,
+        )
+        return workspace, submission
+
+    def submit_incremental_attempt(
+        self,
+        session: Session,
+        workspace: WorkflowWorkspace,
+        attempt: WorkflowAttempt,
+        selected_workers: Sequence[str],
+        selected_channel: str,
+        overwrite: bool,
+        *,
+        create_directory: bool,
+    ) -> Any:
+        """Submit one prepared Incremental Attempt."""
         attempt_id = attempt.id
         submission: Any = None
         run_directory: Path | None = None
         try:
             run_directory = workspace_directory("incremental", workspace.workspace_key)
             output_dir = workspace_output_directory("incremental", workspace.workspace_key)
-            output_dir.mkdir(parents=True, exist_ok=False)
+            prepare_workspace_output(
+                workspace,
+                create_directory=create_directory,
+            )
             project_code, definition = ensure_incremental_workflow_definition()
             definition_code = int(definition["code"])
             attempt.project_code = project_code
@@ -457,8 +568,8 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
                 record_event(attempt, "WORKFLOW_SUBMITTED")
                 session.commit()
                 self.wait_for_workflow_instance(session, workspace, client)
-            return workspace, submission
-        except (DolphinSchedulerError, OSError, ValueError) as error:
+            return submission
+        except (DolphinSchedulerError, OSError, RuntimeError, ValueError) as error:
             session.rollback()
             failed_attempt = session.get(WorkflowAttempt, attempt_id)
             if failed_attempt is not None:
@@ -466,7 +577,7 @@ class IncrementalWorkflowExecutionService(WorkflowExecutionService):
                     failed_attempt.submission_state = "SUBMIT_FAILED"
                 failed_attempt.error = str(error)
                 session.commit()
-            elif run_directory is not None and run_directory.exists():
+            elif create_directory and run_directory is not None and run_directory.exists():
                 shutil.rmtree(run_directory)
             raise
 
@@ -552,7 +663,12 @@ class WorkflowGatewayService:
             raise FileNotFoundError(f"工作流工作空间不存在: {workspace_id}")
         state = (
             row.submission_state
-            if row.submission_state in {AUTO_SAVE_PENDING_STATE, "AUTO_SAVE_FAILED"}
+            if row.submission_state
+            in {
+                AUTO_SAVE_PENDING_STATE,
+                "AUTO_SAVE_FAILED",
+                WORKFLOW_RETRY_PENDING_STATE,
+            }
             else row.workflow_state or row.submission_state
         )
         return {
@@ -628,10 +744,7 @@ class WorkflowGatewayService:
             conditions.append(
                 or_(
                     WorkflowAttempt.submission_state == AUTO_SAVE_PENDING_STATE,
-                    and_(
-                        WorkflowInstance.workflow_instance_id.is_(None),
-                        WorkflowAttempt.submission_state.not_in(ATTEMPT_FAILURE_STATES),
-                    ),
+                    WorkflowAttempt.submission_state.in_(SUBMISSION_ACTIVE_STATES),
                     and_(
                         WorkflowInstance.workflow_instance_id.is_not(None),
                         WorkflowInstance.state.not_in(TERMINAL_STATES),
@@ -651,7 +764,12 @@ class WorkflowGatewayService:
             conditions.append(
                 or_(
                     WorkflowAttempt.submission_state.in_(ATTEMPT_FAILURE_STATES),
-                    WorkflowInstance.state.in_(FAILURE_STATES),
+                    and_(
+                        WorkflowInstance.state.in_(FAILURE_STATES),
+                        WorkflowAttempt.submission_state.not_in(
+                            SUBMISSION_ACTIVE_STATES
+                        ),
+                    ),
                 )
             )
 
@@ -958,31 +1076,81 @@ class WorkflowGatewayService:
     ) -> dict[str, Any]:
         workflow, attempt, workspace = self.find_accessible_workflow(session, user, workflow_instance_id)
         validate_workflow_action(workflow, action)
-        if action in {WorkflowAction.RERUN, WorkflowAction.RETRY_FAILED}:
+        if action is WorkflowAction.RERUN:
             if not attempt.is_current:
                 raise RuntimeError("只能重新运行当前 workflow instance")
             if workspace_has_saved_version(session, workspace):
                 raise RuntimeError("已保存版本关联的 workflow instance 不能重新运行")
+            executor = self.executors[workspace.application]
+            if isinstance(executor, IncrementalWorkflowExecutionService):
+                executor.rerun_incremental(session, workspace, attempt)
+            else:
+                previous_attempt_id = attempt.id
+                previous_workflow_instance_id = workflow.workflow_instance_id
+                rerun_attempt = create_workflow_attempt(
+                    session,
+                    workspace,
+                    attempt.input_json,
+                    attempt.requested_outputs,
+                    events=attempt_context_events(attempt),
+                )
+                record_event(
+                    rerun_attempt,
+                    "WORKFLOW_CONTROL_REQUESTED",
+                    action=action.value,
+                    previous_attempt_id=previous_attempt_id,
+                    workflow_instance_id=previous_workflow_instance_id,
+                )
+                session.commit()
+                executor.submit_workspace(
+                    session,
+                    workspace,
+                    create_directory=False,
+                )
+            current_attempt = require_current_workflow_attempt(session, workspace.id)
+            current_workflow = current_workflow_instance(session, workspace.id)
+            return {
+                "workflow": workflow_status_information(
+                    current_attempt,
+                    current_workflow,
+                )
+            }
         with DolphinSchedulerClient() as client:
+            retry_baseline_task_id = 0
+            if action is WorkflowAction.RETRY_FAILED:
+                if attempt.submission_state == WORKFLOW_RETRY_PENDING_STATE:
+                    raise RuntimeError("失败节点正在续跑，请勿重复提交")
+                retry_baseline_task_id = max(
+                    (
+                        int(item.get("id") or 0)
+                        for item in client.process_instance_tasks(
+                            project_code=int(attempt.project_code or 0),
+                            process_instance_id=workflow_instance_id,
+                        )
+                    ),
+                    default=0,
+                )
             client.execute_process_instance(
                 int(attempt.project_code or 0),
                 workflow_instance_id,
                 PROCESS_ACTIONS[action],
             )
-            if action in {WorkflowAction.RERUN, WorkflowAction.RETRY_FAILED}:
-                attempt = create_workflow_attempt(
-                    session,
-                    workspace,
-                    attempt.input_json,
-                    attempt.requested_outputs,
-                    start_parameters=attempt.start_parameters,
-                    project_code=attempt.project_code,
-                    workflow_definition_code=attempt.workflow_definition_code,
-                    workflow_name=attempt.workflow_name,
-                    submission_state="SUBMITTED",
-                    events=attempt_context_events(attempt),
+            if action is WorkflowAction.RETRY_FAILED:
+                attempt.submission_state = WORKFLOW_RETRY_PENDING_STATE
+                record_event(
+                    attempt,
+                    "WORKFLOW_CONTROL_REQUESTED",
+                    action=action.value,
+                    workflow_instance_id=workflow_instance_id,
+                    previous_task_instance_id=retry_baseline_task_id,
                 )
-            record_event(attempt, "WORKFLOW_CONTROL_REQUESTED", action=action.value, workflow_instance_id=workflow_instance_id)
+            else:
+                record_event(
+                    attempt,
+                    "WORKFLOW_CONTROL_REQUESTED",
+                    action=action.value,
+                    workflow_instance_id=workflow_instance_id,
+                )
             session.commit()
             try:
                 synchronized = self.executors[workspace.application].synchronize(session, workspace, client=client)
@@ -1234,7 +1402,7 @@ def workflow_status_information(
     workflow: WorkflowInstance,
 ) -> dict[str, Any]:
     return {
-        "state": workflow.state,
+        "state": workflow_attempt_state(attempt, workflow),
         "error": workflow.error or attempt.error,
     }
 
@@ -1289,9 +1457,26 @@ def workflow_attempt_state(
     attempt: WorkflowAttempt,
     workflow: WorkflowInstance | None,
 ) -> str:
-    if attempt.submission_state in {AUTO_SAVE_PENDING_STATE, "AUTO_SAVE_FAILED"}:
+    if attempt.submission_state in {
+        AUTO_SAVE_PENDING_STATE,
+        "AUTO_SAVE_FAILED",
+        WORKFLOW_RETRY_PENDING_STATE,
+    }:
         return attempt.submission_state
     return workflow.state if workflow is not None else attempt.submission_state
+
+
+def retry_baseline_task_instance_id(attempt: WorkflowAttempt) -> int:
+    for event in reversed(attempt.events or []):
+        if (
+            event.get("event") == "WORKFLOW_CONTROL_REQUESTED"
+            and event.get("action") == WorkflowAction.RETRY_FAILED.value
+        ):
+            try:
+                return int(event.get("previous_task_instance_id") or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def workflow_attempt_summary(
@@ -1594,20 +1779,59 @@ def auto_save_workspaces(
         metadata = auto_save_metadata(attempt) if attempt is not None else None
         client_id = metadata.get("client_id") if metadata is not None else None
         if isinstance(client_id, str) and client_id in client_ids:
-            if attempt.submission_state == "SUBMIT_FAILED":
+            workflow = current_workflow_instance(session, workspace.id)
+            submission_failed = attempt.submission_state == "SUBMIT_FAILED"
+            submission_unreconciled = (
+                workflow is None
+                and attempt.submission_state == "SUBMITTED"
+            )
+            execution_failed = (
+                workflow is not None
+                and workflow.state in FAILURE_STATES
+                and attempt.submission_state not in SUBMISSION_ACTIVE_STATES
+            )
+            if submission_failed or submission_unreconciled or execution_failed:
+                recover_ambiguous_submission = (
+                    submission_failed or submission_unreconciled
+                )
                 retry = create_workflow_attempt(
                     session,
                     workspace,
                     attempt.input_json,
                     attempt.requested_outputs,
-                    start_parameters=attempt.start_parameters,
-                    project_code=attempt.project_code,
-                    workflow_definition_code=attempt.workflow_definition_code,
-                    workflow_name=attempt.workflow_name,
+                    start_parameters=(
+                        attempt.start_parameters
+                        if recover_ambiguous_submission
+                        else None
+                    ),
+                    project_code=(
+                        attempt.project_code
+                        if recover_ambiguous_submission
+                        else None
+                    ),
+                    workflow_definition_code=(
+                        attempt.workflow_definition_code
+                        if recover_ambiguous_submission
+                        else None
+                    ),
+                    workflow_name=(
+                        attempt.workflow_name
+                        if recover_ambiguous_submission
+                        else None
+                    ),
                     submission_state=BATCH_PENDING_STATE,
                     events=attempt_context_events(attempt),
                 )
-                record_event(retry, "WORKFLOW_RETRY_QUEUED", previous_attempt_id=attempt.id)
+                record_event(
+                    retry,
+                    "WORKFLOW_RETRY_QUEUED",
+                    previous_attempt_id=attempt.id,
+                    previous_workflow_instance_id=(
+                        workflow.workflow_instance_id
+                        if workflow is not None
+                        else None
+                    ),
+                )
                 submission_retry_ids.append(workspace.id)
             elif attempt.submission_state == "AUTO_SAVE_FAILED":
                 attempt.submission_state = AUTO_SAVE_PENDING_STATE

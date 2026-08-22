@@ -205,13 +205,38 @@ def test_factor_draft_reuses_workspace_until_version_is_saved(
     assert created["draft"]["version"] == 1
     assert created["draft"]["saved"] is False
     assert created["draft"]["state"] == "DRAFT"
-    first_payload = {"factor_columns": ["factor"], "return_columns": ["return"], "n_groups": 5}
-    second_payload = {
+    first_payload = {
+        "codes_query": None,
+        "dataset_query": {
+            "start_date": "2020-01-01",
+            "end_date": "2020-01-02",
+            "lookback": "P30D",
+            "codes": ["000001.SZ"],
+            "factors": [],
+            "derivatives": {
+                "factor": {
+                    "type": "TS",
+                    "op": "unary.pct_change",
+                    "fields": {"col": "close_hfq"},
+                    "params": {"periods": 20},
+                },
+                "return": {
+                    "type": "TS",
+                    "op": "unary.pct_change",
+                    "fields": {"col": "close_hfq"},
+                    "params": {"periods": 1},
+                },
+            },
+            "filters": [],
+        },
         "factor_columns": ["factor"],
         "return_columns": ["return"],
+        "return_specs": {"return": {"kind": "simple", "periods": 1}},
         "n_groups": 5,
-        "preprocess": False,
+        "preprocess": True,
+        "market_value_column": "circ_mv",
     }
+    second_payload = {**first_payload, "market_value_column": "total_mv"}
 
     first = submit_project_analysis(session, user.id, project.id, first_payload)
     original_workspace_key = first.workspace_key
@@ -360,7 +385,7 @@ def test_batch_client_id_retries_failed_auto_save_without_new_attempt(
 
 
 def test_factor_maximum_drawdown_includes_initial_wealth() -> None:
-    growth, maximum_drawdown = return_growth(pd.Series([-0.5, 0.1]))
+    growth, maximum_drawdown = return_growth(pd.Series([-0.5, 0.1]), "simple")
 
     assert growth == pytest.approx(0.55)
     assert maximum_drawdown == pytest.approx(0.5)

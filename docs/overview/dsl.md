@@ -15,7 +15,9 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 
 `list_dsl_operators` 的 `result.factors` 也返回同一份完整列表。需要注意：该工具的 `search`、
 `operator_type` 和 `limit` 只作用于 `operators`，不会截断或筛选 `factors`。只需要一次性获取全部
-字段和算符定义时，优先读取 `arena://dsl/catalog`。
+字段和算符定义时，优先读取 `arena://dsl/catalog`。`limit` 的合法范围为 1 到 200；匹配数超过
+`limit` 时根据 `matched` 与 `returned` 继续缩小 `search` 或按 `operator_type` 查询，不能把一次返回
+误当成完整算符集合。
 
 “可用”表示请求能通过 Runtime 的字段白名单校验，不表示每个字段在每只证券、每个日期都存在非
 空数据。实际覆盖取决于已更新的数据源、证券类型、上市日期、财报日期和配置的指数代码。
@@ -168,6 +170,12 @@ Runtime 也会把它加入内部读取集合，但不会把它作为最终基础
 
 在回测中，负 `shift` 或其它未来数据只能作为分析标签，不能作为决策输入。回测回调读取历史数据
 时还必须使用 `getLastData` / `getHistoryData` 的严格历史边界。
+
+## 退化截面和归一化结果
+
+z-score、robust z-score、L1/L2/sum normalization 等算符遇到零尺度或零分母时，会返回与输入等长的
+DOUBLE NULL 向量。它们不会返回标量 NULL，也不会用 0、原值或任意常量替代。下游 derivative、
+`on` 和 `filters` 必须按 NULL 语义处理；需要其它退化规则时应在 DSL 中显式定义。
 
 ## 正确的发现流程
 

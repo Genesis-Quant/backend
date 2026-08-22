@@ -31,6 +31,7 @@ get_workspace_status(workspace_id)
 | 状态 | 含义 | 调用方行为 |
 | --- | --- | --- |
 | `QUEUED`、`CREATED`、`SUBMITTING`、`SUBMITTED` | 创建或提交中 | 继续轮询 Workspace |
+| `RETRYING` | DolphinScheduler 正在原 Instance 内启动失败 Task 续跑 | 继续轮询 Workspace |
 | DolphinScheduler 非终态，如 `RUNNING_EXECUTION` | 调度执行中 | 继续轮询 Workspace |
 | `SUCCESS` | 调度执行成功 | 按应用 API 文档读取输出或保存版本 |
 | `AUTO_SAVE_PENDING` | 批量任务成功，自动保存版本中 | 继续轮询，不能停止已结束实例 |
@@ -253,8 +254,11 @@ control_workflow(workflow_instance_id, action)
 
 - `stop`：停止仍在运行的实例；
 - `pause`、`resume`：暂停或恢复调度；
-- `rerun`：使用原 Attempt 输入完整重跑，创建新 Attempt；
-- `retry-failed`：使用原输入续跑失败 Task，创建新 Attempt。
+- `rerun`：使用原 Attempt 的完整输入重新提交整个工作流，创建新的 Attempt 和新的 Workflow
+  Instance；旧 Attempt/Instance 保留为历史记录。Incremental 会复用上一 Attempt 已校验的 workers、
+  channel 和 overwrite 参数；
+- `retry-failed`：让 DolphinScheduler 在原 Workflow Instance 内续跑失败 Task，不创建新的 Attempt
+  或 Instance；状态和 Task 列表仍通过原 Workspace/Instance 查询。
 
 提交中但没有 Instance 的 Workspace 不能调用该工具。重跑后回到 `get_workspace_status(workspace_id)`
 获取新的当前 Instance。

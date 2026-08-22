@@ -7,8 +7,11 @@ from typing import Any
 from fastapi import Response
 import numpy as np
 import pandas as pd
-from runtime.apps.factor.schema import FactorAnalysisParameters
-from sqlalchemy import and_, delete, func, select
+from runtime.apps.factor.schema import (
+    FactorAnalysisParameters,
+    validate_historical_factor_analysis_parameters,
+)
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from core.apps.factor.models import FactorProject, FactorVersion
@@ -164,10 +167,14 @@ def create_factor_version(session: Session, user_id: int, project_id: int, workf
 def save_factor_version(session: Session, project: FactorProject, version: FactorVersion, run: WorkflowWorkspace, attempt: WorkflowAttempt, workflow: WorkflowInstance, remark: str) -> FactorVersion:
     if version.saved:
         return version
-    parameters = attempt.input_json
+    validated = validate_historical_factor_analysis_parameters(
+        attempt.input_json
+    )
+    parameters = validated.model_dump(mode="json")
+    attempt.input_json = parameters
     information = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "information_coefficient", OUTPUT_FILES)
     groups = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "group_returns", OUTPUT_FILES)
-    metrics = factor_metrics(parameters, information, groups)
+    metrics = factor_metrics(validated, information, groups)
     validate_metric_dimensions(parameters, metrics)
     version.workflow_instance_id = workflow.workflow_instance_id
     version.saved = True
@@ -185,7 +192,10 @@ def list_factor_versions(session: Session, user_id: int, project_id: int) -> lis
     project = owned_project(session, user_id, project_id)
     rows = session.execute(
         select(FactorVersion.id, FactorVersion.version, FactorVersion.saved, FactorVersion.is_current, FactorVersion.remark, FactorVersion.workflow_instance_id, FactorVersion.created_at)
-        .where(FactorVersion.project_id == project.id)
+        .where(
+            FactorVersion.project_id == project.id,
+            or_(FactorVersion.saved.is_(True), FactorVersion.is_current.is_(True)),
+        )
         .order_by(FactorVersion.version.desc())
     ).mappings()
     return [dict(row) for row in rows]
@@ -431,14 +441,15 @@ def finalize_factor_auto_save_workspace(session: Session, run: WorkflowWorkspace
         raise
 
 
-def factor_metrics(parameters: dict[str, Any], information: pd.DataFrame, groups: pd.DataFrame) -> dict[str, Any]:
+def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], information: pd.DataFrame, groups: pd.DataFrame) -> dict[str, Any]:
     if "time" not in groups:
         raise ValueError("因子分组收益结果缺少列: time")
+    validated = validate_historical_factor_analysis_parameters(parameters)
     result: dict[str, Any] = {}
-    count_groups = int(parameters["n_groups"])
-    for factor in parameters["factor_columns"]:
+    count_groups = validated.n_groups
+    for factor in validated.factor_columns:
         result[factor] = {}
-        for return_column in parameters["return_columns"]:
+        for return_column in validated.return_columns:
             ic = numeric_series(information, f"{factor}_{return_column}_ic")
             rank_ic = numeric_series(information, f"{factor}_{return_column}_rank_ic")
             low_column = f"{factor}_{return_column}_group0"
@@ -446,12 +457,35 @@ def factor_metrics(parameters: dict[str, Any], information: pd.DataFrame, groups
             low = numeric_series(groups, low_column)
             high = numeric_series(groups, high_column)
             returns = pd.DataFrame({"time": groups["time"], "value": high - low}).dropna().sort_values("time")["value"]
+            return_spec = validated.return_specs[return_column]
+            return_kind = return_spec.kind
+            return_periods = return_spec.periods
             observations = int(ic.count())
             ic_std = clean_number(ic.std(ddof=1))
             rank_std = clean_number(rank_ic.std(ddof=1))
-            annual_volatility = clean_number(returns.std(ddof=0) * sqrt(252))
-            growth, maximum_drawdown = return_growth(returns)
-            annual_return = clean_number(growth ** (252 / len(returns)) - 1) if growth is not None and len(returns) else None
+            if return_periods == 1:
+                realized_returns = (
+                    pd.Series(np.expm1(returns.to_numpy(dtype=float)))
+                    if return_kind == "log"
+                    else returns
+                )
+                annual_volatility = clean_number(
+                    realized_returns.std(ddof=0) * sqrt(252)
+                )
+                growth, maximum_drawdown = return_growth(
+                    returns,
+                    return_kind,
+                )
+                annual_return = (
+                    clean_number(growth ** (252 / len(returns)) - 1)
+                    if growth is not None and len(returns)
+                    else None
+                )
+            else:
+                growth = None
+                maximum_drawdown = None
+                annual_volatility = None
+                annual_return = None
             result[factor][return_column] = {
                 "observations": observations,
                 "ic_mean": clean_number(ic.mean()),
@@ -477,11 +511,19 @@ def numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
 
 
-def return_growth(returns: pd.Series) -> tuple[float | None, float | None]:
+def return_growth(
+    returns: pd.Series,
+    return_kind: str,
+) -> tuple[float | None, float | None]:
     if returns.empty:
         return None, None
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        wealth = np.exp(np.log1p(returns.to_numpy(dtype=float)).cumsum())
+        values = returns.to_numpy(dtype=float)
+        wealth = (
+            np.exp(values.cumsum())
+            if return_kind == "log"
+            else np.exp(np.log1p(values).cumsum())
+        )
     growth = clean_number(wealth[-1])
     if growth is None:
         return None, None

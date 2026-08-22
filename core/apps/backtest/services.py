@@ -16,7 +16,7 @@ from runtime import (
     OptimizationSettings,
     SensitivityParameters,
 )
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.models import (
@@ -34,6 +34,7 @@ from core.apps.backtest.schemas import (
 from core.apps.users.models import User
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
+    BATCH_PENDING_STATE,
     WORKSPACE_FAILURE_STATES,
     WORKSPACE_TERMINAL_STATES,
     WorkflowExecutionService,
@@ -46,6 +47,7 @@ from core.apps.workflows.services import (
     remove_workspace_artifacts,
     resolve_workspace_artifacts,
     require_current_workflow_attempt,
+    submit_workspaces_now,
     workflow_attempt_state,
     workflow_workspace_state,
 )
@@ -278,7 +280,10 @@ def list_backtest_versions(session: Session, user_id: int, project_id: int) -> l
     project = owned_project(session, user_id, project_id)
     rows = session.execute(
         select(BacktestVersion.id, BacktestVersion.version, BacktestVersion.saved, BacktestVersion.is_current, BacktestVersion.remark, BacktestVersion.workflow_instance_id, BacktestVersion.created_at)
-        .where(BacktestVersion.project_id == project.id)
+        .where(
+            BacktestVersion.project_id == project.id,
+            or_(BacktestVersion.saved.is_(True), BacktestVersion.is_current.is_(True)),
+        )
         .order_by(BacktestVersion.version.desc())
     ).mappings()
     return [dict(row) for row in rows]

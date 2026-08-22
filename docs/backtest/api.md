@@ -79,6 +79,11 @@ run_backtest_batch(project_id, items)
 批次复用原值。服务端会先校验全部参数并逐项完成 DolphinDB 脚本编译，全部通过后才创建 Workspace；
 任一项编译失败时整批不提交。工具调用即提交，不存在 MCP 侧本地队列。
 
+同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
+先用原 job marker 对账调度器，确认未创建 Instance 后才重新提交；已有 Workflow Instance 明确失败
+时，新 Attempt 使用新的 job marker 完整重跑；仅自动保存失败时只重试结果收集和版本保存，不重复
+执行 Backtest 任务。
+
 ## 手续费与参数敏感性研究
 
 专项研究基于一个已保存 Backtest 版本。一次研究只创建一条 `BacktestResearch`、一个

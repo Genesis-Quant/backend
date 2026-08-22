@@ -59,6 +59,11 @@ run_factor_batch(project_id, items)
 识别，重试应复用原值；分别轮询返回的每个
 `workspace_id`。批量工具不是浏览器本地队列，调用后会立即提交。
 
+同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
+先用原 job marker 对账调度器，确认未创建 Instance 后才重新提交；已有 Workflow Instance 明确失败
+时，新 Attempt 使用新的 job marker 完整重跑；仅自动保存失败时只重试指标收集和版本保存，不重复
+执行 Factor 任务。
+
 ## 输出
 
 当前工作流 `SUCCESS` 后：
@@ -75,11 +80,16 @@ list_workflow_outputs("factor", workflow_instance_id)
 实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。以运行请求
 和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。
 
+保存版本时，Backend 根据 `return_specs` 计算并持久化因子摘要指标。单期简单收益与单期对数收益
+分别按各自口径生成财富路径；覆盖多个交易期的重叠收益不连续复利，因此对应累计收益、年化收益、
+年化波动率、Sharpe 和最大回撤为 `null`，IC 与 Rank IC 指标仍保留。浏览器读取 Parquet 时遵循同一
+契约，不能自行把重叠标签当作逐日可实现收益。
+
 ## 完整调用顺序
 
 ```text
 1. 读取 factor/request、overview/dsl 和 schemas/factor
-2. 校验 codes_query、dataset_query、factor_columns、return_columns 的依赖
+2. 校验 codes_query、dataset_query、factor_columns、return_columns、return_specs 的依赖
 3. create_project("factor", title)
 4. run_factor_analysis(project_id, parameters)
 5. 按 Workspace 轮询；失败时读完整日志
