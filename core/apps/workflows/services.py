@@ -54,7 +54,13 @@ from core.scheduler.metadata import workflow_definition_details
 from core.scheduler.workflows import (
     ensure_workflow_definition,
 )
-from core.utils.results import delete_result_objects
+from core.utils.results import (
+    RESULT_FAILED_STATE,
+    delete_result_objects,
+    ensure_successful_workflow_outputs,
+    validate_successful_workflow_outputs,
+    workflow_output_validation_state,
+)
 from core.utils.time import utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -66,9 +72,12 @@ SUBMISSION_ACTIVE_STATES = frozenset(
 )
 BATCH_PENDING_STATE = "QUEUED"
 AUTO_SAVE_PENDING_STATE = "AUTO_SAVE_PENDING"
-ATTEMPT_FAILURE_STATES = frozenset({"SUBMIT_FAILED", "AUTO_SAVE_FAILED"})
+RESULT_PENDING_STATE = "RESULT_PENDING"
+ATTEMPT_FAILURE_STATES = frozenset(
+    {"SUBMIT_FAILED", "AUTO_SAVE_FAILED", RESULT_FAILED_STATE}
+)
 WORKSPACE_FAILURE_STATES = FAILURE_STATES | ATTEMPT_FAILURE_STATES
-WORKSPACE_TERMINAL_STATES = TERMINAL_STATES | {"AUTO_SAVE_FAILED"}
+WORKSPACE_TERMINAL_STATES = TERMINAL_STATES | ATTEMPT_FAILURE_STATES
 ATTEMPT_CONTEXT_EVENTS = frozenset({"AUTO_SAVE_VERSION", "BACKTEST_RESEARCH"})
 PROCESS_ACTIONS = {
     WorkflowAction.STOP: "STOP",
@@ -632,16 +641,7 @@ class WorkflowGatewayService:
         workspace_id: int,
     ) -> dict[str, Any]:
         statement = (
-            select(
-                WorkflowAttempt.submission_state,
-                WorkflowAttempt.error.label("attempt_error"),
-                WorkflowAttempt.events,
-                WorkflowAttempt.updated_at.label("attempt_updated_at"),
-                WorkflowInstance.workflow_instance_id,
-                WorkflowInstance.state.label("workflow_state"),
-                WorkflowInstance.error.label("workflow_error"),
-                WorkflowInstance.updated_at.label("workflow_updated_at"),
-            )
+            select(WorkflowWorkspace, WorkflowAttempt, WorkflowInstance)
             .select_from(WorkflowWorkspace)
             .join(
                 WorkflowAttempt,
@@ -654,6 +654,27 @@ class WorkflowGatewayService:
                 WorkflowInstance,
                 WorkflowInstance.workflow_attempt_id == WorkflowAttempt.id,
             )
+            .options(
+                load_only(
+                    WorkflowWorkspace.id,
+                    WorkflowWorkspace.application,
+                    WorkflowWorkspace.workspace_key,
+                ),
+                load_only(
+                    WorkflowAttempt.id,
+                    WorkflowAttempt.submission_state,
+                    WorkflowAttempt.error,
+                    WorkflowAttempt.events,
+                    WorkflowAttempt.requested_outputs,
+                    WorkflowAttempt.updated_at,
+                ),
+                load_only(
+                    WorkflowInstance.workflow_instance_id,
+                    WorkflowInstance.state,
+                    WorkflowInstance.error,
+                    WorkflowInstance.updated_at,
+                ),
+            )
             .where(WorkflowWorkspace.id == workspace_id)
         )
         if not user.is_admin:
@@ -661,22 +682,34 @@ class WorkflowGatewayService:
         row = session.execute(statement).one_or_none()
         if row is None:
             raise FileNotFoundError(f"工作流工作空间不存在: {workspace_id}")
-        state = (
-            row.submission_state
-            if row.submission_state
-            in {
-                AUTO_SAVE_PENDING_STATE,
-                "AUTO_SAVE_FAILED",
-                WORKFLOW_RETRY_PENDING_STATE,
-            }
-            else row.workflow_state or row.submission_state
-        )
+        workspace, attempt, workflow = row
+        if (
+            workflow is not None
+            and workflow.state == "SUCCESS"
+            and attempt.requested_outputs
+            and workflow_output_validation_state(attempt, workflow) is None
+        ):
+            ensure_successful_workflow_outputs(
+                workspace,
+                attempt,
+                workflow,
+            )
+            session.commit()
         return {
-            "workflow_instance_id": row.workflow_instance_id,
-            "state": state,
-            "error": row.workflow_error or row.attempt_error,
-            "events": row.events,
-            "updated_at": max(row.attempt_updated_at, row.workflow_updated_at) if row.workflow_updated_at is not None else row.attempt_updated_at,
+            "workflow_instance_id": (
+                workflow.workflow_instance_id if workflow is not None else None
+            ),
+            "state": workflow_attempt_state(attempt, workflow),
+            "error": (
+                (workflow.error if workflow is not None else None)
+                or attempt.error
+            ),
+            "events": attempt.events,
+            "updated_at": (
+                max(attempt.updated_at, workflow.updated_at)
+                if workflow is not None
+                else attempt.updated_at
+            ),
         }
 
     def detail(
@@ -811,6 +844,8 @@ class WorkflowGatewayService:
                     WorkflowAttempt.submission_state,
                     WorkflowAttempt.project_code,
                     WorkflowAttempt.workflow_definition_code,
+                    WorkflowAttempt.requested_outputs,
+                    WorkflowAttempt.events,
                     WorkflowAttempt.created_at,
                     WorkflowAttempt.updated_at,
                 ),
@@ -831,6 +866,26 @@ class WorkflowGatewayService:
         if not rows:
             return {"items": [], "total": total, "page": page, "page_size": page_size}
         project_references = workspace_project_references(session, [row[0] for row in rows])
+
+        validation_changed = False
+        for workspace, attempt, workflow, *_ in rows:
+            if (
+                workflow is not None
+                and workflow.state == "SUCCESS"
+                and attempt.requested_outputs
+                and workflow_output_validation_state(attempt, workflow) is None
+            ):
+                try:
+                    ensure_successful_workflow_outputs(
+                        workspace,
+                        attempt,
+                        workflow,
+                    )
+                    validation_changed = True
+                except OSError:
+                    continue
+        if validation_changed:
+            session.commit()
 
         items: list[dict[str, Any]] = []
         try:
@@ -887,6 +942,7 @@ class WorkflowGatewayService:
         workspace_id: int,
         page: int = 1,
         page_size: int = 20,
+        include_tasks: bool = False,
     ) -> dict[str, Any]:
         workspace = self.find_accessible_workspace(session, user, workspace_id)
         base = select(WorkflowAttempt).where(
@@ -904,7 +960,10 @@ class WorkflowGatewayService:
                         WorkflowAttempt.workflow_workspace_id,
                         WorkflowAttempt.is_current,
                         WorkflowAttempt.submission_state,
+                        WorkflowAttempt.project_code,
                         WorkflowAttempt.workflow_definition_code,
+                        WorkflowAttempt.requested_outputs,
+                        WorkflowAttempt.events,
                         WorkflowAttempt.created_at,
                         WorkflowAttempt.updated_at,
                     )
@@ -942,16 +1001,54 @@ class WorkflowGatewayService:
             )
             for index, attempt in enumerate(attempts)
         ]
-        return {
-            "items": [
+        if not include_tasks:
+            return {
+                "items": [
+                    workflow_attempt_summary(
+                        None,
+                        attempt,
+                        workflow,
+                        attempt_number,
+                    )
+                    for attempt, workflow, attempt_number in numbered_attempts
+                ],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        items: list[dict[str, Any]] = []
+        try:
+            with DolphinSchedulerClient() as client:
+                for attempt, workflow, attempt_number in numbered_attempts:
+                    try:
+                        summary = workflow_attempt_summary(
+                            client,
+                            attempt,
+                            workflow,
+                            attempt_number,
+                        )
+                    except DolphinSchedulerError as error:
+                        summary = workflow_attempt_summary(
+                            None,
+                            attempt,
+                            workflow,
+                            attempt_number,
+                            str(error),
+                        )
+                    items.append(summary)
+        except DolphinSchedulerError as error:
+            items = [
                 workflow_attempt_summary(
                     None,
                     attempt,
                     workflow,
                     attempt_number,
+                    str(error) if workflow is not None else None,
                 )
                 for attempt, workflow, attempt_number in numbered_attempts
-            ],
+            ]
+        return {
+            "items": items,
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -1155,7 +1252,7 @@ class WorkflowGatewayService:
             try:
                 synchronized = self.executors[workspace.application].synchronize(session, workspace, client=client)
                 information = workflow_status_information(attempt, synchronized or workflow)
-            except DolphinSchedulerError as error:
+            except (DolphinSchedulerError, OSError) as error:
                 session.rollback()
                 workflow, attempt, workspace = self.find_accessible_workflow(session, user, workflow_instance_id)
                 information = workflow_status_information(attempt, workflow)
@@ -1423,7 +1520,7 @@ def workflow_information(
         "project_code": int(attempt.project_code or 0),
         "workflow_definition_code": int(attempt.workflow_definition_code or 0),
         "workflow_name": str(attempt.workflow_name or ""),
-        "state": workflow.state,
+        "state": workflow_attempt_state(attempt, workflow),
         "error": workflow.error or attempt.error,
         "started_at": workflow.started_at,
         "finished_at": workflow.finished_at,
@@ -1447,7 +1544,7 @@ def workflow_tasks(
     workflow: WorkflowInstance,
 ) -> dict[str, Any]:
     return {
-        "state": workflow.state,
+        "state": workflow_attempt_state(attempt, workflow),
         "error": workflow.error or attempt.error,
         "tasks": live_workflow_tasks(client, attempt, workflow),
     }
@@ -1457,12 +1554,21 @@ def workflow_attempt_state(
     attempt: WorkflowAttempt,
     workflow: WorkflowInstance | None,
 ) -> str:
-    if attempt.submission_state in {
-        AUTO_SAVE_PENDING_STATE,
-        "AUTO_SAVE_FAILED",
-        WORKFLOW_RETRY_PENDING_STATE,
-    }:
+    if attempt.submission_state in (
+        ATTEMPT_FAILURE_STATES
+        | {AUTO_SAVE_PENDING_STATE, WORKFLOW_RETRY_PENDING_STATE}
+    ):
         return attempt.submission_state
+    if (
+        workflow is not None
+        and workflow.state == "SUCCESS"
+        and attempt.requested_outputs
+    ):
+        validation_state = workflow_output_validation_state(attempt, workflow)
+        if validation_state == "FAILED":
+            return RESULT_FAILED_STATE
+        if validation_state != "VALIDATED":
+            return RESULT_PENDING_STATE
     return workflow.state if workflow is not None else attempt.submission_state
 
 
@@ -1690,13 +1796,17 @@ def synchronize_workflow_state(
     workflow: WorkflowInstance,
     scheduler_instance: dict[str, Any],
 ) -> None:
-    if attempt.submission_state != "AUTO_SAVE_FAILED":
+    if attempt.submission_state not in ATTEMPT_FAILURE_STATES:
         attempt.error = None
     apply_workflow_state(workflow, scheduler_instance)
-    if attempt.is_current and workflow.state == "SUCCESS" and auto_save_metadata(attempt) is not None and attempt.submission_state not in {AUTO_SAVE_PENDING_STATE, "AUTO_SAVE_COMPLETE"} and attempt.error is None:
-        attempt.submission_state = AUTO_SAVE_PENDING_STATE
     if workflow.state not in FAILURE_STATES:
         workflow.error = None
+        if workflow.state != "SUCCESS":
+            return
+        if not validate_successful_workflow_outputs(workspace, attempt, workflow):
+            return
+        if attempt.is_current and auto_save_metadata(attempt) is not None and attempt.submission_state not in {AUTO_SAVE_PENDING_STATE, "AUTO_SAVE_COMPLETE"} and attempt.error is None:
+            attempt.submission_state = AUTO_SAVE_PENDING_STATE
         return
     tasks = client.process_instance_tasks(
         project_code=int(attempt.project_code or 0),

@@ -46,9 +46,19 @@ def list_workflow_attempts(
     session: Annotated[Session, Depends(get_database_session)],
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
+    include_tasks: bool = Query(False),
 ) -> WorkflowAttemptListResponse:
     try:
-        return WorkflowAttemptListResponse.model_validate(WorkflowGatewayService().attempts(session, user, workspace_id, page, page_size))
+        return WorkflowAttemptListResponse.model_validate(
+            WorkflowGatewayService().attempts(
+                session,
+                user,
+                workspace_id,
+                page,
+                page_size,
+                include_tasks,
+            )
+        )
     except (DolphinSchedulerError, FileNotFoundError) as error:
         raise_api_http_error(error)
 
@@ -73,7 +83,7 @@ def get_workflow_workspace_status(
 ) -> WorkflowWorkspaceStatus:
     try:
         return WorkflowWorkspaceStatus.model_validate(WorkflowGatewayService().workspace_status(session, user, workspace_id))
-    except FileNotFoundError as error:
+    except (FileNotFoundError, OSError) as error:
         raise_api_http_error(error)
 
 
@@ -97,7 +107,7 @@ def get_workflow_status(
 ) -> WorkflowStatusInformation:
     try:
         return WorkflowStatusInformation.model_validate(WorkflowGatewayService().status(session, user, workflow_instance_id))
-    except (DolphinSchedulerError, FileNotFoundError) as error:
+    except (DolphinSchedulerError, FileNotFoundError, OSError) as error:
         raise_api_http_error(error)
 
 
@@ -125,7 +135,7 @@ def control_workflow(
 ) -> WorkflowActionResponse:
     try:
         return WorkflowActionResponse.model_validate(WorkflowGatewayService().control(session, user, workflow_instance_id, action))
-    except (DolphinSchedulerError, FileNotFoundError, RuntimeError) as error:
+    except (DolphinSchedulerError, FileNotFoundError, RuntimeError, OSError) as error:
         raise_api_http_error(error)
 
 

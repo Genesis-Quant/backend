@@ -17,6 +17,7 @@ from config import ArenaSettings
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import workspace_output_directory
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
+from core.utils.results import OUTPUTS_VALIDATED_EVENT
 from core.database.base import Base
 from core.utils import results
 
@@ -59,7 +60,10 @@ def successful_run(
         input_json={},
         start_parameters={},
         requested_outputs=["data"],
-        events=[],
+        events=[{
+            "event": OUTPUTS_VALIDATED_EVENT,
+            "workflow_instance_id": 101,
+        }],
     )
     session.add(attempt)
     session.flush()

@@ -33,10 +33,11 @@ get_workspace_status(workspace_id)
 | `QUEUED`、`CREATED`、`SUBMITTING`、`SUBMITTED` | 创建或提交中 | 继续轮询 Workspace |
 | `RETRYING` | DolphinScheduler 正在原 Instance 内启动失败 Task 续跑 | 继续轮询 Workspace |
 | DolphinScheduler 非终态，如 `RUNNING_EXECUTION` | 调度执行中 | 继续轮询 Workspace |
-| `SUCCESS` | 调度执行成功 | 按应用 API 文档读取输出或保存版本 |
+| `RESULT_PENDING` | 调度已成功，必需输出尚未完成校验 | 继续轮询 Workspace |
+| `SUCCESS` | 调度成功且必需输出已通过校验 | 按应用 API 文档读取输出或保存版本 |
 | `AUTO_SAVE_PENDING` | 批量任务成功，自动保存版本中 | 继续轮询，不能停止已结束实例 |
 | `SUBMIT_FAILED` | 未成功提交调度器 | 读取 Attempt 错误；不能用 Instance 控制工具 |
-| `FAILURE`、`AUTO_SAVE_FAILED` | 执行或后处理失败 | 读取 Attempt、Task 与完整日志 |
+| `FAILURE`、`AUTO_SAVE_FAILED`、`RESULT_FAILED` | 执行、后处理或结果校验失败 | 读取 Attempt、Task 与完整日志 |
 | `STOP`、`KILL` | 已终止 | 不读取输出 |
 
 有 Workflow Instance 时，调度状态和提交/自动保存状态仍是不同层次。`AUTO_SAVE_PENDING` 与
@@ -58,12 +59,14 @@ list_workflows(application=null, state=null, page=1, page_size=20)
 ## Workspace 的运行历史
 
 ```text
-list_workflow_attempts(workspace_id, page=1, page_size=20)
+list_workflow_attempts(workspace_id, page=1, page_size=20, include_tasks=false)
 get_workflow_attempt(attempt_id)
 ```
 
 历史按创建时间倒序，`page_size` 为 1 到 50。摘要包含 `attempt_id`、`is_current`、状态、Instance ID
 和时间；详情包含本次提交的 `payload.input_json`、requested outputs、错误、状态历史和生命周期事件。
+`include_tasks=false` 时不会为分页中的每条 Attempt 请求 DolphinScheduler；需要批量读取
+Task 摘要时才设为 `true`。诊断某一次运行时应优先使用 `list_workflow_tasks`。
 
 读取以前提交参数时必须读 Attempt：当前项目或未保存版本的 parameters 会被下一次运行更新，历史
 Attempt 的 `payload.input_json` 不会。Query 的原始请求位于
@@ -238,7 +241,12 @@ Token 只能发送到当前 Arena API 的 origin。Arena 可以返回指向对�
 - Factor/Backtest 已保存版本固定其业务结果绑定，但对象存储、DolphinScheduler 日志和数据库仍受
   部署方保留策略约束，不能把在线地址当成永久档案；
 - Attempt 保留的是提交参数、状态和事件，不等于保留该次 Parquet；
-- `list_workflow_outputs` 只对仍绑定当前业务结果的成功 Instance 提供文件元数据。
+- 调度器返回 `SUCCESS` 后，Backend 还会检查所有必需输出是否存在、非空且包含完整 Parquet
+  文件尾；允许缺失的可选输出如果实际存在，也必须通过非空和完整性校验；
+- 对象存储或本地文件系统暂时不可用时保持 `RESULT_PENDING` 并重试，只有确定缺失、
+  为空或不完整才记录 `RESULT_FAILED`；旧的未校验 `SUCCESS` 会在列表、状态、结果或
+  保存版本首次访问时惰性校验；
+- `list_workflow_outputs` 只对仍绑定当前业务结果且通过输出校验的成功 Instance 提供文件元数据。
 
 需要复现时，建议在结果仍可下载时一并归档：原始请求或 Attempt `payload.input_json`、Project/
 Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、Runtime/Backend 版本、基础
@@ -253,7 +261,11 @@ control_workflow(workflow_instance_id, action)
 `action` 可为：
 
 - `stop`：停止仍在运行的实例；
-- `pause`、`resume`：暂停或恢复调度；
+- `pause`：请求暂停调度。DolphinScheduler 不会中断已经开始运行的 Task；状态可能先进入
+  `READY_PAUSE`，等待当前 Task 结束后才进入 `PAUSE`。只有一个 Task 的工作流可能在等待期间直接
+  完成并进入 `SUCCESS`；需要立即终止计算时应使用 `stop`；
+- `resume`：仅恢复已进入 `PAUSE` 的工作流。`READY_PAUSE` 是 DolphinScheduler
+  等待当前 Task 结束的中间状态，调度器不接受对该状态执行恢复；
 - `rerun`：使用原 Attempt 的完整输入重新提交整个工作流，创建新的 Attempt 和新的 Workflow
   Instance；旧 Attempt/Instance 保留为历史记录。Incremental 会复用上一 Attempt 已校验的 workers、
   channel 和 overwrite 参数；
@@ -270,4 +282,6 @@ force_success_task(workflow_instance_id, task_instance_id)
 ```
 
 它会改变真实调度状态，只应在用户明确要求、已经确认 Task 可安全跳过时调用。Task 必须属于该
-Workflow Instance。MCP 不提供删除工作流、项目、版本、Attempt、Task 或输出的功能。
+Workflow Instance。强制成功只改变 Task 状态；失败工作流仍需调用 `retry-failed` 才能继续。即使
+调度器随后成功，Backend 仍会校验必需输出，跳过产出结果的 Task 会得到 `RESULT_FAILED`，不能保存
+版本或读取输出。MCP 不提供删除工作流、项目、版本、Attempt、Task 或输出的功能。

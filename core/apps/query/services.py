@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from core.apps.query.models import QueryProject
 from core.apps.users.models import User
+from core.apps.workflows.artifacts import QUERY_OUTPUT_FILES
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
     WorkflowExecutionService,
@@ -23,12 +24,7 @@ from core.apps.workflows.services import (
 from core.utils.results import result_files, result_response
 from core.utils.time import utc_now
 
-OUTPUT_FILES = {
-    "source_data": "source_data.parquet",
-    "computed_data": "computed_data.parquet",
-    "filtered_data": "filtered_data.parquet",
-    "data": "query.parquet",
-}
+OUTPUT_FILES = QUERY_OUTPUT_FILES
 PROJECT_LIMIT = 5
 PROJECT_OUTPUTS = ["data"]
 

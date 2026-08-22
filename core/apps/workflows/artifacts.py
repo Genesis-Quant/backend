@@ -9,8 +9,39 @@ from uuid import uuid4
 from config import ArenaSettings
 
 WORKSPACE_KEY_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+OUTPUT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 WORKSPACE_APPLICATIONS = frozenset({"query", "factor", "backtest", "optimization", "sensitivity", "incremental"})
 LOCAL_ONLY_APPLICATIONS = frozenset({"incremental"})
+
+QUERY_OUTPUT_FILES = {
+    "source_data": "source_data.parquet",
+    "computed_data": "computed_data.parquet",
+    "filtered_data": "filtered_data.parquet",
+    "data": "query.parquet",
+}
+FACTOR_OUTPUT_FILES = {
+    "processed_data": "factor_processed.parquet",
+    "information_coefficient": "factor_information_coefficients.parquet",
+    "group_returns": "factor_group_returns.parquet",
+}
+BACKTEST_OUTPUT_FILES = {
+    "trade_details": "trade_details.parquet",
+    "daily_positions": "daily_positions.parquet",
+    "daily_portfolios": "daily_portfolios.parquet",
+    "return_summary": "return_summary.parquet",
+    "daily_trading_statistics": "daily_trading_statistics.parquet",
+    "engine_stat": "engine_stat.parquet",
+}
+SENSITIVITY_OUTPUT_FILES = {"results": "results.parquet"}
+APPLICATION_OUTPUT_FILES = {
+    "query": QUERY_OUTPUT_FILES,
+    "factor": FACTOR_OUTPUT_FILES,
+    "backtest": BACKTEST_OUTPUT_FILES,
+    "sensitivity": SENSITIVITY_OUTPUT_FILES,
+}
+OPTIONAL_OUTPUT_NAMES = {
+    "backtest": frozenset({"daily_trading_statistics"}),
+}
 
 
 def new_workspace_key() -> str:
@@ -70,3 +101,35 @@ def runtime_output_argument(application: str, workspace_key: str) -> str:
     if uses_cloud_output(application):
         return workspace_output_prefix(application, workspace_key)
     return str(workspace_output_directory(application, workspace_key))
+
+
+def workflow_output_files(
+    application: str,
+    requested_outputs: list[str],
+) -> tuple[dict[str, str], frozenset[str]]:
+    """Resolve requested output files and the subset allowed to be absent."""
+    if application == "incremental":
+        return {}, frozenset()
+    optional = OPTIONAL_OUTPUT_NAMES.get(application, frozenset())
+    if application == "optimization":
+        invalid = sorted(
+            name
+            for name in requested_outputs
+            if not OUTPUT_NAME_PATTERN.fullmatch(name)
+        )
+        if invalid:
+            raise ValueError(f"optimization 工作流包含无效输出名称: {invalid}")
+        return (
+            {name: f"{name}.parquet" for name in requested_outputs},
+            optional.intersection(requested_outputs),
+        )
+    output_files = APPLICATION_OUTPUT_FILES.get(application)
+    if output_files is None:
+        raise ValueError(f"未知工作流应用的输出协议: {application}")
+    unknown = sorted(set(requested_outputs) - set(output_files))
+    if unknown:
+        raise ValueError(f"{application} 工作流包含未知输出: {unknown}")
+    return (
+        {name: output_files[name] for name in requested_outputs},
+        optional.intersection(requested_outputs),
+    )

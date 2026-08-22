@@ -78,7 +78,7 @@ class TaskGatewayService:
         action: TaskAction,
     ) -> dict[str, Any]:
         with DolphinSchedulerClient() as client:
-            _, attempt, _, task = self.find_accessible_task(
+            _, attempt, _, _ = self.find_accessible_task(
                 session,
                 user,
                 workflow_instance_id,
@@ -89,6 +89,13 @@ class TaskGatewayService:
                 int(attempt.project_code or 0),
                 task_instance_id,
                 action.value,
+            )
+            _, _, _, task = self.find_accessible_task(
+                session,
+                user,
+                workflow_instance_id,
+                task_instance_id,
+                client=client,
             )
         return {
             "action": action,

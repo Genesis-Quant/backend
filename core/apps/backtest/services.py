@@ -16,7 +16,7 @@ from runtime import (
     OptimizationSettings,
     SensitivityParameters,
 )
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.models import (
@@ -32,6 +32,10 @@ from core.apps.backtest.schemas import (
     FeeAnalysisCreate,
 )
 from core.apps.users.models import User
+from core.apps.workflows.artifacts import (
+    BACKTEST_OUTPUT_FILES,
+    SENSITIVITY_OUTPUT_FILES,
+)
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
     BATCH_PENDING_STATE,
@@ -51,18 +55,16 @@ from core.apps.workflows.services import (
     workflow_attempt_state,
     workflow_workspace_state,
 )
-from core.utils.results import result_dataframe, result_files, result_response
+from core.utils.results import (
+    ensure_successful_workflow_outputs,
+    result_dataframe,
+    result_files,
+    result_response,
+)
 from core.utils.time import utc_now
 
 LOGGER = logging.getLogger(__name__)
-OUTPUT_FILES = {
-    "trade_details": "trade_details.parquet",
-    "daily_positions": "daily_positions.parquet",
-    "daily_portfolios": "daily_portfolios.parquet",
-    "return_summary": "return_summary.parquet",
-    "daily_trading_statistics": "daily_trading_statistics.parquet",
-    "engine_stat": "engine_stat.parquet",
-}
+OUTPUT_FILES = BACKTEST_OUTPUT_FILES
 OPTIONAL_OUTPUTS = {
     "daily_trading_statistics": (
         "当前 DolphinDB Backtest 插件不支持每日交易统计接口，"
@@ -73,7 +75,6 @@ OPTIMIZATION_OUTPUT_FILES = {
     algorithm.value: f"{algorithm.value}.parquet"
     for algorithm in OptimizationAlgorithm
 }
-SENSITIVITY_OUTPUT_FILES = {"results": "results.parquet"}
 PROJECT_OUTPUTS = [
     "trade_details",
     "daily_positions",
@@ -170,7 +171,11 @@ def delete_backtest_project(session: Session, user_id: int, project_id: int) -> 
         .join(BacktestVersion, BacktestVersion.id == BacktestOptimization.version_id)
         .where(BacktestVersion.project_id == project.id)
     )
-    owned_workspace_ids = version_workspace_ids.union_all(research_workspace_ids).union_all(optimization_workspace_ids)
+    owned_workspace_ids = union_all(
+        version_workspace_ids,
+        research_workspace_ids,
+        optimization_workspace_ids,
+    )
     runs = list(session.scalars(select(WorkflowWorkspace).where(WorkflowWorkspace.id.in_(owned_workspace_ids))))
     running = [state for run in runs if (state := workflow_workspace_state(session, run)) != "DRAFT" and state not in WORKSPACE_TERMINAL_STATES]
     if running:
@@ -240,8 +245,15 @@ def create_backtest_version(session: Session, user_id: int, project_id: int, wor
     if row is None:
         raise FileNotFoundError("当前未保存回测不存在或 workflow_instance_id 已失效")
     version, run, attempt, workflow = row
-    if workflow.state != "SUCCESS":
-        raise RuntimeError(f"工作流状态为 {workflow.state}，成功后才能保存版本")
+    if workflow.state == "SUCCESS" and not ensure_successful_workflow_outputs(
+        run,
+        attempt,
+        workflow,
+    ):
+        session.commit()
+    state = workflow_attempt_state(attempt, workflow)
+    if state != "SUCCESS":
+        raise RuntimeError(f"工作流状态为 {state}，成功后才能保存版本")
     save_backtest_version(session, project, version, run, attempt, workflow, remark)
     create_backtest_draft(session, project, user_id, attempt.input_json)
     session.commit()

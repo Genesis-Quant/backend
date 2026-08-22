@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from core.apps.factor.models import FactorProject, FactorVersion
 from core.apps.schemas import BatchRunItem
+from core.apps.workflows.artifacts import FACTOR_OUTPUT_FILES
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
     BATCH_PENDING_STATE,
@@ -34,14 +35,15 @@ from core.apps.workflows.services import (
     workflow_attempt_state,
     workflow_workspace_state,
 )
-from core.utils.results import result_dataframe, result_files, result_response
+from core.utils.results import (
+    ensure_successful_workflow_outputs,
+    result_dataframe,
+    result_files,
+    result_response,
+)
 from core.utils.time import utc_now
 
-OUTPUT_FILES = {
-    "processed_data": "factor_processed.parquet",
-    "information_coefficient": "factor_information_coefficients.parquet",
-    "group_returns": "factor_group_returns.parquet",
-}
+OUTPUT_FILES = FACTOR_OUTPUT_FILES
 PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
 
 
@@ -156,8 +158,15 @@ def create_factor_version(session: Session, user_id: int, project_id: int, workf
     if row is None:
         raise FileNotFoundError("当前未保存分析不存在或 workflow_instance_id 已失效")
     version, run, attempt, workflow = row
-    if workflow.state != "SUCCESS":
-        raise RuntimeError(f"工作流状态为 {workflow.state}，成功后才能保存版本")
+    if workflow.state == "SUCCESS" and not ensure_successful_workflow_outputs(
+        run,
+        attempt,
+        workflow,
+    ):
+        session.commit()
+    state = workflow_attempt_state(attempt, workflow)
+    if state != "SUCCESS":
+        raise RuntimeError(f"工作流状态为 {state}，成功后才能保存版本")
     save_factor_version(session, project, version, run, attempt, workflow, remark)
     create_factor_draft(session, project, user_id, attempt.input_json)
     session.commit()

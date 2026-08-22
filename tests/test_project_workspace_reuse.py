@@ -57,6 +57,7 @@ from core.apps.workflows.services import (
     record_event,
 )
 from core.database.base import Base
+from core.utils.results import OUTPUTS_VALIDATED_EVENT
 
 
 @pytest.fixture
@@ -121,13 +122,19 @@ def submissions(
             )
         )
         assert attempt is not None
+        workflow_instance_id = next(next_instance_id)
         workflow = WorkflowInstance(
-            workflow_instance_id=next(next_instance_id),
+            workflow_instance_id=workflow_instance_id,
             workflow_attempt_id=attempt.id,
             state="SUCCESS",
             state_history=[],
         )
         session.add(workflow)
+        record_event(
+            attempt,
+            OUTPUTS_VALIDATED_EVENT,
+            workflow_instance_id=workflow_instance_id,
+        )
         session.commit()
         return workflow
 

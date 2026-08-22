@@ -70,11 +70,27 @@ def register_workflow_tools(server: MCPServer) -> None:
         workspace_id: Annotated[int, Field(gt=0, description="项目、版本或 run 工具返回的 workspace_id。")],
         page: Annotated[int, Field(ge=1, description="页码，从 1 开始；运行记录按创建时间倒序返回。")] = 1,
         page_size: Annotated[int, Field(ge=1, le=50, description="每页运行记录数量。")] = 20,
+        include_tasks: Annotated[
+            bool,
+            Field(
+                description=(
+                    "是否同时读取每次运行的 Task；默认关闭以避免分页列表"
+                    "对 DolphinScheduler 发起逐条请求。诊断单次运行时优先调用 list_workflow_tasks。"
+                )
+            ),
+        ] = False,
     ) -> McpResult[WorkflowAttemptListResponse]:
         """List current and historical attempts in one workspace."""
         with database_session_factory()() as session:
             user = current_user(session)
-            result = WorkflowGatewayService().attempts(session, user, workspace_id, page, page_size)
+            result = WorkflowGatewayService().attempts(
+                session,
+                user,
+                workspace_id,
+                page,
+                page_size,
+                include_tasks,
+            )
             return McpResult(result=WorkflowAttemptListResponse.model_validate(result))
 
     @server.tool(title="获取一次运行记录", annotations=READ_ONLY)
@@ -143,7 +159,7 @@ def register_workflow_tools(server: MCPServer) -> None:
         workflow_instance_id: Annotated[int, Field(gt=0, description="工作流实例 ID。")],
         task_instance_id: Annotated[int, Field(gt=0, description="属于该工作流的 Task instance ID。")],
     ) -> McpResult[TaskActionResponse]:
-        """Apply DolphinScheduler force-success to one owned task instance."""
+        """Force one owned task to success; retry the failed workflow afterwards, and required outputs are still validated."""
         with database_session_factory()() as session:
             user = current_user(session)
             result = TaskGatewayService().control(
@@ -181,7 +197,15 @@ def register_workflow_tools(server: MCPServer) -> None:
     @server.tool(title="控制工作流", annotations=CONTROL)
     def control_workflow(
         workflow_instance_id: Annotated[int, Field(gt=0, description="需要控制的 workflow instance ID。")],
-        action: Annotated[WorkflowAction, Field(description="控制动作；重跑会产生新的 Attempt。")],
+        action: Annotated[
+            WorkflowAction,
+            Field(
+                description=(
+                    "控制动作；重跑会产生新的 Attempt；暂停不打断正在运行的 Task，"
+                    "resume 仅能恢复已进入 PAUSE 的工作流；READY_PAUSE 是调度器等待暂停的中间状态，不能恢复。"
+                )
+            ),
+        ],
     ) -> McpResult[WorkflowActionResponse]:
         """Perform a scheduler control action."""
         with database_session_factory()() as session:

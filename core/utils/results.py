@@ -22,10 +22,16 @@ from sqlalchemy.orm import Session
 
 from core.apps.workflows.artifacts import (
     uses_cloud_output,
+    workflow_output_files,
     workspace_output_directory,
     workspace_output_prefix,
 )
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
+from core.utils.time import utc_now
+
+RESULT_FAILED_STATE = "RESULT_FAILED"
+OUTPUTS_VALIDATED_EVENT = "WORKFLOW_OUTPUTS_VALIDATED"
+OUTPUT_VALIDATION_FAILED_EVENT = "WORKFLOW_OUTPUT_VALIDATION_FAILED"
 
 
 class ResultFile[Name: str](BaseModel):
@@ -33,6 +39,10 @@ class ResultFile[Name: str](BaseModel):
     filename: str
     size: int
     modified_at: datetime
+
+
+class WorkflowOutputValidationError(ValueError):
+    """表示工作流输出确定性地缺失、为空或不完整。"""
 
 
 def owned_result_workspace(
@@ -58,8 +68,27 @@ def owned_result_workspace(
         raise RuntimeError(
             f"工作流 {workflow_instance_id} 不是当前实例，结果目录已由后续运行接管"
         )
+    if attempt.submission_state == "RESULT_FAILED":
+        raise RuntimeError(
+            f"工作流 {workflow_instance_id} 的结果校验失败: "
+            f"{attempt.error or '缺少必需结果'}"
+        )
     if workflow.state != "SUCCESS":
         raise RuntimeError(f"工作流 {workflow_instance_id} 当前状态为 {workflow.state}，成功后才能获取结果")
+    if attempt.requested_outputs:
+        validation_state = workflow_output_validation_state(attempt, workflow)
+        validated = ensure_successful_workflow_outputs(
+            workspace,
+            attempt,
+            workflow,
+        )
+        if validation_state is None:
+            session.commit()
+        if not validated:
+            raise RuntimeError(
+                f"工作流 {workflow_instance_id} 的结果校验失败: "
+                f"{attempt.error or '缺少必需结果'}"
+            )
     return workspace, attempt
 
 
@@ -116,6 +145,186 @@ def result_files(
                 continue
             raise
     return files
+
+
+def validate_required_result_files(
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt,
+    workflow_instance_id: int,
+) -> None:
+    """Ensure every non-optional output exists before exposing business success."""
+    output_files, optional_outputs = workflow_output_files(
+        workspace.application,
+        attempt.requested_outputs,
+    )
+    if not output_files:
+        return
+    missing: list[str] = []
+    empty: list[str] = []
+    invalid: list[str] = []
+    if uses_cloud_output(workspace.application):
+        storage, output_key = cloud_storage(
+            workspace.application,
+            workspace.workspace_key,
+        )
+        try:
+            for name, filename in output_files.items():
+                key = f"{output_key}/{filename}"
+                try:
+                    information = storage.object_info(key)
+                except ClientError as error:
+                    if is_missing_object(error):
+                        if name not in optional_outputs:
+                            missing.append(name)
+                        continue
+                    raise
+                if information.size <= 0:
+                    empty.append(name)
+                elif information.size < 4:
+                    invalid.append(name)
+                else:
+                    response = storage.client.get_object(
+                        Bucket=storage.bucket,
+                        Key=key,
+                        Range=f"bytes={information.size - 4}-{information.size - 1}",
+                    )
+                    try:
+                        if response["Body"].read() != b"PAR1":
+                            invalid.append(name)
+                    finally:
+                        response["Body"].close()
+        except (BotoCoreError, ClientError) as error:
+            raise OSError(
+                f"工作流 {workflow_instance_id} 无法校验对象存储结果: {error}"
+            ) from error
+        finally:
+            storage.close()
+    else:
+        output_directory = workspace_output_directory(
+            workspace.application,
+            workspace.workspace_key,
+        )
+        for name, filename in output_files.items():
+            try:
+                path = local_result_path(
+                    workflow_instance_id,
+                    output_directory,
+                    name,
+                    filename,
+                )
+            except FileNotFoundError:
+                if name not in optional_outputs:
+                    missing.append(name)
+                continue
+            size = path.stat().st_size
+            if size <= 0:
+                empty.append(name)
+                continue
+            if size < 4:
+                invalid.append(name)
+                continue
+            with path.open("rb") as file:
+                file.seek(-4, 2)
+                if file.read(4) != b"PAR1":
+                    invalid.append(name)
+    problems = []
+    if missing:
+        problems.append(f"缺少必需结果: {', '.join(missing)}")
+    if empty:
+        problems.append(f"结果文件为空: {', '.join(empty)}")
+    if invalid:
+        problems.append(f"结果文件不是完整 Parquet: {', '.join(invalid)}")
+    if problems:
+        raise WorkflowOutputValidationError(
+            f"工作流 {workflow_instance_id} " + "；".join(problems)
+        )
+
+
+def workflow_output_validation_state(
+    attempt: WorkflowAttempt,
+    workflow: WorkflowInstance,
+) -> str | None:
+    """返回当前工作流实例已记录的输出校验结果。"""
+    for event in reversed(attempt.events or []):
+        if event.get("workflow_instance_id") != workflow.workflow_instance_id:
+            continue
+        if event.get("event") == OUTPUTS_VALIDATED_EVENT:
+            return "VALIDATED"
+        if event.get("event") == OUTPUT_VALIDATION_FAILED_EVENT:
+            return "FAILED"
+    return None
+
+
+def validate_successful_workflow_outputs(
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt,
+    workflow: WorkflowInstance,
+) -> bool:
+    """校验调度成功实例的必需输出并记录业务结果。"""
+    if not attempt.requested_outputs:
+        return True
+    validation_state = workflow_output_validation_state(attempt, workflow)
+    if validation_state == "VALIDATED":
+        return True
+    if validation_state == "FAILED":
+        return False
+    if attempt.submission_state == RESULT_FAILED_STATE:
+        return False
+    try:
+        validate_required_result_files(
+            workspace,
+            attempt,
+            workflow.workflow_instance_id,
+        )
+    except ValueError as error:
+        attempt.submission_state = RESULT_FAILED_STATE
+        attempt.error = str(error)
+        append_output_validation_event(
+            attempt,
+            OUTPUT_VALIDATION_FAILED_EVENT,
+            workflow.workflow_instance_id,
+            error=str(error),
+        )
+        return False
+    append_output_validation_event(
+        attempt,
+        OUTPUTS_VALIDATED_EVENT,
+        workflow.workflow_instance_id,
+    )
+    if attempt.submission_state not in {"SUBMIT_FAILED", "AUTO_SAVE_FAILED"}:
+        attempt.error = None
+    return True
+
+
+def ensure_successful_workflow_outputs(
+    workspace: WorkflowWorkspace,
+    attempt: WorkflowAttempt,
+    workflow: WorkflowInstance,
+) -> bool:
+    """在调用方事务中惰性校验已持久化的调度成功结果。"""
+    if workflow.state != "SUCCESS":
+        raise RuntimeError(
+            f"工作流 {workflow.workflow_instance_id} 当前状态为 {workflow.state}，"
+            "不能校验成功结果"
+        )
+    return validate_successful_workflow_outputs(workspace, attempt, workflow)
+
+
+def append_output_validation_event(
+    attempt: WorkflowAttempt,
+    event: str,
+    workflow_instance_id: int,
+    **details: Any,
+) -> None:
+    attempt.events = [
+        *(attempt.events or []),
+        {
+            "event": event,
+            "timestamp": utc_now().isoformat(),
+            "workflow_instance_id": workflow_instance_id,
+            **details,
+        },
+    ]
 
 
 def result_response(
