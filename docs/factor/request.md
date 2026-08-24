@@ -56,7 +56,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 1. 过滤因子、市值或行业无效的行；
 2. MAD 去极值；
 3. z-score 标准化；
-4. 对 `log(max(market_value, 1))` 和行业哑变量做截面 OLS；
+4. 将 `log(max(market_value, 1))` 先 z-score，再与行业哑变量一起做截面 OLS；
 5. 将残差再次 z-score；
 6. 按残差从小到大划分 `n_groups` 个等数量组。
 

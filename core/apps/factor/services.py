@@ -24,14 +24,15 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     auto_save_metadata,
     auto_save_workspaces,
+    assign_auto_saved_version_number,
     create_workflow_attempt,
     current_workflow_attempt,
     finalize_auto_save_workspaces_now,
     record_event,
     remove_workspace_artifacts,
+    require_current_workflow_attempt,
     resolve_workspace_artifacts,
     submit_workspaces_now,
-    require_current_workflow_attempt,
     workflow_attempt_state,
     workflow_workspace_state,
 )
@@ -185,6 +186,8 @@ def save_factor_version(session: Session, project: FactorProject, version: Facto
     groups = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "group_returns", OUTPUT_FILES)
     metrics = factor_metrics(validated, information, groups)
     validate_metric_dimensions(parameters, metrics)
+    if version.version is None:
+        assign_auto_saved_version_number(session, version)
     version.workflow_instance_id = workflow.workflow_instance_id
     version.saved = True
     version.is_current = False
@@ -230,7 +233,13 @@ def update_factor_version(session: Session, user_id: int, project_id: int, versi
 
 
 def delete_factor_version(session: Session, user_id: int, project_id: int, version_number: int) -> int:
-    project = owned_project(session, user_id, project_id)
+    project = session.scalar(
+        select(FactorProject)
+        .where(FactorProject.id == project_id, FactorProject.user_id == user_id)
+        .with_for_update()
+    )
+    if project is None:
+        raise FileNotFoundError(f"因子项目不存在: {project_id}")
     version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == project.id, FactorVersion.version == version_number))
     if version is None:
         raise FileNotFoundError(f"因子版本不存在: {version_number}")
@@ -350,7 +359,7 @@ def serialize_version(session: Session, version: FactorVersion) -> dict[str, Any
 
 
 def create_factor_draft(session: Session, project: FactorProject, user_id: int, parameters: dict[str, Any]) -> FactorVersion:
-    version_number = (session.scalar(select(func.max(FactorVersion.version)).where(FactorVersion.project_id == project.id)) or 0) + 1
+    version_number = (session.scalar(select(func.max(FactorVersion.version)).where(FactorVersion.project_id == project.id, FactorVersion.saved.is_(True))) or 0) + 1
     workspace = WorkflowWorkspace(user_id=user_id, application="factor")
     session.add(workspace)
     session.flush()
@@ -381,7 +390,6 @@ def submit_factor_batch(session: Session, user_id: int, project_id: int, items: 
         project.id,
         {item.client_id for item in items},
     )
-    next_version = (session.scalar(select(func.max(FactorVersion.version)).where(FactorVersion.project_id == project.id)) or 0) + 1
     new_workspace_ids: list[int] = []
     for item in items:
         if item.client_id in workspace_ids:
@@ -392,14 +400,13 @@ def submit_factor_batch(session: Session, user_id: int, project_id: int, items: 
         version = FactorVersion(
             project_id=project.id,
             workflow_workspace_id=run.id,
-            version=next_version,
+            version=None,
             saved=False,
             is_current=False,
             remark=item.remark,
             parameters=item.parameters.model_dump(mode="json"),
         )
         session.add(version)
-        next_version += 1
         attempt = create_workflow_attempt(
             session,
             run,

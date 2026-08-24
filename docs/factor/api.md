@@ -55,8 +55,9 @@ run_factor_batch(project_id, items)
 ```
 
 `items` 为 1 到 100 项；每项包含唯一 `client_id`、可选 `remark` 和一份完整 parameters。每项都必须
-独立满足 Factor Schema。成功项会自动保存为递增版本。`client_id` 用于同一次客户端提交的幂等
-识别，重试应复用原值；分别轮询返回的每个
+独立满足 Factor Schema。提交时不会预占版本号；成功项完成输出校验和指标收集后才自动保存为下一个
+未使用的递增版本，失败项不占号。并发项按成功保存顺序编号，不保证与 `items` 顺序一致。
+`client_id` 用于同一次客户端提交的幂等识别，重试应复用原值；分别轮询返回的每个
 `workspace_id`。批量工具不是浏览器本地队列，调用后会立即提交。
 
 同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt

@@ -321,6 +321,70 @@ t-20 ... t-2  t-1       t 日 09:30 callback / submitOrder
 - 负 shift、未来收益标签或在 09:30 使用当日 high/low/close 都是未来数据。
 - `getLastData` 取最后实际存在日期，不保证自然日相邻；依赖严格连续交易日时需检查 signal.time。
 
+## 因子分析预处理模块
+
+Backtest 在编译 `utils` 和 callbacks 前、以及正式运行回测前，都会按顺序执行：
+
+```dos
+use factor
+use backtest
+```
+
+因此策略可以直接调用因子分析实际使用的同一个公开函数，不需要在 `utils` 中复制实现：
+
+```text
+factor::factorPreprocess(
+    rawFactorTable,
+    factorCols,
+    nGroups,
+    timeCol="time",
+    codeCol="code",
+    mktmvCol="mktmv",
+    industryCol="industry"
+)
+```
+
+输入契约：
+
+- `rawFactorTable` 必须同时含日期、代码、市值、行业和 `factorCols` 指定的全部因子列；
+- `factorCols` 是一个或多个因子列名，推荐传 SYMBOL 向量；
+- `nGroups >= 2`；
+- 市值列必须可转为 DOUBLE，行业列必须可转为 STRING；
+- 输入不能预先存在任一 `<factor>_group` 列。
+
+函数先复制输入表，再按每个日期、每个因子执行与 Factor 工作流完全相同的处理：MAD 去极值、
+因子 z-score、将 `log(max(market_value, 1))` z-score 后与行业哑变量一起做截面 OLS、残差再次
+z-score，最后按残差
+从小到大划分等数量组。返回表保留其它输入列，以处理值替换原因子列，并新增
+`<factor>_group`；它不会原位修改传入表。样本不足以完成回归时，对应日期的处理值和分组为 NULL，
+不会退回未中性化值。
+
+### 与 Factor 工作流一致的条件
+
+“调用同一个函数”只保证算法实现唯一，不保证任意两次调用结果天然相同。要复现 Factor 工作流，
+下列输入必须全部一致：
+
+- 每个日期参与计算的完整代码截面及有效行；
+- 原始因子值、市场价值和行业映射；
+- 日期、代码、市值、行业列的选择；
+- `factorCols`、`nGroups` 及基础数据版本。
+
+Factor 工作流在运行时从当前股票元数据取得行业映射；Backtest **不会**为每次运行隐式请求元数据，
+也不会自动向 `dataset_query` 结果添加 `industry`。需要相同结果时，调用方必须把同一份代码到行业
+映射明确合并进待处理表，再调用本函数。映射不同、某日代码域不同或先用 `filters` 删除部分证券，
+都会改变截面回归、标准化和分组结果。
+
+DSL 的 `CS controls.neutralize_by` 只按请求给定的控制列计算截面 OLS 残差；它不包含上述 MAD
+去极值、两次 z-score、市场价值对数变换、固定行业哑变量处理和分组。因此二者不是等价接口，
+不能用 `controls.neutralize_by` 的输出声称复现了 Factor 内置预处理。
+
+### 回测时点边界
+
+`factorPreprocess` 会处理传入表中的所有日期，自身不知道当前回调时刻。回调中必须先通过
+`backtest::getHistoryData` 或 `backtest::getLastData` 取得严格早于当前 message 日期的数据，再把
+显式行业映射合入该历史表。禁止访问 Runtime 内部完整区间表后交给预处理函数；那会把未来日期纳入
+处理，即使最终只读取最后一行也属于未来数据泄漏。
+
 ## 参数、交易日期与 context
 
 ```text

@@ -149,6 +149,12 @@ key 为空或不存在时直接报错，不提供隐式默认值。在 `initiali
 的顶层语句，不是函数名到源码的字典。callbacks 引用的每个自定义函数必须在同一请求的 `utils`
 中定义。
 
+Runtime 会在编译预检和正式执行时先加载 `factor`、再加载 `backtest` 模块。因此 `utils` 和八个
+callbacks 可以直接调用因子分析使用的 `factor::factorPreprocess`，不需要复制去极值、标准化、
+中性化或分组实现。加载模块不会自动处理 `dataset_query`，也不会自动注入行业列；完整签名、输入
+要求、时点边界及与 DSL `controls.neutralize_by` 的区别见
+`arena://docs/backtest/dolphindb` 的“因子分析预处理模块”。
+
 JSON 必须正好包含以下八个 key，且每个值必须是同名完整函数定义：
 
 ```dos
@@ -201,6 +207,7 @@ Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价�
 - 静态代码域非空，或第一阶段能产生候选代码；
 - 第二阶段仍包含退出持仓所需的代码；
 - 所有信号通过 `getLastData` / `getHistoryData` 使用当前日期之前的数据；
+- 调用 `factor::factorPreprocess` 时只传严格历史表，并显式提供与研究口径一致的市值列和行业列；
 - `params` 的 key 均存在并在 initialize 转换类型；
 - `utils` 包含 callbacks 引用的所有函数；
 - callbacks 恰好八个，名称和参数数量正确；

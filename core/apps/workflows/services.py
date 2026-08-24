@@ -1865,6 +1865,31 @@ def auto_save_metadata(attempt: WorkflowAttempt) -> dict[str, Any] | None:
     return None
 
 
+def assign_auto_saved_version_number(
+    session: Session,
+    version: FactorVersion | BacktestVersion,
+) -> int:
+    """Consume the current monotonic public number after an automatic save succeeds."""
+    if version.saved or version.is_current or version.version is not None:
+        raise RuntimeError("只有未编号的待自动保存记录可以分配版本号")
+    version_model = type(version)
+    current = session.scalar(
+        select(version_model)
+        .where(
+            version_model.project_id == version.project_id,
+            version_model.is_current.is_(True),
+        )
+        .with_for_update()
+    )
+    if current is None or current.version is None:
+        raise RuntimeError("项目缺少已编号的当前版本")
+    next_number = current.version
+    current.version = next_number + 1
+    session.flush()
+    version.version = next_number
+    return next_number
+
+
 def attempt_context_events(attempt: WorkflowAttempt) -> list[dict[str, Any]]:
     return [dict(event) for event in attempt.events or [] if event.get("event") in ATTEMPT_CONTEXT_EVENTS]
 

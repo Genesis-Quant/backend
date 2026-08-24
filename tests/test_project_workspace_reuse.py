@@ -49,6 +49,7 @@ from core.apps.workflows.services import (
     AUTO_SAVE_PENDING_STATE,
     BATCH_PENDING_STATE,
     WorkflowExecutionService,
+    assign_auto_saved_version_number,
     auto_save_metadata,
     auto_save_workspaces,
     create_workflow_attempt,
@@ -321,6 +322,81 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
     assert len(submissions) == 3
 
 
+@pytest.mark.parametrize(
+    ("application", "project_model", "version_model", "create_project"),
+    [
+        ("factor", FactorProject, FactorVersion, create_factor_project),
+        ("backtest", BacktestProject, BacktestVersion, create_backtest_project),
+    ],
+)
+def test_failed_batch_runs_and_deleted_versions_do_not_consume_or_reuse_numbers(
+    session: Session,
+    user: User,
+    application,
+    project_model,
+    version_model,
+    create_project,
+) -> None:
+    created = create_project(session, user.id, application)
+    project = session.get(project_model, created["id"])
+    assert project is not None
+    pending = []
+    for index in range(3):
+        workspace = WorkflowWorkspace(user_id=user.id, application=application)
+        session.add(workspace)
+        session.flush()
+        attempt = create_workflow_attempt(session, workspace, {"index": index}, [])
+        workflow = WorkflowInstance(
+            workflow_instance_id=2001 + index,
+            workflow_attempt_id=attempt.id,
+            state="SUCCESS",
+            state_history=[],
+        )
+        version = version_model(
+            project_id=project.id,
+            workflow_workspace_id=workspace.id,
+            version=None,
+            saved=False,
+            is_current=False,
+            parameters={"index": index},
+        )
+        session.add_all([workflow, version])
+        pending.append((version, workflow))
+    session.commit()
+
+    for version, workflow in (pending[0], pending[2]):
+        assign_auto_saved_version_number(session, version)
+        version.workflow_instance_id = workflow.workflow_instance_id
+        version.saved = True
+        session.flush()
+    session.commit()
+
+    versions = list(
+        session.scalars(
+            select(version_model)
+            .where(version_model.project_id == project.id)
+            .order_by(version_model.id)
+        )
+    )
+    saved_numbers = sorted(
+        version.version for version in versions if version.saved
+    )
+    current = next(version for version in versions if version.is_current)
+    failed = pending[1][0]
+    assert saved_numbers == [1, 2]
+    assert current.version == 3
+    assert failed.version is None
+
+    session.delete(next(version for version in versions if version.version == 2))
+    session.flush()
+    assign_auto_saved_version_number(session, failed)
+    failed.workflow_instance_id = pending[1][1].workflow_instance_id
+    failed.saved = True
+    session.flush()
+    assert failed.version == 3
+    assert current.version == 4
+
+
 def test_batch_client_id_recovers_failed_submission_with_original_input(
     session: Session,
     user: User,
@@ -331,6 +407,7 @@ def test_batch_client_id_recovers_failed_submission_with_original_input(
     version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == project.id))
     assert version is not None
     version.is_current = False
+    version.version = None
     version.parameters = {"value": "original"}
     workspace = session.get(WorkflowWorkspace, version.workflow_workspace_id)
     assert workspace is not None
@@ -371,6 +448,7 @@ def test_batch_client_id_retries_failed_auto_save_without_new_attempt(
     version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == project.id))
     assert version is not None
     version.is_current = False
+    version.version = None
     workspace = session.get(WorkflowWorkspace, version.workflow_workspace_id)
     assert workspace is not None
     failed = create_workflow_attempt(session, workspace, {"value": "original"}, ["group_returns"], submission_state="AUTO_SAVE_FAILED")

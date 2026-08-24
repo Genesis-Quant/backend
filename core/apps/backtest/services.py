@@ -44,6 +44,7 @@ from core.apps.workflows.services import (
     WorkflowExecutionService,
     auto_save_metadata,
     auto_save_workspaces,
+    assign_auto_saved_version_number,
     create_workflow_attempt,
     current_workflow_attempt,
     finalize_auto_save_workspaces_now,
@@ -276,6 +277,8 @@ def save_backtest_version(session: Session, project: BacktestProject, version: B
         "maxDrawdown": metrics["maxDrawdown"],
         "dailyWinningRate": metrics["winRate"],
     }
+    if version.version is None:
+        assign_auto_saved_version_number(session, version)
     version.workflow_instance_id = workflow.workflow_instance_id
     version.saved = True
     version.is_current = False
@@ -321,7 +324,13 @@ def update_backtest_version(session: Session, user_id: int, project_id: int, ver
 
 
 def delete_backtest_version(session: Session, user_id: int, project_id: int, version_number: int) -> int:
-    project = owned_project(session, user_id, project_id)
+    project = session.scalar(
+        select(BacktestProject)
+        .where(BacktestProject.id == project_id, BacktestProject.user_id == user_id)
+        .with_for_update()
+    )
+    if project is None:
+        raise FileNotFoundError(f"回测项目不存在: {project_id}")
     version = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == project.id, BacktestVersion.version == version_number))
     if version is None:
         raise FileNotFoundError(f"回测版本不存在: {version_number}")
@@ -446,7 +455,7 @@ def serialize_version(session: Session, version: BacktestVersion) -> dict[str, A
 
 
 def create_backtest_draft(session: Session, project: BacktestProject, user_id: int, parameters: dict[str, Any]) -> BacktestVersion:
-    version_number = (session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id)) or 0) + 1
+    version_number = (session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id, BacktestVersion.saved.is_(True))) or 0) + 1
     workspace = WorkflowWorkspace(user_id=user_id, application="backtest")
     session.add(workspace)
     session.flush()
@@ -467,7 +476,6 @@ def submit_backtest_batch(session: Session, user_id: int, project_id: int, items
         project.id,
         {item.client_id for item in items},
     )
-    next_version = (session.scalar(select(func.max(BacktestVersion.version)).where(BacktestVersion.project_id == project.id)) or 0) + 1
     new_workspace_ids: list[int] = []
     for item in items:
         if item.client_id in workspace_ids:
@@ -478,14 +486,13 @@ def submit_backtest_batch(session: Session, user_id: int, project_id: int, items
         version = BacktestVersion(
             project_id=project.id,
             workflow_workspace_id=run.id,
-            version=next_version,
+            version=None,
             saved=False,
             is_current=False,
             remark=item.remark,
             parameters=item.parameters.model_dump(mode="json"),
         )
         session.add(version)
-        next_version += 1
         attempt = create_workflow_attempt(
             session,
             run,

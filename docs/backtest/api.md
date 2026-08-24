@@ -75,8 +75,10 @@ run_backtest_batch(project_id, items)
 }
 ```
 
-每个成功项自动保存为独立递增版本。分别轮询返回的 Workspace。`client_id` 用于幂等识别；重试同一
-批次复用原值。服务端会先校验全部参数并逐项完成 DolphinDB 脚本编译，全部通过后才创建 Workspace；
+提交时不会预占版本号；每个成功项完成输出校验和摘要收集后，才自动保存为下一个未使用的递增版本，
+失败项不占号。并发项按成功保存顺序编号，不保证与 `items` 顺序一致；应分别轮询返回的 Workspace，并用
+`client_id` 识别具体项。重试同一批次时复用原 `client_id`。服务端会先校验全部参数并逐项完成
+DolphinDB 脚本编译，全部通过后才创建 Workspace；
 任一项编译失败时整批不提交。工具调用即提交，不存在 MCP 侧本地队列。
 
 同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt

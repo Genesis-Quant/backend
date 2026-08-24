@@ -124,6 +124,14 @@ Runtime 会拒绝静态可确定为数值的节点，但基础列本身的数据
 
 因此复现横截面结果不能只下载最终交易证券的数据，必须保留或重新查询原计算截面。
 
+### 单步中性化与完整因子预处理
+
+`CS controls.neutralize_by` 是 DSL 图中的单步截面 OLS 残差算符，不等于 Factor 工作流的完整
+预处理。Factor 工作流还会执行 MAD 去极值、标准化、市值对数变换、行业哑变量回归、残差再标准化
+和分组。Backtest 已加载同一 `factor` 模块，确需完整一致的算法时应直接调用
+`factor::factorPreprocess`；输入表、行业映射、截面代码域和回测时点要求见
+`arena://docs/backtest/dolphindb`。不要把两种接口的结果混为一谈。
+
 ## 基础字段填充与 point-in-time 边界
 
 Runtime 在计算任何 derivative 和执行 `filters` **之前**，对部分基础字段执行固定填充：

@@ -115,7 +115,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/backtest/dolphindb",
         title="DolphinDB Backtest 运行契约",
-        description="价格尺度、合成快照、撮合、订单簿、回调事件、持仓、资金、代码映射和缺价行为。",
+        description="价格尺度、合成快照、撮合、回调、共享因子预处理、持仓、资金和缺价行为。",
         mime_type="text/markdown",
     )
     def dolphindb_backtest_document() -> str:

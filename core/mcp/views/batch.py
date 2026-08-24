@@ -58,7 +58,7 @@ def register_batch_tools(server: MCPServer) -> None:
             ),
         ],
     ) -> McpResult[list[BatchRunAccepted]]:
-        """Submit up to 100 Factor requests and auto-save each successful result as a version."""
+        """Submit Factor requests; successful results receive monotonic versions only when saved."""
         request = BatchRunRequest[FactorAnalysisParameters].model_validate({
             "items": [item.model_dump() for item in items],
         })
@@ -79,7 +79,7 @@ def register_batch_tools(server: MCPServer) -> None:
             ),
         ],
     ) -> McpResult[list[BatchRunAccepted]]:
-        """Submit up to 100 Backtests and auto-save each successful result as a version."""
+        """Submit Backtests; successful results receive monotonic versions only when saved."""
         request = BatchRunRequest[BacktestParameters].model_validate({
             "items": [item.model_dump() for item in items],
         })

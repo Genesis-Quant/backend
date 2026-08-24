@@ -42,6 +42,14 @@ class BacktestVersion(Base):
         UniqueConstraint("workflow_instance_id", name="uq_backtest_versions_workflow_instance"),
         CheckConstraint("NOT (saved AND is_current)", name="ck_backtest_versions_saved_not_current"),
         CheckConstraint("NOT saved OR workflow_instance_id IS NOT NULL", name="ck_backtest_versions_saved_workflow_instance"),
+        CheckConstraint(
+            "(version IS NOT NULL) = (saved OR is_current)",
+            name="ck_backtest_versions_number_assignment",
+        ),
+        CheckConstraint(
+            "version IS NULL OR version > 0",
+            name="ck_backtest_versions_number_positive",
+        ),
         Index(
             "uq_backtest_versions_current_project",
             "project_id",
@@ -62,7 +70,10 @@ class BacktestVersion(Base):
         ForeignKey("workflow_instances.workflow_instance_id", ondelete="RESTRICT"),
         comment="已保存结果采用的工作流实例主键",
     )
-    version: Mapped[int] = mapped_column(Integer, comment="项目内递增版本号")
+    version: Mapped[int | None] = mapped_column(
+        Integer,
+        comment="已保存版本或当前草稿的项目内递增版本号；待自动保存记录不预占编号",
+    )
     saved: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否已经保存为不可变版本")
     is_current: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否为项目当前可更新版本")
     remark: Mapped[str] = mapped_column(String(512), default="", comment="版本备注")
