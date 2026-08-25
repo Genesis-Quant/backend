@@ -53,6 +53,7 @@ from core.apps.schemas import ProjectPage, WorkflowSubmitted
 from core.database.session import database_session_factory
 
 from ..auth import current_user
+from ..contracts import validate_mcp_factor_parameters
 from ..schemas import (
     McpResult,
     ProjectListResult,
@@ -158,11 +159,18 @@ def register_project_tools(server: MCPServer) -> None:
         project_id: Annotated[int, Field(gt=0, description="已存在的 Factor 项目 ID。")],
         parameters: Annotated[
             dict[str, Any],
-            Field(description="因子分析对象；必填 dataset_query/factor_columns/return_columns，精确字段、默认值与约束见 Factor Schema。"),
+            Field(
+                description=(
+                    "完整因子分析对象；MCP 额外要求 codes_query 与 dataset_query "
+                    "使用同一受支持指数权重定义并过滤 stock_pool_member。"
+                )
+            ),
         ],
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Factor workflow."""
-        validated = FactorAnalysisParameters.model_validate(parameters)
+        validated = validate_mcp_factor_parameters(
+            FactorAnalysisParameters.model_validate(parameters)
+        )
         with database_session_factory()() as session:
             user = current_user(session)
             workspace = submit_project_analysis(session, user.id, project_id, validated.model_dump(mode="json"))

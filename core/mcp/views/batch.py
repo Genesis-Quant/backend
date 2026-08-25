@@ -40,6 +40,7 @@ from core.apps.schemas import BatchRunAccepted, BatchRunRequest
 from core.database.session import database_session_factory
 
 from ..auth import current_user
+from ..contracts import validate_mcp_factor_parameters
 from ..schemas import McpBatchRunItem, McpResult, READ_ONLY, WRITE, WorkflowOutputFile, WorkflowOutputs
 
 
@@ -54,7 +55,10 @@ def register_batch_tools(server: MCPServer) -> None:
             Field(
                 min_length=1,
                 max_length=100,
-                description="每项必须包含唯一 client_id、可选 remark 和完整 FactorAnalysisParameters parameters。",
+                description=(
+                    "每项包含唯一 client_id、可选 remark 和完整 parameters；"
+                    "两阶段必须使用同一 stock_pool_member 股票池条件。"
+                ),
             ),
         ],
     ) -> McpResult[list[BatchRunAccepted]]:
@@ -62,6 +66,8 @@ def register_batch_tools(server: MCPServer) -> None:
         request = BatchRunRequest[FactorAnalysisParameters].model_validate({
             "items": [item.model_dump() for item in items],
         })
+        for item in request.items:
+            validate_mcp_factor_parameters(item.parameters)
         with database_session_factory()() as session:
             user = current_user(session)
             result = submit_factor_batch(session, user.id, project_id, request.items)

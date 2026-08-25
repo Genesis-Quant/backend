@@ -27,8 +27,9 @@ update_project("factor", project_id, title)
 run_factor_analysis(project_id, parameters)
 ```
 
-`parameters` 必须直接是完整 `FactorAnalysisParameters`。机器可读结构以
-`arena://schemas/factor` 为准；不能只提交局部 override。
+`parameters` 必须直接是完整 `FactorAnalysisParameters`，不能只提交局部 override。机器可读基础结构
+以 `arena://schemas/factor` 为准；MCP 还要求 `codes_query` 与 `dataset_query` 都定义并过滤同一个
+`stock_pool_member`。固定结构、支持的股票池字段以及别名限制见 `arena://docs/factor/request`。
 
 服务端严格校验请求，返回 `workspace_id` 和可能暂为空的 `workflow_instance_id`。用
 `get_workspace_status(workspace_id)` 轮询当前 Attempt。
@@ -55,7 +56,8 @@ run_factor_batch(project_id, items)
 ```
 
 `items` 为 1 到 100 项；每项包含唯一 `client_id`、可选 `remark` 和一份完整 parameters。每项都必须
-独立满足 Factor Schema。提交时不会预占版本号；成功项完成输出校验和指标收集后才自动保存为下一个
+独立满足 Factor Schema 和 MCP/Web 托管股票池契约。提交时不会预占版本号；成功项完成输出校验和
+指标收集后才自动保存为下一个
 未使用的递增版本，失败项不占号。并发项按成功保存顺序编号，不保证与 `items` 顺序一致。
 `client_id` 用于同一次客户端提交的幂等识别，重试应复用原值；分别轮询返回的每个
 `workspace_id`。批量工具不是浏览器本地队列，调用后会立即提交。

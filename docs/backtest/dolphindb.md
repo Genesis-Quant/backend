@@ -369,10 +369,12 @@ z-score，最后按残差
 - 日期、代码、市值、行业列的选择；
 - `factorCols`、`nGroups` 及基础数据版本。
 
-Factor 工作流在运行时从当前股票元数据取得行业映射；Backtest **不会**为每次运行隐式请求元数据，
-也不会自动向 `dataset_query` 结果添加 `industry`。需要相同结果时，调用方必须把同一份代码到行业
-映射明确合并进待处理表，再调用本函数。映射不同、某日代码域不同或先用 `filters` 删除部分证券，
-都会改变截面回归、标准化和分组结果。
+Runtime 应用进程启动时加载一次股票元数据并保存在 Python 模块变量中，后续调用直接复用。
+Factor 使用 `.SH/.SZ`，Backtest 将相同映射转换为 `.XSHG/.XSHE`，可通过 `getIndustry()` 读取。
+Backtest 不会自动
+向 `dataset_query` 结果添加 `industry`；调用方必须把该字典按 `code` 显式映射到待处理表，再调用
+本函数。映射不同、某日代码域不同或先用 `filters` 删除部分证券，都会改变截面回归、标准化和分组
+结果。
 
 DSL 的 `CS controls.neutralize_by` 只按请求给定的控制列计算截面 OLS 残差；它不包含上述 MAD
 去极值、两次 z-score、市场价值对数变换、固定行业哑变量处理和分组。因此二者不是等价接口，
@@ -390,15 +392,18 @@ DSL 的 `CS controls.neutralize_by` 只按请求给定的控制列计算截面 O
 ```text
 getParams() -> parameters.params 对应的 DolphinDB 字典
 getParam(key) -> parameters.params 中指定 key 的值；缺失时抛错
+getIndustry() -> 与 Factor 研究同源的 XSHG/XSHE 代码到行业字典
 getTradeDates() -> 当前运行实际回放的有序 DATE 向量
 ```
 
-三个函数只能在回测运行期间使用，包括 `initialize` 和后续回调。`getTradeDates()` 读取的是当前
+四个函数只能在回测运行期间使用，包括 `initialize` 和后续回调。`getTradeDates()` 读取的是当前
 运行传给插件的 message 中实际存在的日期，并已去重、升序排列；参数调优或批量研究传入子区间时，
 它只返回该次子区间的日期。它不是对交易所官方日历的额外查询，缺少行情的日期不会被补入。
 
 `initialize` 应读取参数并显式转换类型。`getParam(key)` 只接受标量 STRING 或 SYMBOL，并对空 key
-或缺失 key 直接抛错；如果需要一次遍历全部参数再使用 `getParams()`。插件提供
+或缺失 key 直接抛错；如果需要一次遍历全部参数再使用 `getParams()`。`getIndustry()` 返回 Runtime
+应用进程启动时加载到 Python 变量的当前股票行业映射，不是按历史日期变化的 point-in-time 行业分类；字典只包含
+Backtest 支持的 `.XSHG/.XSHE` 股票代码。插件提供
 `context.engine`，调用方自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入 Factor 表、message、params 或任何
 `coreBacktest*` 变量。
 
@@ -406,6 +411,7 @@ getTradeDates() -> 当前运行实际回放的有序 DATE 向量
 def initialize(mutable context) {
     context["window"] = long(getParam("window"))
     context["tradeDates"] = getTradeDates()
+    context["industry"] = getIndustry()
 }
 ```
 

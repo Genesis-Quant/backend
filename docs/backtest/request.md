@@ -151,8 +151,9 @@ key 为空或不存在时直接报错，不提供隐式默认值。在 `initiali
 
 Runtime 会在编译预检和正式执行时先加载 `factor`、再加载 `backtest` 模块。因此 `utils` 和八个
 callbacks 可以直接调用因子分析使用的 `factor::factorPreprocess`，不需要复制去极值、标准化、
-中性化或分组实现。加载模块不会自动处理 `dataset_query`，也不会自动注入行业列；完整签名、输入
-要求、时点边界及与 DSL `controls.neutralize_by` 的区别见
+中性化或分组实现。`getIndustry()` 提供与 Factor 研究同源、代码已转换为 `.XSHG/.XSHE` 的行业
+字典；Runtime 不会自动处理 `dataset_query` 或注入行业列。完整签名、输入要求、时点边界及与
+DSL `controls.neutralize_by` 的区别见
 `arena://docs/backtest/dolphindb` 的“因子分析预处理模块”。
 
 JSON 必须正好包含以下八个 key，且每个值必须是同名完整函数定义：

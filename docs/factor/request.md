@@ -23,7 +23,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选池查询 |
+| `codes_query` | FactorQuery | MCP 必填 | — | 第一阶段候选池查询；必须包含托管股票池条件 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询 |
 | `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
@@ -37,7 +37,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 ## 两阶段查询
 
-当 `codes_query` 非空时：
+MCP 的 `run_factor_analysis` 和 `run_factor_batch` 要求 `codes_query` 非空。执行顺序为：
 
 1. 执行 `codes_query`；
 2. 对其过滤后结果的 `code` 去重；
@@ -47,7 +47,37 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 第一阶段得到的是整个研究区间的候选代码并集，不会把第一阶段每日行过滤自动复制到第二阶段。
 需要逐日动态成员关系时，在 `dataset_query` 中再次定义成员 derivative 和 filter。
 
-`codes_query=null` 时直接使用 `dataset_query.codes` 的语义；其中空数组遵循 Query 的全代码域规则。
+Runtime 基础模型和普通 REST 服务仍保留 `codes_query=null` 的高级用法；MCP 因子工具为保证请求能被
+网页无损读取，不接受该形式。
+
+### MCP/Web 托管股票池契约
+
+`codes_query` 与 `dataset_query` 必须同时定义名为 `stock_pool_member` 的节点，并把它加入各自的
+`filters`。两个节点必须选择同一个指数权重字段，结构固定为：
+
+```json
+{
+  "stock_pool_member": {
+    "type": "DIRECT",
+    "op": "binary.gt",
+    "fields": { "left": "weight_000852SH", "right": 0 },
+    "params": {}
+  }
+}
+```
+
+可选字段与网页股票池一一对应：
+
+| 股票池 | `fields.left` |
+| --- | --- |
+| 上证 50 | `weight_000016SH` |
+| 沪深 300 | `weight_000300SH` |
+| 中证 500 | `weight_000905SH` |
+| 中证 1000 | `weight_000852SH` |
+
+第一阶段可以另外添加估值、流动性等候选筛选，但不能再用 `is_member` 等别名重复定义指数成员条件。
+网页只把 `stock_pool_member` 识别为股票池选择；别名会造成页面显示、复制版本与实际过滤条件不一致。
+MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票池一致性，失败时直接返回具体字段路径。
 
 ## 内置预处理
 
@@ -60,8 +90,8 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 5. 将残差再次 z-score；
 6. 按残差从小到大划分 `n_groups` 个等数量组。
 
-行业映射在任务运行时从当前股票元数据取得，不由 `dataset_query` 提供。若某日某因子的有效样本
-数不足以完成回归，该日该因子的处理值和分组保持空值，不会用未中性化值代替。
+行业映射从 Runtime 应用进程启动时加载的 Python 模块变量读取，不由 `dataset_query` 提供。若某日
+某因子的有效样本数不足以完成回归，该日该因子的处理值和分组保持空值，不会用未中性化值代替。
 
 启用内置预处理时：
 
@@ -104,7 +134,8 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 ## 请求构造
 
 精确顶层结构读取 `arena://schemas/factor`。两阶段中的每个 `FactorQuery` 都必须独立满足 Query 契约，
-每个 DSL 节点使用 `describe_dsl_operator` 核对。本文不提供具体候选域、因子、标签或分析构造。
+每个 DSL 节点使用 `describe_dsl_operator` 核对。Schema 是 Runtime 通用结构；通过 MCP 提交时还必须
+满足上面的托管股票池契约。本文不提供具体因子、标签或分析构造。
 
 ## 输出列
 
@@ -138,7 +169,8 @@ time
 ## 提交前检查
 
 - 两阶段都分别满足完整 `FactorQuery` 契约；
-- 第二阶段仍包含需要逐日生效的成员和状态过滤；
+- 两阶段都定义并过滤同一 `stock_pool_member`，且没有其它成员条件别名；
+- 第二阶段仍包含需要逐日生效的其它状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
 - `return_specs` 与 `return_columns` 一一对应，并与 DSL 实际收益公式一致；
 - 收益标签的方向和 shift 符合研究定义；
