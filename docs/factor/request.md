@@ -134,6 +134,9 @@ MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票
 - `periods>1` 时服务端将观测视为可能重叠。Runtime 仍输出逐日 IC、Rank IC 和原始分组收益，但
   Backend 与浏览器一律不把它们连续复利，相关累计和年化指标返回空值。
 
+ICIR 与 Rank ICIR 始终保留原始观测频率，计算式为 `mean / sample_std`，不会自动年化。收益期限、
+重叠程度和 IC 自相关都会影响可用的年化系数；调用方不能在不知道这些信息时固定乘 `sqrt(252)`。
+
 服务端不会根据列名猜测简单收益、对数收益或覆盖期数。旧请求缺少 `return_specs` 时，仅为兼容历史
 数据识别直接的 `unary.log(binary.div(shift(...), shift(...)))` 和 `unary.pct_change` 结构；无法从该结构
 精确确定时会明确报错，必须人工补充口径。新请求必须显式提供，避免工作流成功但报告口径错误。
@@ -145,6 +148,16 @@ MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票
 精确顶层结构读取 `arena://schemas/factor`。两阶段中的每个 `FactorQuery` 都必须独立满足 Query 契约，
 每个 DSL 节点使用 `describe_dsl_operator` 核对。Schema 是 Runtime 通用结构；通过 MCP 提交时还必须
 满足上面的全市场或指数动态池契约。本文不提供具体因子、标签或分析构造。
+
+第二阶段顶层 derivatives 应只保留分析和过滤真正需要的列：`factor_columns`、`return_columns`、
+必要的最终过滤 BOOL，以及确需直接输出或多处复用的列。构成某个因子或收益标签的一次性中间
+算术、shift、比较和转换，在算符 definition 允许时必须嵌套进最终命名节点，不能逐步提升为顶层
+列。`stock_pool_member` 因网页股票池契约和 `filters` 引用必须保持顶层并保持前述固定结构，不能把
+其它条件合并进该节点；其它一次性子条件应嵌套进各自最终的命名过滤 BOOL。
+
+两阶段分别执行并各自生成工作表，因此 `codes_query` 也要使用最小列集合：只需最终筛选 BOOL 时，
+把其一次性子条件嵌套到该 BOOL 中。完整的内存、输出列和重复计算权衡见
+`arena://docs/overview/dsl` 的“嵌套优先与结果列预算”。
 
 ## 输出列
 
@@ -181,6 +194,7 @@ time
 - 股票池使用全市场规范，或两阶段都定义并过滤同一 `stock_pool_member` 且没有其它成员条件别名；
 - 第二阶段仍包含需要逐日生效的其它状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
+- 两阶段都已嵌套单次使用的中间节点，没有输出与分析无关的临时列；
 - `return_specs` 与 `return_columns` 一一对应，并与 DSL 实际收益公式一致；
 - 收益标签的方向和 shift 符合研究定义；
 - `lookback` 覆盖所有滚动窗口；

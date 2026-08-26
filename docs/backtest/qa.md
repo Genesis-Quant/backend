@@ -106,12 +106,18 @@ Workspace 前编译 `utils` 与 callbacks。
 | 累计收益 | `prod(1 + ratio) - 1` |
 | 年化收益 | `(1 + 累计收益)^(annual_trading_days / N) - 1` |
 | 年化波动 | 从第二行开始的 `ratio` 总体标准差乘 `sqrt(annual_trading_days)` |
-| Sharpe | `(年化收益 - risk_free_rate) / 年化波动` |
-| 胜率 | 非零 `ratio` 中正收益日比例；不是订单或逐笔成交胜率 |
+| Sharpe | `(年化收益 - risk_free_rate) / 年化波动`，已经年化 |
+| Sortino | 日超额收益均值除以下行波动，再乘 `sqrt(annual_trading_days)`，已经年化 |
+| 滚动 Sharpe | 窗口内日超额收益均值除以样本标准差，再乘 `sqrt(annual_trading_days)`；无风险利率同样按 `annual_trading_days` 换算到日频 |
+| 胜率 | 非零 `ratio` 中正收益日比例；不是订单或逐笔成交胜率，也不进行年化 |
 | 最大回撤 | 财富序列以前置净值 1 为起点计算，结果不大于 0 |
 
 `N` 包含全部 `ratio` 行。`annual_trading_days` 和 `risk_free_rate` 来自当前版本参数。Backend 当前没有
 官方组合换手率指标；若外部报告换手率，必须同时给出分子、分母、单双边和年化口径。
+
+最大回撤、Calmar 的回撤分母、胜率、盈亏比、盈利因子、恢复因子、收益/痛苦比率、偏度和峰度均是
+路径、频率或无量纲指标，不再年化。一日 VaR 与一日预期短缺保持日频风险口径；跨期限换算依赖分布
+和独立性假设，网页不会自动乘以平方根因子。网页指标名称旁的问号气泡会显示当前口径。
 
 当前请求不支持 `config.benchmark`，结果表也不含基准序列或基准指标。需要比较时，应在下载后使用
 明确版本、相同日期轴和明确缺失值规则的独立序列计算，不能把候选代码域当作基准表现。

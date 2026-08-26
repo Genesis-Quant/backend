@@ -1,8 +1,8 @@
 """Administrator-only HTTP endpoints."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from core.apps.admin.schemas import (
@@ -18,6 +18,8 @@ from core.apps.admin.services import AdminService
 from core.apps.users.models import User
 from core.apps.users.schemas import UserResponse
 from core.apps.users.services import get_current_admin
+from core.apps.workflows.schemas import WorkflowWorkspaceListResponse
+from core.apps.workflows.services import WorkflowGatewayService
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
 
@@ -105,6 +107,36 @@ def ensure_workflows(
         return {"message": "工作流定义已同步", "result": AdminService().ensure_workflows()}
     except DolphinSchedulerError as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+
+
+@router.get("/workflows", response_model=WorkflowWorkspaceListResponse)
+def list_workflows(
+    user: Annotated[User, Depends(get_current_admin)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    application: Literal[
+        "query",
+        "factor",
+        "backtest",
+        "optimization",
+        "sensitivity",
+        "incremental",
+    ]
+    | None = None,
+    state: Literal["active", "success", "failure"] | None = None,
+) -> WorkflowWorkspaceListResponse:
+    return WorkflowWorkspaceListResponse.model_validate(
+        WorkflowGatewayService().list(
+            session,
+            user,
+            page,
+            page_size,
+            application,
+            state,
+            include_all_users=True,
+        )
+    )
 
 
 @router.post("/incremental-update/runs", response_model=IncrementalUpdateRunResponse)

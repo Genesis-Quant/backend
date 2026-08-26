@@ -80,6 +80,95 @@ TS/CS 的 `on` 可为：
 列引用与常量是否允许、各自位于哪个 `fields` key，必须以目标算符 definition 为准；本页不提供
 具体字段或阈值构造。
 
+## 嵌套优先与结果列预算
+
+构造 DSL 前必须先列出业务真正需要的最终列，并让顶层 `derivatives` 保持最小。Runtime 会把**每个
+顶层命名 derivative** 计算为完整向量并追加到计算表。Query 会把它投影进最终 Parquet；Factor 和
+Backtest 则会让它继续驻留在交给下游分析或回测的第二阶段数据表中。顶层中间列越多，DolphinDB
+工作表以及适用时的 Parquet、下载传输和浏览器 DuckDB 需要保存的列就越多。
+
+嵌套节点会参与求值，但不会成为独立命名列，也不会进入最终结果 Schema。因此，当目标算符的
+`fields` 或 TS/CS 的 `on` 按 definition 接受嵌套 DSL 时，必须遵循以下规则：
+
+- 仅被一个下游节点使用、无需单独查看的中间表达式，直接嵌套到该下游节点；
+- 仅为一个 TS/CS 节点提供参与掩码的 BOOL 表达式，优先直接嵌套到该节点的 `on`；
+- 一个最终过滤条件由多个一次性子条件组成时，只保留最终 BOOL 为顶层 derivative，把子条件嵌套
+  到它内部，再由 `filters` 引用最终名称；
+- 基础字段只作为嵌套节点输入时，不要为了读取它而放入 `factors`。Runtime 会自动收集并读取依赖，
+  `factors` 只列需要直接输出的基础列；
+- 不得为了让 JSON 看起来“分步骤”而把每一步算术、比较、转换或掩码都提升为顶层 derivative。
+
+例如，下面的写法会输出三个 BOOL 列：
+
+```json
+{
+  "derivatives": {
+    "left_valid": {
+      "type": "DIRECT",
+      "op": "binary.gt",
+      "fields": { "left": "field_a", "right": 0 },
+      "params": {}
+    },
+    "right_valid": {
+      "type": "DIRECT",
+      "op": "binary.gt",
+      "fields": { "left": "field_b", "right": 0 },
+      "params": {}
+    },
+    "valid": {
+      "type": "DIRECT",
+      "op": "multiary.and",
+      "fields": { "cols": ["left_valid", "right_valid"] },
+      "params": {}
+    }
+  },
+  "filters": ["valid"]
+}
+```
+
+若两个子条件没有其它消费者，应改为只输出最终过滤列：
+
+```json
+{
+  "derivatives": {
+    "valid": {
+      "type": "DIRECT",
+      "op": "multiary.and",
+      "fields": {
+        "cols": [
+          {
+            "type": "DIRECT",
+            "op": "binary.gt",
+            "fields": { "left": "field_a", "right": 0 },
+            "params": {}
+          },
+          {
+            "type": "DIRECT",
+            "op": "binary.gt",
+            "fields": { "left": "field_b", "right": 0 },
+            "params": {}
+          }
+        ]
+      },
+      "params": {}
+    }
+  },
+  "filters": ["valid"]
+}
+```
+
+以下情况才保留顶层命名节点：
+
+- 该列必须出现在结果中，例如 Query 的明确输出、Factor 的 `factor_columns` / `return_columns`、
+  Backtest 回调需要从历史 helper 按名称读取的信号列；
+- `filters` 需要引用它，因为 `filters` 只能引用顶层 BOOL derivative；
+- 同一高成本表达式被多个下游节点复用，命名缓存带来的计算节省明确大于增加一列的常驻内存；
+- 调试时确实需要单独核验该列。调试完成后应删除不再需要的顶层中间列。
+
+嵌套表达式每次出现都会独立求值，不会自动按结构去重。不要把同一高成本 TS/CS 节点复制到多个
+位置；这种情况下应保留一个有意义的顶层名称并复用。最终目标是在“更少的常驻结果列”和“避免
+重复昂贵计算”之间做显式权衡，而不是一律命名或一律复制嵌套。
+
 ## 命名与依赖
 
 Runtime 从所有 `fields`、嵌套节点和 `on` 收集依赖，按拓扑顺序计算，所以 JSON 对象中的书写顺序

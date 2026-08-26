@@ -93,6 +93,13 @@ open, low, high, close, up_limit, down_limit, pre_close
 - 策略时序特征必须由 `lookback` 提供足够历史；
 - 未来收益、负 shift 等标签不能作为回测信号。
 
+`dataset_query` 也必须遵守最小列原则。只有回调需要通过 `getLastData` / `getHistoryData` 按名称读取、
+需要作为最终过滤器、需要直接核验，或被多个高成本下游节点复用的 derivative 才保留顶层名称。
+一次性中间算术、比较、转换和掩码在算符 definition 允许时应嵌套到最终信号节点中。所有顶层
+derivative 都会扩宽回测会话中的历史数据表；它们不会进入 snapshot message，却仍会占用 DolphinDB
+内存，因此不能为“分步骤展示”保留无用中间列。具体取舍见 `arena://docs/overview/dsl` 的“嵌套优先
+与结果列预算”。
+
 动态代码域只遵循“第一阶段候选并集、第二阶段逐日状态、回调读取严格历史截面”这一通用契约。
 具体 DSL 字段和算符必须通过 Catalog、`describe_dsl_operator` 和目标数据定义自行确认。
 
@@ -210,6 +217,7 @@ def finalize(mutable context)
 
 - 静态代码域非空，或第一阶段能产生候选代码；
 - 第二阶段仍包含退出持仓所需的代码；
+- `dataset_query` 已嵌套单次使用的中间节点，只保留回调、过滤、复用或核验真正需要的顶层列；
 - 所有信号通过 `getLastData` / `getHistoryData` 使用当前日期之前的数据；
 - 调用 `factor::factorPreprocess` 时只传严格历史表，并显式提供与研究口径一致的市值列和行业列；
 - `params` 的 key 均存在并在 initialize 转换类型；

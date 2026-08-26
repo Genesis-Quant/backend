@@ -24,8 +24,8 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 | `end_date` | string | 是 | 闭区间结束，严格 `YYYY-MM-DD`，不得早于开始日期 |
 | `lookback` | TimeDelta string | 否 | 默认 0，必须非负；用于开始日期之前的历史计算 |
 | `codes` | string[] | 是 | 非空为静态代码范围；空数组表示读取计算区间内存在 `close` 数据的全部代码 |
-| `factors` | string[] | 否 | 直接从 CoreData 读取并输出的基础因子名 |
-| `derivatives` | object | 否 | `{输出列名: DSL节点}` |
+| `factors` | string[] | 否 | 需要直接输出的基础因子名；仅作为 DSL 输入的字段不要列入 |
+| `derivatives` | object | 否 | `{输出列名: DSL节点}`；单次使用的中间节点应嵌套，不要提升为输出列 |
 | `filters` | string[] | 否 | 顶层 BOOL derivative 名称；所有过滤条件按 AND 合并 |
 
 `factors` 与 `derivatives` 至少有一项。列表不允许空字符串或重复项。`time`、`code` 是保留输出列，
@@ -62,6 +62,10 @@ Backtest 的 `codes_query` + `dataset_query`。
 `fields`、`params`、返回类型和 `on` 约束必须逐项使用 `describe_dsl_operator` 核对。本页不提供具体
 筛选条件、因子定义或完整业务请求。
 
+构造请求时先确定最小输出 Schema。只有确实需要下载、复用、过滤或独立核验的列才放在
+`factors` / 顶层 `derivatives`；算符 definition 允许时，一次性算术、比较、转换和 `on` 掩码应直接
+嵌套。完整规则和命名复用的性能边界见 `arena://docs/overview/dsl` 的“嵌套优先与结果列预算”。
+
 ## 输出
 
 逻辑输出名为 `data`，文件名为 `query.parquet`。列包括：
@@ -71,7 +75,8 @@ time, code, <factors...>, <命名 derivatives...>
 ```
 
 `filters` 只删除不满足条件的行，不删除对应 BOOL derivative 列。嵌套但未在 `derivatives` 顶层
-命名的节点不形成独立输出列。
+命名的节点不形成独立输出列。每增加一个顶层 derivative，都会增加最终 Parquet 的一列；不要把
+仅为构造最终字段服务的中间结果一并输出。
 
 ## 提交前检查
 
@@ -79,6 +84,7 @@ time, code, <factors...>, <命名 derivatives...>
 - 请求没有额外包一层 `dataset_query`；
 - 日期格式正确且 `lookback` 覆盖最长时序窗口；
 - 每个算符已用 `describe_dsl_operator` 核对；
+- 已把允许嵌套且只使用一次的中间节点内联，顶层输出列集合保持最小；
 - 所有 `filters` 都引用顶层 BOOL derivative；
 - 所有 `on` 字符串都引用顶层 BOOL derivative；
 - 没有 derivative 循环依赖；

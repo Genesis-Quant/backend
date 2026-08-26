@@ -281,6 +281,62 @@ def test_workflow_list_survives_scheduler_login_failure(
     assert result["items"][0]["current_attempt"]["tasks_error"] == "scheduler unavailable"
 
 
+def test_workflow_list_only_expands_scope_for_admin_endpoint(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    administrator = create_user(session, "administrator", is_admin=True)
+    owner = create_user(session, "owner")
+    create_workflow(session, administrator.id, 100)
+    create_workflow(session, owner.id, 101)
+    session.commit()
+
+    class UnavailableClient:
+        def __enter__(self):
+            raise DolphinSchedulerError("scheduler unavailable")
+
+        def __exit__(self, *ignored: object) -> None:
+            return None
+
+    monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", UnavailableClient)
+
+    personal = WorkflowGatewayService().list(
+        session,
+        administrator,
+        1,
+        20,
+        None,
+        None,
+    )
+    administrative = WorkflowGatewayService().list(
+        session,
+        administrator,
+        1,
+        20,
+        None,
+        None,
+        include_all_users=True,
+    )
+
+    assert personal["total"] == 1
+    assert personal["items"][0]["user_id"] == administrator.id
+    assert administrative["total"] == 2
+    assert {item["user_id"] for item in administrative["items"]} == {
+        administrator.id,
+        owner.id,
+    }
+    with pytest.raises(PermissionError):
+        WorkflowGatewayService().list(
+            session,
+            owner,
+            1,
+            20,
+            None,
+            None,
+            include_all_users=True,
+        )
+
+
 def test_workflow_history_includes_submission_failure_without_instance(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,

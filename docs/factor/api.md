@@ -19,7 +19,7 @@ update_project("factor", project_id, title)
 ```
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
-`latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`long_short_cumulative_return`、
+`latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`long_short_cumulative_return`、`long_short_annual_return`、
 `long_short_sharpe`、`updated_at`。
 
 `get_project` 返回当前 `draft`、最新保存版本和当前工作流信息。`update_project` 只改标题，不改参数、
@@ -92,6 +92,12 @@ list_workflow_outputs("factor", workflow_instance_id)
 分别按各自口径生成财富路径；覆盖多个交易期的重叠收益不连续复利，因此对应累计收益、年化收益、
 年化波动率、Sharpe 和最大回撤为 `null`，IC 与 Rank IC 指标仍保留。浏览器读取 Parquet 时遵循同一
 契约，不能自行把重叠标签当作逐日可实现收益。
+
+ICIR 与 Rank ICIR 均定义为 `IC 均值 / IC 样本标准差`，保存值**没有年化**。IC 观测对应的收益周期由
+`return_specs[return_column].periods` 决定；重叠收益会引入自相关，因此不能对所有 ICIR 统一乘
+`sqrt(252)`。调用方若需要年度口径，必须根据收益周期、有效独立观测频率与自相关假设自行换算。
+只有 `periods=1` 的非重叠多空收益可以无歧义地生成累计收益、按 252 个交易日折算的年化收益、
+年化波动和 Sharpe。项目列表默认展示该年化收益，而不是把区间累计收益标成年度指标。
 
 ## 完整调用顺序
 

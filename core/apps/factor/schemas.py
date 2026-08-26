@@ -19,6 +19,7 @@ type FactorProjectSortField = Literal[
     "rank_ic_mean",
     "ic_ir",
     "long_short_cumulative_return",
+    "long_short_annual_return",
     "long_short_sharpe",
     "updated_at",
 ]

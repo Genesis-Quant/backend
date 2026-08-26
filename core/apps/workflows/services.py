@@ -746,6 +746,8 @@ class WorkflowGatewayService:
         page_size: int,
         application: str | None,
         state: str | None,
+        *,
+        include_all_users: bool = False,
     ) -> dict[str, Any]:
         attempt_counter = aliased(WorkflowAttempt)
         attempt_count = (
@@ -770,7 +772,9 @@ class WorkflowGatewayService:
             .correlate(WorkflowWorkspace, WorkflowAttempt)
             .scalar_subquery()
         )
-        conditions = [] if user.is_admin else [WorkflowWorkspace.user_id == user.id]
+        if include_all_users and not user.is_admin:
+            raise PermissionError("只有管理员可以查看全部用户的工作流")
+        conditions = [] if include_all_users else [WorkflowWorkspace.user_id == user.id]
         if application is not None:
             conditions.append(WorkflowWorkspace.application == application)
         if state == "active":

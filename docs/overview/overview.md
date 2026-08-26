@@ -102,7 +102,8 @@ API 文档。`title` 去除首尾空格后长度为 1 到 128。Factor/Backtest 
 
 ```text
 1. 读取本页、对象关系、工作流文档和目标应用的 request/api/Schema
-2. 发现并校验所有 DSL 算符；Backtest 还要核对 DolphinDB 回测契约和插件函数白名单
+2. 发现并校验所有 DSL 算符，按 overview/dsl 将单次使用的中间节点尽量嵌套并保持最小输出列；
+   Backtest 还要核对 DolphinDB 回测契约和插件函数白名单
 3. create_project 或 get_project
 4. 调用目标应用的 run 工具，保存 workspace_id
 5. get_workspace_status(workspace_id) 轮询当前 Attempt
