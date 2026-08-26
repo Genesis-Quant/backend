@@ -2,6 +2,8 @@
 
 本页只描述 Arena Runtime 当前实际创建的股票回测环境，不是 DolphinDB 语言教程，也不覆盖插件
 其它 dataType 或 matchingMode。策略可以依赖本文列出的 message、Runtime helper 和回调事件结构。
+可调用的 `Backtest::` 函数、实际返回形式、调用阶段、Runtime 独占接口和禁止接口统一见
+`arena://docs/backtest/interfaces`；不得根据插件导出列表自行扩大策略能力。
 
 ## 先看能力边界
 
@@ -31,7 +33,8 @@
 
 专项契约：动态数据域见 `arena://docs/backtest/dynamic-pool`，二次规划与目标权重见
 `arena://docs/backtest/optimization`，回调对象见 `arena://docs/backtest/callback-data`，输出审计见
-`arena://docs/backtest/qa`。这些资源不提供具体策略或构造。
+`arena://docs/backtest/qa`，函数白名单见 `arena://docs/backtest/interfaces`。这些资源不提供具体策略
+或构造。
 
 ## 运行时字段自省
 
@@ -680,7 +683,7 @@ downLimitPrice = down_limit 非 NULL ? down_limit : min(low, round(pre_close * 0
 1. 该证券不在当日 `message.symbol`；
 2. `backtest::order_target*` 找不到它时会抛出“股票不在当前快照中”，策略应先检查是否存在；
 3. 已有非目标持仓当天可能无法卖出并继续保留；
-4. 当前插件的 `daily_positions` 不输出 `closePrice`，不能从持仓表推断当日行情是否有效；
+4. `daily_positions.closePrice` 可能沿用最近估值价格，不能从持仓表推断当日行情是否有效；
 5. 恢复交易后 Runtime 不会自动清仓，只有策略再次在它出现在 message 时提交目标 0 才会退出。
 
 因此“目标集合已经删除该证券”不等于“仓位已经卖出”。结果审计必须检查无法交易期间的持仓延续，

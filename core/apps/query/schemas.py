@@ -10,6 +10,13 @@ from core.apps.schemas import WorkflowReference, WorkflowSummary
 from core.utils.validation import normalize_text
 
 type QueryOutput = Literal["source_data", "computed_data", "filtered_data", "data"]
+type QueryProjectSortField = Literal[
+    "id",
+    "title",
+    "state",
+    "workflow_instance_id",
+    "updated_at",
+]
 
 
 class QueryProjectCreate(BaseModel):

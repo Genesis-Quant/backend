@@ -14,6 +14,7 @@ from core.apps.backtest.schemas import (
     BacktestProjectCreate,
     BacktestProjectItem,
     BacktestProjectListItem,
+    BacktestProjectSortField,
     BacktestProjectUpdate,
     BacktestVersionCreate,
     BacktestVersionListItem,
@@ -56,7 +57,7 @@ from core.apps.backtest.services import (
     update_backtest_project,
     update_backtest_version,
 )
-from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, WorkflowSubmitted
+from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, SortOrder, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
@@ -86,8 +87,26 @@ def download_backtest_result(workflow_instance_id: int, name: str, user: Annotat
 
 
 @router.get("/projects", response_model=ProjectPage[BacktestProjectListItem])
-def projects(user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> ProjectPage[BacktestProjectListItem]:
-    return ProjectPage[BacktestProjectListItem].model_validate(list_backtest_projects(session, user.id, page, page_size))
+def projects(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=128),
+    sort_by: BacktestProjectSortField = Query("updated_at"),
+    sort_order: SortOrder = Query("desc"),
+) -> ProjectPage[BacktestProjectListItem]:
+    return ProjectPage[BacktestProjectListItem].model_validate(
+        list_backtest_projects(
+            session,
+            user.id,
+            page,
+            page_size,
+            search,
+            sort_by,
+            sort_order,
+        )
+    )
 
 
 @router.post("/projects", response_model=BacktestProjectItem, status_code=status.HTTP_201_CREATED)

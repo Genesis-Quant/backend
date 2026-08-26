@@ -1,6 +1,6 @@
 """MCP project, execution, and version tools."""
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from mcp.server import MCPServer
 from pydantic import Field
@@ -8,6 +8,7 @@ from runtime import BacktestParameters, FactorAnalysisParameters, FactorQuery
 from runtime.apps.backtest.api import compile_backtest_scripts
 
 from core.apps.backtest.schemas import (
+    BacktestProjectSortField,
     BacktestProjectCreate,
     BacktestProjectItem,
     BacktestProjectListItem,
@@ -28,6 +29,7 @@ from core.apps.backtest.services import (
     update_backtest_version,
 )
 from core.apps.factor.schemas import (
+    FactorProjectSortField,
     FactorProjectCreate,
     FactorProjectItem,
     FactorProjectListItem,
@@ -47,9 +49,9 @@ from core.apps.factor.services import (
     update_factor_project,
     update_factor_version,
 )
-from core.apps.query.schemas import QueryProjectCreate, QueryProjectItem, QueryProjectListItem
+from core.apps.query.schemas import QueryProjectCreate, QueryProjectItem, QueryProjectListItem, QueryProjectSortField
 from core.apps.query.services import create_query_project, get_query_project, list_query_projects, submit_project_query
-from core.apps.schemas import ProjectPage, WorkflowSubmitted
+from core.apps.schemas import ProjectPage, SortOrder, WorkflowSubmitted
 from core.database.session import database_session_factory
 
 from ..auth import current_user
@@ -66,25 +68,58 @@ from ..schemas import (
 )
 from ..services import submitted_workspace
 
+type ProjectApplication = Literal["query", "factor", "backtest"]
+type ProjectSortField = QueryProjectSortField | FactorProjectSortField | BacktestProjectSortField
+
+PROJECT_SORT_FIELDS = {
+    "query": frozenset(get_args(QueryProjectSortField.__value__)),
+    "factor": frozenset(get_args(FactorProjectSortField.__value__)),
+    "backtest": frozenset(get_args(BacktestProjectSortField.__value__)),
+}
+
+
+def validate_project_sort_field(
+    application: ProjectApplication,
+    sort_by: ProjectSortField,
+) -> ProjectSortField:
+    """Reject sort fields that belong to a different project application."""
+    if sort_by not in PROJECT_SORT_FIELDS[application]:
+        available = ", ".join(sorted(PROJECT_SORT_FIELDS[application]))
+        raise ValueError(f"{application} 项目不支持按 {sort_by} 排序；可用字段：{available}")
+    return sort_by
+
 
 def register_project_tools(server: MCPServer) -> None:
     """Register project CRUD, run, and version tools."""
 
     @server.tool(title="列出项目", annotations=READ_ONLY)
     def list_projects(
-        application: Annotated[Literal["query", "factor", "backtest"], Field(description="项目类型。")],
+        application: Annotated[ProjectApplication, Field(description="项目类型。")],
         page: Annotated[int, Field(ge=1, description="页码，从 1 开始。")] = 1,
         page_size: Annotated[int, Field(ge=1, le=100, description="每页数量。")] = 20,
+        search: Annotated[str | None, Field(max_length=128, description="按项目名称或 ID 片段搜索；空值表示不过滤。")] = None,
+        sort_by: Annotated[
+            ProjectSortField,
+            Field(description="排序字段；每种 application 支持的字段见对应 API 文档。"),
+        ] = "updated_at",
+        sort_order: Annotated[SortOrder, Field(description="升序 asc 或降序 desc。")] = "desc",
     ) -> McpResult[ProjectListResult]:
         """List projects owned by the authenticated user."""
+        validated_sort_by = validate_project_sort_field(application, sort_by)
         with database_session_factory()() as session:
             user = current_user(session)
             if application == "query":
-                result = ProjectPage[QueryProjectListItem].model_validate(list_query_projects(session, user.id, page, page_size))
+                result = ProjectPage[QueryProjectListItem].model_validate(
+                    list_query_projects(session, user.id, page, page_size, search, validated_sort_by, sort_order)
+                )
             elif application == "factor":
-                result = ProjectPage[FactorProjectListItem].model_validate(list_factor_projects(session, user.id, page, page_size))
+                result = ProjectPage[FactorProjectListItem].model_validate(
+                    list_factor_projects(session, user.id, page, page_size, search, validated_sort_by, sort_order)
+                )
             else:
-                result = ProjectPage[BacktestProjectListItem].model_validate(list_backtest_projects(session, user.id, page, page_size))
+                result = ProjectPage[BacktestProjectListItem].model_validate(
+                    list_backtest_projects(session, user.id, page, page_size, search, validated_sort_by, sort_order)
+                )
             return McpResult(result=result)
 
     @server.tool(title="创建项目", annotations=WRITE)
@@ -161,8 +196,9 @@ def register_project_tools(server: MCPServer) -> None:
             dict[str, Any],
             Field(
                 description=(
-                    "完整因子分析对象；MCP 额外要求 codes_query 与 dataset_query "
-                    "使用同一受支持指数权重定义并过滤 stock_pool_member。"
+                    "完整因子分析对象；全市场使用 codes_query=null、"
+                    "dataset_query.codes=[] 且不定义 stock_pool_member；指数池则要求"
+                    "两阶段使用同一受支持指数权重定义并过滤 stock_pool_member。"
                 )
             ),
         ],

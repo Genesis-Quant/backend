@@ -57,7 +57,8 @@ def register_batch_tools(server: MCPServer) -> None:
                 max_length=100,
                 description=(
                     "每项包含唯一 client_id、可选 remark 和完整 parameters；"
-                    "两阶段必须使用同一 stock_pool_member 股票池条件。"
+                    "股票池可使用全市场规范，或在两阶段使用同一 "
+                    "stock_pool_member 指数条件。"
                 ),
             ),
         ],

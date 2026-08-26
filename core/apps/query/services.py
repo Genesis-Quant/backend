@@ -8,6 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.apps.query.models import QueryProject
+from core.apps.query.schemas import QueryProjectSortField
+from core.apps.schemas import SortOrder
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import QUERY_OUTPUT_FILES
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
@@ -21,6 +23,7 @@ from core.apps.workflows.services import (
     workflow_attempt_state,
     workflow_workspace_state,
 )
+from core.utils.projects import list_project_summaries
 from core.utils.results import result_files, result_response
 from core.utils.time import utc_now
 
@@ -37,15 +40,37 @@ def query_result_response(session: Session, user_id: int, workflow_instance_id: 
     return result_response(session, user_id, workflow_instance_id, name, "query", OUTPUT_FILES)
 
 
-def list_query_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
-    statement = select(QueryProject).where(QueryProject.user_id == user_id)
-    total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    projects = session.scalars(
-        statement.order_by(QueryProject.updated_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-    return {"items": project_summaries(session, projects), "page": page, "page_size": page_size, "total": total, "limit": PROJECT_LIMIT}
+def list_query_projects(
+    session: Session,
+    user_id: int,
+    page: int,
+    page_size: int,
+    search: str | None,
+    sort_by: QueryProjectSortField,
+    sort_order: SortOrder,
+) -> dict[str, Any]:
+    base_statement = select(QueryProject).where(QueryProject.user_id == user_id)
+    result = list_project_summaries(
+        session,
+        base_statement,
+        QueryProject,
+        project_summaries,
+        page,
+        page_size,
+        search,
+        sort_by,
+        sort_order,
+        {
+            "id": QueryProject.id,
+            "title": func.lower(QueryProject.title),
+            "updated_at": QueryProject.updated_at,
+        },
+        {
+            "state": lambda item: item["current"]["state"] if item["current"] is not None else "IDLE",
+            "workflow_instance_id": lambda item: item["current"]["workflow_instance_id"] if item["current"] is not None else None,
+        },
+    )
+    return {**result, "limit": PROJECT_LIMIT}
 
 
 def create_query_project(session: Session, user_id: int, title: str) -> dict[str, Any]:

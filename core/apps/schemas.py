@@ -1,11 +1,13 @@
 """Schemas shared by multiple applications."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from core.utils.validation import strip_text
+
+type SortOrder = Literal["asc", "desc"]
 
 
 class ProjectPage[T: BaseModel](BaseModel):
@@ -13,6 +15,7 @@ class ProjectPage[T: BaseModel](BaseModel):
     page: int
     page_size: int
     total: int
+    all_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
     limit: int | None = Field(default=None, exclude_if=lambda value: value is None)
 
 

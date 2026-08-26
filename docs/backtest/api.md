@@ -18,11 +18,15 @@
 网页地址：`{ARENA_WEB_URL}/backtest/projects/{project_id}`。
 
 ```text
-list_projects("backtest", page=1, page_size=20)
+list_projects("backtest", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project("backtest", title)
 get_project("backtest", project_id)
 update_project("backtest", project_id, title)
 ```
+
+`search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
+`latest_version`、`totalReturn`、`annualReturn`、`sharpeRatio`、`annualVolatility`、`maxDrawdown`、
+`dailyWinningRate`、`updated_at`。
 
 `update_project` 只改标题。
 
@@ -192,9 +196,10 @@ list_workflow_outputs("backtest", workflow_instance_id)
 | `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单多行，当前没有费用列 |
 | `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓；当前卖出量/额字段有已知限制 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、市值、权益、净值、累计收益和累计费用 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 可选；仅在运行节点插件支持对应接口时生成 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日实际成交量、成交额和方向均价 |
 
-下载与鉴权见 `arena://docs/overview/workflows`。读取报告前必须执行
+以上均为必需输出；任何结果接口调用失败都会使工作流失败。下载与鉴权见
+`arena://docs/overview/workflows`。读取报告前必须执行
 `arena://docs/backtest/results` 的字段解释、已知限制、对账公式和 QA 清单。
 
 ## 完整调用顺序

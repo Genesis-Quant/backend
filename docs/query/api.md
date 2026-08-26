@@ -16,12 +16,14 @@ Query 只有 Project，没有 Version。一个项目始终复用一个 Workspace
 ## 列出、创建与读取项目
 
 ```text
-list_projects(application="query", page=1, page_size=20)
+list_projects(application="query", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project(application="query", title="项目名称")
 get_project(application="query", project_id=1)
 ```
 
 - `page` 从 1 开始，`page_size` 为 1 到 100。
+- `search` 按项目名称或 ID 片段过滤；`sort_order` 为 `asc` 或 `desc`。
+- `sort_by` 可选 `id`、`title`、`state`、`workflow_instance_id`、`updated_at`。
 - `title` 去除首尾空格后长度为 1 到 128。
 - `create_project` 的 `result.id` 是 `project_id`。
 - `get_project` 的 `current` 表示当前请求与当前 Attempt；Query 不支持 `list_versions`、

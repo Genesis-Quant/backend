@@ -63,6 +63,7 @@ MCP_DOCUMENT_SECTIONS = (
             DocumentDefinition("backtest/request", "Backtest 请求契约", "查询、配置、回调、输出要求与提交前检查。"),
             DocumentDefinition("backtest/api", "Backtest API", "Backtest 项目、运行、版本、批量执行与输出。"),
             DocumentDefinition("backtest/dolphindb", "DolphinDB Backtest 运行契约", "价格尺度、合成快照、撮合、订单簿、持仓与资金。"),
+            DocumentDefinition("backtest/interfaces", "Backtest 接口白名单", "策略可用、Runtime 独占和禁止接口的签名、返回形式与能力边界。"),
             DocumentDefinition("backtest/dynamic-pool", "动态数据域与时点契约", "候选并集、逐日状态、退出保留与 point-in-time 边界。"),
             DocumentDefinition("backtest/optimization", "二次规划与目标权重契约", "求解接口、矩阵维度、状态、数值容差与调仓顺序。"),
             DocumentDefinition("backtest/callback-data", "回调与交易对象契约", "回调消息、持仓、订单和成交对象的读取规则。"),

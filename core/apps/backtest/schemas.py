@@ -17,12 +17,22 @@ type BacktestOutput = Literal[
     "trade_details",
     "daily_positions",
     "daily_portfolios",
-    "return_summary",
     "daily_trading_statistics",
-    "engine_stat",
 ]
 type OptimizationOutput = OptimizationAlgorithm
 type SensitivityOutput = Literal["results"]
+type BacktestProjectSortField = Literal[
+    "id",
+    "title",
+    "latest_version",
+    "totalReturn",
+    "annualReturn",
+    "sharpeRatio",
+    "annualVolatility",
+    "maxDrawdown",
+    "dailyWinningRate",
+    "updated_at",
+]
 
 
 class BacktestProjectCreate(BaseModel):

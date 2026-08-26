@@ -2,12 +2,14 @@
 
 Backtest 使用 Factor Query 准备候选代码和回调历史数据，将日线转换为开盘、收盘单档合成快照，并在
 DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓、
-事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`。
+事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`；可调用的插件函数白名单见
+`arena://docs/backtest/interfaces`。
 四张结果表的字段、费用和对账规则见 `arena://docs/backtest/results`。
 
 专项契约按用途拆分：动态数据域见 `arena://docs/backtest/dynamic-pool`，二次规划与目标权重见
 `arena://docs/backtest/optimization`，回调对象见 `arena://docs/backtest/callback-data`，运行、核验和
-保存顺序见 `arena://docs/backtest/qa`。这些文档只定义接口与边界，不提供具体策略或构造。
+保存顺序见 `arena://docs/backtest/qa`，插件函数能力见 `arena://docs/backtest/interfaces`。这些文档只
+定义接口与边界，不提供具体策略或构造。
 
 DolphinDB 插件原始定义可直接查阅
 [股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)、
@@ -184,9 +186,10 @@ def finalize(mutable context)
 | `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单可有多行 |
 | `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、权益、净值、费用和盈亏 |
-| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 可选；仅在运行节点插件支持对应接口时生成 |
+| `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日实际成交量、成交额和方向均价 |
 
-Workspace SUCCESS 只说明程序执行完成，不证明信号无未来、价格尺度一致或成交逻辑可信。统一 QA
+四个文件均为必需输出；任何结果接口调用失败都会使任务失败。Workspace SUCCESS 只说明程序执行
+完成，不证明信号无未来、价格尺度一致或成交逻辑可信。统一 QA
 清单、字段字典、费用和指标口径见 `arena://docs/backtest/results`。
 
 ## 批量执行与研究报告

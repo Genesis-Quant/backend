@@ -13,7 +13,8 @@ from .views import register_views
 SERVER_INSTRUCTIONS = (
     "Start with arena://docs/overview/overview, arena://docs/overview/projects, and "
     "arena://docs/overview/workflows. Before run_* read that application's request and API documents plus its "
-    "Schema; backtests must also read arena://docs/backtest/dolphindb before running and "
+    "Schema; backtests must also read arena://docs/backtest/dolphindb and "
+    "arena://docs/backtest/interfaces before running and "
     "arena://docs/backtest/results before interpreting outputs. Read the applicable Backtest contract for dynamic "
     "data domains, quadratic-program outputs, callback objects, or result QA instead of guessing runtime behavior. "
     "arena://docs/overview/dolphindb documents the authenticated read-only DolphinScript diagnostic tool. Discover DSL operators "

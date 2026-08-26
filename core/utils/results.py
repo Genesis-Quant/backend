@@ -1,6 +1,5 @@
 """Result-file access keyed by DolphinScheduler workflow instance ID."""
 
-from collections.abc import Mapping
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -98,29 +97,20 @@ def result_files(
     workflow_instance_id: int,
     application: str,
     output_files: dict[str, str],
-    optional_outputs: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
-    optional_outputs = optional_outputs or {}
     if uses_cloud_output(workspace.application):
         storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         try:
-            files: list[dict[str, Any]] = []
-            for name in attempt.requested_outputs:
-                try:
-                    files.append(
-                        cloud_result_file(
-                            storage,
-                            output_key,
-                            name,
-                            result_filename(workflow_instance_id, name, output_files),
-                        )
-                    )
-                except ClientError as error:
-                    if name in optional_outputs and is_missing_object(error):
-                        continue
-                    raise
-            return files
+            return [
+                cloud_result_file(
+                    storage,
+                    output_key,
+                    name,
+                    result_filename(workflow_instance_id, name, output_files),
+                )
+                for name in attempt.requested_outputs
+            ]
         except (BotoCoreError, ClientError) as error:
             raise OSError(
                 f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}"
@@ -131,19 +121,14 @@ def result_files(
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
     files = []
     for name in attempt.requested_outputs:
-        try:
-            files.append(
-                local_result_file(
-                    workflow_instance_id,
-                    output_dir,
-                    name,
-                    result_filename(workflow_instance_id, name, output_files),
-                )
+        files.append(
+            local_result_file(
+                workflow_instance_id,
+                output_dir,
+                name,
+                result_filename(workflow_instance_id, name, output_files),
             )
-        except FileNotFoundError:
-            if name in optional_outputs:
-                continue
-            raise
+        )
     return files
 
 
@@ -152,8 +137,8 @@ def validate_required_result_files(
     attempt: WorkflowAttempt,
     workflow_instance_id: int,
 ) -> None:
-    """Ensure every non-optional output exists before exposing business success."""
-    output_files, optional_outputs = workflow_output_files(
+    """Ensure every requested output exists before exposing business success."""
+    output_files = workflow_output_files(
         workspace.application,
         attempt.requested_outputs,
     )
@@ -174,8 +159,7 @@ def validate_required_result_files(
                     information = storage.object_info(key)
                 except ClientError as error:
                     if is_missing_object(error):
-                        if name not in optional_outputs:
-                            missing.append(name)
+                        missing.append(name)
                         continue
                     raise
                 if information.size <= 0:
@@ -213,8 +197,7 @@ def validate_required_result_files(
                     filename,
                 )
             except FileNotFoundError:
-                if name not in optional_outputs:
-                    missing.append(name)
+                missing.append(name)
                 continue
             size = path.stat().st_size
             if size <= 0:
@@ -334,12 +317,10 @@ def result_response(
     name: str,
     application: str,
     output_files: dict[str, str],
-    optional_outputs: Mapping[str, str] | None = None,
 ) -> Response:
     if name not in output_files:
         raise FileNotFoundError(f"未知结果: {name}")
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
-    optional_outputs = optional_outputs or {}
     if name not in attempt.requested_outputs:
         raise FileNotFoundError(f"工作流未请求结果: {name}")
     filename = output_files[name]
@@ -350,8 +331,6 @@ def result_response(
             storage.object_info(key)
             url = storage.download_url(key)
         except ClientError as error:
-            if name in optional_outputs and is_missing_object(error):
-                raise FileNotFoundError(optional_outputs[name]) from error
             raise OSError(f"工作流 {workflow_instance_id} 成功但无法读取结果 {name}: {error}") from error
         except BotoCoreError as error:
             raise OSError(f"工作流 {workflow_instance_id} 成功但无法读取结果 {name}: {error}") from error
@@ -360,17 +339,12 @@ def result_response(
         return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
-    try:
-        path = local_result_path(
-            workflow_instance_id,
-            output_dir,
-            name,
-            filename,
-        )
-    except FileNotFoundError as error:
-        if name in optional_outputs:
-            raise FileNotFoundError(optional_outputs[name]) from error
-        raise
+    path = local_result_path(
+        workflow_instance_id,
+        output_dir,
+        name,
+        filename,
+    )
     return FileResponse(path, filename=filename, media_type=PARQUET_CONTENT_TYPE)
 
 

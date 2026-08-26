@@ -11,6 +11,17 @@ from core.utils.validation import (
 )
 
 type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns"]
+type FactorProjectSortField = Literal[
+    "id",
+    "title",
+    "latest_version",
+    "ic_mean",
+    "rank_ic_mean",
+    "ic_ir",
+    "long_short_cumulative_return",
+    "long_short_sharpe",
+    "updated_at",
+]
 
 
 class FactorProjectCreate(BaseModel):

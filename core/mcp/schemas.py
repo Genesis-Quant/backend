@@ -26,6 +26,7 @@ type DocumentName = Literal[
     "backtest/request",
     "backtest/api",
     "backtest/dolphindb",
+    "backtest/interfaces",
     "backtest/results",
     "backtest/dynamic-pool",
     "backtest/optimization",

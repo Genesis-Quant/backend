@@ -28,9 +28,7 @@ BACKTEST_OUTPUT_FILES = {
     "trade_details": "trade_details.parquet",
     "daily_positions": "daily_positions.parquet",
     "daily_portfolios": "daily_portfolios.parquet",
-    "return_summary": "return_summary.parquet",
     "daily_trading_statistics": "daily_trading_statistics.parquet",
-    "engine_stat": "engine_stat.parquet",
 }
 SENSITIVITY_OUTPUT_FILES = {"results": "results.parquet"}
 APPLICATION_OUTPUT_FILES = {
@@ -38,9 +36,6 @@ APPLICATION_OUTPUT_FILES = {
     "factor": FACTOR_OUTPUT_FILES,
     "backtest": BACKTEST_OUTPUT_FILES,
     "sensitivity": SENSITIVITY_OUTPUT_FILES,
-}
-OPTIONAL_OUTPUT_NAMES = {
-    "backtest": frozenset({"daily_trading_statistics"}),
 }
 
 
@@ -106,11 +101,10 @@ def runtime_output_argument(application: str, workspace_key: str) -> str:
 def workflow_output_files(
     application: str,
     requested_outputs: list[str],
-) -> tuple[dict[str, str], frozenset[str]]:
-    """Resolve requested output files and the subset allowed to be absent."""
+) -> dict[str, str]:
+    """Resolve every required output file requested by a workflow."""
     if application == "incremental":
-        return {}, frozenset()
-    optional = OPTIONAL_OUTPUT_NAMES.get(application, frozenset())
+        return {}
     if application == "optimization":
         invalid = sorted(
             name
@@ -119,17 +113,11 @@ def workflow_output_files(
         )
         if invalid:
             raise ValueError(f"optimization 工作流包含无效输出名称: {invalid}")
-        return (
-            {name: f"{name}.parquet" for name in requested_outputs},
-            optional.intersection(requested_outputs),
-        )
+        return {name: f"{name}.parquet" for name in requested_outputs}
     output_files = APPLICATION_OUTPUT_FILES.get(application)
     if output_files is None:
         raise ValueError(f"未知工作流应用的输出协议: {application}")
     unknown = sorted(set(requested_outputs) - set(output_files))
     if unknown:
         raise ValueError(f"{application} 工作流包含未知输出: {unknown}")
-    return (
-        {name: output_files[name] for name in requested_outputs},
-        optional.intersection(requested_outputs),
-    )
+    return {name: output_files[name] for name in requested_outputs}

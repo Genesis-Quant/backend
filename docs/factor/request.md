@@ -23,7 +23,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `codes_query` | FactorQuery | MCP 必填 | — | 第一阶段候选池查询；必须包含托管股票池条件 |
+| `codes_query` | FactorQuery \| null | 否 | `null` | `null` 表示全市场；非空时为第一阶段候选池查询 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询 |
 | `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
@@ -37,7 +37,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 ## 两阶段查询
 
-MCP 的 `run_factor_analysis` 和 `run_factor_batch` 要求 `codes_query` 非空。执行顺序为：
+使用指数股票池时，`run_factor_analysis` 和 `run_factor_batch` 按两阶段执行：
 
 1. 执行 `codes_query`；
 2. 对其过滤后结果的 `code` 去重；
@@ -47,13 +47,22 @@ MCP 的 `run_factor_analysis` 和 `run_factor_batch` 要求 `codes_query` 非空
 第一阶段得到的是整个研究区间的候选代码并集，不会把第一阶段每日行过滤自动复制到第二阶段。
 需要逐日动态成员关系时，在 `dataset_query` 中再次定义成员 derivative 和 filter。
 
-Runtime 基础模型和普通 REST 服务仍保留 `codes_query=null` 的高级用法；MCP 因子工具为保证请求能被
-网页无损读取，不接受该形式。
+使用全市场股票池时采用另一种受托管结构：`codes_query=null`、`dataset_query.codes=[]`，并且
+`dataset_query` 不定义或过滤 `stock_pool_member`。此时 Runtime 直接在第二阶段加载全市场代码；
+请求自身的其他 `filters` 仍会正常执行。不要用一个任意价格或状态条件伪造全市场成员字段，否则
+实际基础截面会被静默缩小。
 
 ### MCP/Web 托管股票池契约
 
-`codes_query` 与 `dataset_query` 必须同时定义名为 `stock_pool_member` 的节点，并把它加入各自的
-`filters`。两个节点必须选择同一个指数权重字段，结构固定为：
+网页股票池有两类合法状态：
+
+| 股票池类型 | `codes_query` | `dataset_query.codes` | `stock_pool_member` |
+| --- | --- | --- | --- |
+| 全市场 | `null` | `[]` | 两阶段均不使用 |
+| 指数动态池 | FactorQuery | `[]`（运行时写入候选并集） | 两阶段定义并过滤同一节点 |
+
+选择指数动态池时，`codes_query` 与 `dataset_query` 必须同时定义名为 `stock_pool_member` 的节点，
+并把它加入各自的 `filters`。两个节点必须选择同一个指数权重字段，结构固定为：
 
 ```json
 {
@@ -135,7 +144,7 @@ MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票
 
 精确顶层结构读取 `arena://schemas/factor`。两阶段中的每个 `FactorQuery` 都必须独立满足 Query 契约，
 每个 DSL 节点使用 `describe_dsl_operator` 核对。Schema 是 Runtime 通用结构；通过 MCP 提交时还必须
-满足上面的托管股票池契约。本文不提供具体因子、标签或分析构造。
+满足上面的全市场或指数动态池契约。本文不提供具体因子、标签或分析构造。
 
 ## 输出列
 
@@ -169,7 +178,7 @@ time
 ## 提交前检查
 
 - 两阶段都分别满足完整 `FactorQuery` 契约；
-- 两阶段都定义并过滤同一 `stock_pool_member`，且没有其它成员条件别名；
+- 股票池使用全市场规范，或两阶段都定义并过滤同一 `stock_pool_member` 且没有其它成员条件别名；
 - 第二阶段仍包含需要逐日生效的其它状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
 - `return_specs` 与 `return_columns` 一一对应，并与 DSL 实际收益公式一致；

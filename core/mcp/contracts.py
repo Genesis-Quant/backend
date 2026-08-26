@@ -14,12 +14,19 @@ FACTOR_STOCK_POOL_FACTORS = frozenset({
 def validate_mcp_factor_parameters(
     parameters: FactorAnalysisParameters,
 ) -> FactorAnalysisParameters:
-    """要求 MCP 因子请求使用网页统一管理的动态股票池节点。"""
+    """要求 MCP 因子请求使用网页可无损还原的股票池结构。"""
     if parameters.codes_query is None:
-        raise ValueError(
-            "MCP 因子分析必须提供 codes_query，并在两阶段使用 "
-            "stock_pool_member 管理动态股票池"
-        )
+        if parameters.dataset_query.codes:
+            raise ValueError(
+                "MCP 因子分析使用 codes_query=null 时代表全市场，"
+                "dataset_query.codes 必须为空列表"
+            )
+        if "stock_pool_member" in parameters.dataset_query.derivatives:
+            raise ValueError(
+                "全市场因子分析不能定义 "
+                "dataset_query.derivatives.stock_pool_member"
+            )
+        return parameters
 
     selected_factors: dict[str, str] = {}
     for location, query in (

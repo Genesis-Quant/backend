@@ -122,6 +122,15 @@ def register_resources(server: MCPServer) -> None:
         return document("backtest/dolphindb")
 
     @server.resource(
+        "arena://docs/backtest/interfaces",
+        title="Backtest 接口白名单",
+        description="当前插件版本下策略可用、Runtime 独占和禁止接口的签名、返回形式、调用阶段与能力矩阵。",
+        mime_type="text/markdown",
+    )
+    def backtest_interfaces_document() -> str:
+        return document("backtest/interfaces")
+
+    @server.resource(
         "arena://docs/backtest/results",
         title="Backtest 结果与审计契约",
         description="四张 Parquet 的完整字段、订单状态、费用、对账公式、已知限制和结果 QA。",

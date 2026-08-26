@@ -11,11 +11,12 @@ from runtime.apps.factor.schema import (
     FactorAnalysisParameters,
     validate_historical_factor_analysis_parameters,
 )
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import Float, and_, delete, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from core.apps.factor.models import FactorProject, FactorVersion
-from core.apps.schemas import BatchRunItem
+from core.apps.factor.schemas import FactorProjectSortField
+from core.apps.schemas import BatchRunItem, SortOrder
 from core.apps.workflows.artifacts import FACTOR_OUTPUT_FILES
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.apps.workflows.services import (
@@ -36,6 +37,7 @@ from core.apps.workflows.services import (
     workflow_attempt_state,
     workflow_workspace_state,
 )
+from core.utils.projects import list_project_summaries
 from core.utils.results import (
     ensure_successful_workflow_outputs,
     result_dataframe,
@@ -56,11 +58,102 @@ def factor_result_response(session: Session, user_id: int, workflow_instance_id:
     return result_response(session, user_id, workflow_instance_id, name, "factor", OUTPUT_FILES)
 
 
-def list_factor_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
-    statement = select(FactorProject).where(FactorProject.user_id == user_id)
-    total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    projects = session.scalars(statement.order_by(FactorProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-    return {"items": project_summaries(session, projects), "page": page, "page_size": page_size, "total": total}
+def list_factor_projects(
+    session: Session,
+    user_id: int,
+    page: int,
+    page_size: int,
+    search: str | None,
+    sort_by: FactorProjectSortField,
+    sort_order: SortOrder,
+) -> dict[str, Any]:
+    base_statement = select(FactorProject).where(FactorProject.user_id == user_id)
+    database_sort_columns: dict[str, Any] = {
+        "id": FactorProject.id,
+        "title": func.lower(FactorProject.title),
+        "updated_at": FactorProject.updated_at,
+    }
+    if sort_by not in database_sort_columns:
+        latest = factor_project_sort_value(session, user_id, sort_by)
+        base_statement = base_statement.outerjoin(
+            latest,
+            latest.c.project_id == FactorProject.id,
+        )
+        database_sort_columns[sort_by] = latest.c.sort_value
+    return list_project_summaries(
+        session,
+        base_statement,
+        FactorProject,
+        project_summaries,
+        page,
+        page_size,
+        search,
+        sort_by,
+        sort_order,
+        database_sort_columns,
+        {},
+    )
+
+
+def factor_project_sort_value(
+    session: Session,
+    user_id: int,
+    sort_by: FactorProjectSortField,
+) -> Any:
+    """Expose one persisted value from the latest saved version for SQL sorting."""
+    owned_project_ids = select(FactorProject.id).where(
+        FactorProject.user_id == user_id
+    )
+    latest_numbers = (
+        select(
+            FactorVersion.project_id,
+            func.max(FactorVersion.version).label("version"),
+        )
+        .where(
+            FactorVersion.project_id.in_(owned_project_ids),
+            FactorVersion.saved.is_(True),
+        )
+        .group_by(FactorVersion.project_id)
+        .subquery()
+    )
+    if sort_by == "latest_version":
+        sort_value = FactorVersion.version
+    else:
+        factor_name = FactorVersion.parameters["factor_columns"][0].as_string()
+        return_name = FactorVersion.parameters["return_columns"][0].as_string()
+        dialect = session.get_bind().dialect.name
+        if dialect == "postgresql":
+            sort_value = func.jsonb_extract_path_text(
+                FactorVersion.metrics,
+                factor_name,
+                return_name,
+                literal(sort_by),
+            ).cast(Float)
+        elif dialect == "sqlite":
+            sort_value = func.json_extract(
+                FactorVersion.metrics,
+                literal('$."')
+                + factor_name
+                + literal('"."')
+                + return_name
+                + literal(f'"."{sort_by}"'),
+            ).cast(Float)
+        else:
+            raise RuntimeError(f"不支持使用 {dialect} 排序因子项目摘要")
+    return (
+        select(
+            FactorVersion.project_id.label("project_id"),
+            sort_value.label("sort_value"),
+        )
+        .join(
+            latest_numbers,
+            and_(
+                FactorVersion.project_id == latest_numbers.c.project_id,
+                FactorVersion.version == latest_numbers.c.version,
+            ),
+        )
+        .subquery()
+    )
 
 
 def create_factor_project(session: Session, user_id: int, title: str) -> dict[str, Any]:
@@ -298,12 +391,20 @@ def project_summaries(
         .subquery()
     )
     latest_versions = session.execute(
-        select(FactorVersion.project_id, FactorVersion.version, FactorVersion.metrics).join(
+        select(
+            FactorVersion.project_id,
+            FactorVersion.version,
+            FactorVersion.metrics,
+            FactorVersion.parameters,
+        ).join(
             latest_numbers,
             and_(FactorVersion.project_id == latest_numbers.c.project_id, FactorVersion.version == latest_numbers.c.version),
         )
     ).all()
-    latest_by_project = {project_id: (version, first_metric(metrics)) for project_id, version, metrics in latest_versions}
+    latest_by_project = {
+        project_id: (version, selected_metric(metrics, parameters))
+        for project_id, version, metrics, parameters in latest_versions
+    }
     return [
         {
             "id": project.id,
@@ -316,15 +417,20 @@ def project_summaries(
     ]
 
 
-def first_metric(metrics: dict[str, Any] | None) -> dict[str, Any] | None:
-    if metrics is None:
+def selected_metric(
+    metrics: dict[str, Any] | None,
+    parameters: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the persisted metric shown for the first configured factor/return pair."""
+    if metrics is None or parameters is None:
         return None
-    for returns in metrics.values():
-        if isinstance(returns, dict):
-            for metric in returns.values():
-                if isinstance(metric, dict):
-                    return metric
-    return None
+    factor_columns = parameters.get("factor_columns")
+    return_columns = parameters.get("return_columns")
+    if not factor_columns or not return_columns:
+        return None
+    returns = metrics.get(factor_columns[0])
+    metric = returns.get(return_columns[0]) if isinstance(returns, dict) else None
+    return metric if isinstance(metric, dict) else None
 
 
 def project_information(

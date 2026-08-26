@@ -77,8 +77,41 @@ def test_mcp_factor_contract_rejects_membership_alias() -> None:
         validate_mcp_factor_parameters(factor_parameters(alias=True))
 
 
-def test_mcp_factor_contract_requires_codes_query() -> None:
-    parameters = factor_parameters().model_copy(update={"codes_query": None})
+def full_market_parameters() -> FactorAnalysisParameters:
+    parameters = factor_parameters()
+    dataset_query = parameters.dataset_query.model_copy(update={
+        "derivatives": {
+            name: node
+            for name, node in parameters.dataset_query.derivatives.items()
+            if name != "stock_pool_member"
+        },
+        "filters": [],
+    })
+    return parameters.model_copy(update={
+        "codes_query": None,
+        "dataset_query": dataset_query,
+    })
 
-    with pytest.raises(ValueError, match="必须提供 codes_query"):
+
+def test_mcp_factor_contract_accepts_full_market() -> None:
+    parameters = full_market_parameters()
+
+    assert validate_mcp_factor_parameters(parameters) is parameters
+
+
+def test_mcp_factor_contract_rejects_full_market_codes() -> None:
+    parameters = full_market_parameters()
+    parameters.dataset_query.codes.append("000001.SZ")
+
+    with pytest.raises(ValueError, match="codes 必须为空列表"):
+        validate_mcp_factor_parameters(parameters)
+
+
+def test_mcp_factor_contract_rejects_full_market_member_derivative() -> None:
+    parameters = full_market_parameters()
+    parameters.dataset_query.derivatives["stock_pool_member"] = (
+        factor_parameters().dataset_query.derivatives["stock_pool_member"]
+    )
+
+    with pytest.raises(ValueError, match="不能定义"):
         validate_mcp_factor_parameters(parameters)

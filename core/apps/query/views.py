@@ -11,6 +11,7 @@ from core.apps.query.schemas import (
     QueryProjectCreate,
     QueryProjectItem,
     QueryProjectListItem,
+    QueryProjectSortField,
 )
 from core.apps.query.services import (
     create_query_project,
@@ -21,7 +22,7 @@ from core.apps.query.services import (
     query_result_response,
     submit_project_query,
 )
-from core.apps.schemas import ProjectPage, WorkflowSubmitted
+from core.apps.schemas import ProjectPage, SortOrder, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
@@ -51,8 +52,26 @@ def download_query_result(workflow_instance_id: int, name: str, user: Annotated[
 
 
 @router.get("/projects", response_model=ProjectPage[QueryProjectListItem])
-def projects(user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> ProjectPage[QueryProjectListItem]:
-    return ProjectPage[QueryProjectListItem].model_validate(list_query_projects(session, user.id, page, page_size))
+def projects(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=128),
+    sort_by: QueryProjectSortField = Query("updated_at"),
+    sort_order: SortOrder = Query("desc"),
+) -> ProjectPage[QueryProjectListItem]:
+    return ProjectPage[QueryProjectListItem].model_validate(
+        list_query_projects(
+            session,
+            user.id,
+            page,
+            page_size,
+            search,
+            sort_by,
+            sort_order,
+        )
+    )
 
 
 @router.post("/projects", response_model=QueryProjectItem, status_code=status.HTTP_201_CREATED)

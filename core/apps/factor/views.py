@@ -11,6 +11,7 @@ from core.apps.factor.schemas import (
     FactorProjectCreate,
     FactorProjectItem,
     FactorProjectListItem,
+    FactorProjectSortField,
     FactorProjectUpdate,
     FactorVersionCreate,
     FactorVersionListItem,
@@ -33,7 +34,7 @@ from core.apps.factor.services import (
     update_factor_project,
     update_factor_version,
 )
-from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, WorkflowSubmitted
+from core.apps.schemas import BatchRunAccepted, BatchRunRequest, ProjectPage, SortOrder, WorkflowSubmitted
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
@@ -63,8 +64,26 @@ def download_factor_result(workflow_instance_id: int, name: str, user: Annotated
 
 
 @router.get("/projects", response_model=ProjectPage[FactorProjectListItem])
-def projects(user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> ProjectPage[FactorProjectListItem]:
-    return ProjectPage[FactorProjectListItem].model_validate(list_factor_projects(session, user.id, page, page_size))
+def projects(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=128),
+    sort_by: FactorProjectSortField = Query("updated_at"),
+    sort_order: SortOrder = Query("desc"),
+) -> ProjectPage[FactorProjectListItem]:
+    return ProjectPage[FactorProjectListItem].model_validate(
+        list_factor_projects(
+            session,
+            user.id,
+            page,
+            page_size,
+            search,
+            sort_by,
+            sort_order,
+        )
+    )
 
 
 @router.post("/projects", response_model=FactorProjectItem, status_code=status.HTTP_201_CREATED)

@@ -12,11 +12,15 @@
 网页地址：`{ARENA_WEB_URL}/factor/projects/{project_id}`。
 
 ```text
-list_projects("factor", page=1, page_size=20)
+list_projects("factor", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project("factor", title)
 get_project("factor", project_id)
 update_project("factor", project_id, title)
 ```
+
+`search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
+`latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`long_short_cumulative_return`、
+`long_short_sharpe`、`updated_at`。
 
 `get_project` 返回当前 `draft`、最新保存版本和当前工作流信息。`update_project` 只改标题，不改参数、
 版本、Workspace 或结果。
@@ -28,7 +32,8 @@ run_factor_analysis(project_id, parameters)
 ```
 
 `parameters` 必须直接是完整 `FactorAnalysisParameters`，不能只提交局部 override。机器可读基础结构
-以 `arena://schemas/factor` 为准；MCP 还要求 `codes_query` 与 `dataset_query` 都定义并过滤同一个
+以 `arena://schemas/factor` 为准；MCP 支持全市场与指数动态池两种托管结构。全市场使用
+`codes_query=null` 和 `dataset_query.codes=[]`；指数池要求两阶段定义并过滤同一个
 `stock_pool_member`。固定结构、支持的股票池字段以及别名限制见 `arena://docs/factor/request`。
 
 服务端严格校验请求，返回 `workspace_id` 和可能暂为空的 `workflow_instance_id`。用

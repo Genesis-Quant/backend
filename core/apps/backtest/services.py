@@ -25,12 +25,13 @@ from core.apps.backtest.models import (
     BacktestProject,
     BacktestVersion,
 )
-from core.apps.schemas import BatchRunItem
 from core.apps.backtest.schemas import (
+    BacktestProjectSortField,
     BatchAnalysisType,
     BatchResearchCreate,
     FeeAnalysisCreate,
 )
+from core.apps.schemas import BatchRunItem, SortOrder
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import (
     BACKTEST_OUTPUT_FILES,
@@ -56,6 +57,7 @@ from core.apps.workflows.services import (
     workflow_attempt_state,
     workflow_workspace_state,
 )
+from core.utils.projects import list_project_summaries
 from core.utils.results import (
     ensure_successful_workflow_outputs,
     result_dataframe,
@@ -66,12 +68,6 @@ from core.utils.time import utc_now
 
 LOGGER = logging.getLogger(__name__)
 OUTPUT_FILES = BACKTEST_OUTPUT_FILES
-OPTIONAL_OUTPUTS = {
-    "daily_trading_statistics": (
-        "当前 DolphinDB Backtest 插件不支持每日交易统计接口，"
-        "本次运行未生成 daily_trading_statistics.parquet"
-    ),
-}
 OPTIMIZATION_OUTPUT_FILES = {
     algorithm.value: f"{algorithm.value}.parquet"
     for algorithm in OptimizationAlgorithm
@@ -89,26 +85,11 @@ BATCH_OUTPUTS = ["results"]
 
 
 def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
-    return result_files(
-        session,
-        user_id,
-        workflow_instance_id,
-        "backtest",
-        OUTPUT_FILES,
-        OPTIONAL_OUTPUTS,
-    )
+    return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
 
 
 def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
-    return result_response(
-        session,
-        user_id,
-        workflow_instance_id,
-        name,
-        "backtest",
-        OUTPUT_FILES,
-        OPTIONAL_OUTPUTS,
-    )
+    return result_response(session, user_id, workflow_instance_id, name, "backtest", OUTPUT_FILES)
 
 
 def optimization_result_files(session: Session, user_id: int, optimization_id: int) -> list[dict[str, Any]]:
@@ -131,11 +112,82 @@ def sensitivity_result_response(session: Session, user_id: int, research_id: int
     return result_response(session, user_id, workflow_instance_id, name, "sensitivity", SENSITIVITY_OUTPUT_FILES)
 
 
-def list_backtest_projects(session: Session, user_id: int, page: int, page_size: int) -> dict[str, Any]:
-    statement = select(BacktestProject).where(BacktestProject.user_id == user_id)
-    total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    projects = session.scalars(statement.order_by(BacktestProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-    return {"items": project_summaries(session, projects), "page": page, "page_size": page_size, "total": total}
+def list_backtest_projects(
+    session: Session,
+    user_id: int,
+    page: int,
+    page_size: int,
+    search: str | None,
+    sort_by: BacktestProjectSortField,
+    sort_order: SortOrder,
+) -> dict[str, Any]:
+    base_statement = select(BacktestProject).where(BacktestProject.user_id == user_id)
+    database_sort_columns: dict[str, Any] = {
+        "id": BacktestProject.id,
+        "title": func.lower(BacktestProject.title),
+        "updated_at": BacktestProject.updated_at,
+    }
+    if sort_by not in database_sort_columns:
+        latest = backtest_project_sort_value(user_id, sort_by)
+        base_statement = base_statement.outerjoin(
+            latest,
+            latest.c.project_id == BacktestProject.id,
+        )
+        database_sort_columns[sort_by] = latest.c.sort_value
+    return list_project_summaries(
+        session,
+        base_statement,
+        BacktestProject,
+        project_summaries,
+        page,
+        page_size,
+        search,
+        sort_by,
+        sort_order,
+        database_sort_columns,
+        {},
+    )
+
+
+def backtest_project_sort_value(
+    user_id: int,
+    sort_by: BacktestProjectSortField,
+) -> Any:
+    """Expose one persisted value from the latest saved version for SQL sorting."""
+    owned_project_ids = select(BacktestProject.id).where(
+        BacktestProject.user_id == user_id
+    )
+    latest_numbers = (
+        select(
+            BacktestVersion.project_id,
+            func.max(BacktestVersion.version).label("version"),
+        )
+        .where(
+            BacktestVersion.project_id.in_(owned_project_ids),
+            BacktestVersion.saved.is_(True),
+        )
+        .group_by(BacktestVersion.project_id)
+        .subquery()
+    )
+    sort_value = (
+        BacktestVersion.version
+        if sort_by == "latest_version"
+        else BacktestVersion.summary[sort_by].as_float()
+    )
+    return (
+        select(
+            BacktestVersion.project_id.label("project_id"),
+            sort_value.label("sort_value"),
+        )
+        .join(
+            latest_numbers,
+            and_(
+                BacktestVersion.project_id == latest_numbers.c.project_id,
+                BacktestVersion.version == latest_numbers.c.version,
+            ),
+        )
+        .subquery()
+    )
 
 
 def create_backtest_project(session: Session, user_id: int, title: str) -> dict[str, Any]:

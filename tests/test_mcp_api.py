@@ -1,5 +1,6 @@
 """MCP catalog and HTTP endpoint coverage."""
 
+import asyncio
 from typing import get_args
 
 import pytest
@@ -11,6 +12,8 @@ from core.apps.mcp.services import MCP_DOCUMENT_INDEX, mcp_document
 from core.apps.mcp.views import router
 from core.apps.users.services import get_current_user
 from core.mcp.schemas import DocumentName
+from core.mcp.server import mcp_server
+from core.mcp.views.projects import validate_project_sort_field
 
 
 @pytest.fixture
@@ -62,3 +65,16 @@ def test_mcp_api_requires_authentication() -> None:
     response = TestClient(application).get("/api/v1/mcp")
 
     assert response.status_code == 401
+
+
+def test_list_projects_tool_exposes_search_and_sort_contract() -> None:
+    tools = asyncio.run(mcp_server.list_tools())
+    tool = next(item for item in tools if item.name == "list_projects")
+    properties = tool.input_schema["properties"]
+
+    assert properties["search"]["default"] is None
+    assert properties["sort_by"]["default"] == "updated_at"
+    assert properties["sort_order"]["default"] == "desc"
+    assert validate_project_sort_field("query", "state") == "state"
+    with pytest.raises(ValueError, match="query 项目不支持按 sharpeRatio 排序"):
+        validate_project_sort_field("query", "sharpeRatio")

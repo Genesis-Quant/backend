@@ -49,6 +49,7 @@ CallToolResult.structuredContent.result
 | Factor 请求与 API | `arena://docs/factor/request`、`arena://docs/factor/api`、`arena://schemas/factor` |
 | Backtest 请求与 API | `arena://docs/backtest/request`、`arena://docs/backtest/api`、`arena://schemas/backtest` |
 | Backtest 行情、回调和撮合 | `arena://docs/backtest/dolphindb` |
+| Backtest 插件函数白名单 | `arena://docs/backtest/interfaces` |
 | Backtest 四张结果表、费用和审计 | `arena://docs/backtest/results` |
 | 动态数据域、两阶段查询与时点边界 | `arena://docs/backtest/dynamic-pool` |
 | 二次规划接口、数值处理与调仓顺序 | `arena://docs/backtest/optimization` |
@@ -75,14 +76,15 @@ CallToolResult.structuredContent.result
 ## 项目的通用入口
 
 ```text
-list_projects(application, page=1, page_size=20)
+list_projects(application, page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project(application, title)
 get_project(application, project_id)
 ```
 
-`application` 是 `query`、`factor` 或 `backtest`。`list_projects` 每页 1 到 100 条；`title` 去除首尾
-空格后长度为 1 到 128。返回对象的具体字段因应用而异，读取对应应用的 API 文档。Factor/Backtest
-的重命名、版本和批量能力也是业务专用能力，不在本页展开。
+`application` 是 `query`、`factor` 或 `backtest`。`list_projects` 每页 1 到 100 条，`search` 按项目名称
+或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`；三种应用允许的 `sort_by` 不同，必须读取对应应用
+API 文档。`title` 去除首尾空格后长度为 1 到 128。Factor/Backtest 的重命名、版本和批量能力也是
+业务专用能力，不在本页展开。
 
 项目页面地址：
 
@@ -100,7 +102,7 @@ get_project(application, project_id)
 
 ```text
 1. 读取本页、对象关系、工作流文档和目标应用的 request/api/Schema
-2. 发现并校验所有 DSL 算符；Backtest 还要核对 DolphinDB 回测契约
+2. 发现并校验所有 DSL 算符；Backtest 还要核对 DolphinDB 回测契约和插件函数白名单
 3. create_project 或 get_project
 4. 调用目标应用的 run 工具，保存 workspace_id
 5. get_workspace_status(workspace_id) 轮询当前 Attempt
