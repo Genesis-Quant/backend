@@ -134,8 +134,9 @@ MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票
 - `periods>1` 时服务端将观测视为可能重叠。Runtime 仍输出逐日 IC、Rank IC 和原始分组收益，但
   Backend 与浏览器一律不把它们连续复利，相关累计和年化指标返回空值。
 
-ICIR 与 Rank ICIR 始终保留原始观测频率，计算式为 `mean / sample_std`，不会自动年化。收益期限、
-重叠程度和 IC 自相关都会影响可用的年化系数；调用方不能在不知道这些信息时固定乘 `sqrt(252)`。
+ICIR 与 Rank ICIR 的保存值保留原始观测频率，计算式为 `mean / sample_std`。网页根据当前收益列的
+`return_specs.periods` 按 `原始值 × sqrt(252 / periods)` 自动年化，并在 Tooltip 中展示原始值；API
+调用方需要年化时应使用同一公式，不能忽略收益列周期而固定乘 `sqrt(252)`。
 
 服务端不会根据列名猜测简单收益、对数收益或覆盖期数。旧请求缺少 `return_specs` 时，仅为兼容历史
 数据识别直接的 `unary.log(binary.div(shift(...), shift(...)))` 和 `unary.pct_change` 结构；无法从该结构

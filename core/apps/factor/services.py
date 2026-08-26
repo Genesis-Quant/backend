@@ -129,6 +129,12 @@ def factor_project_sort_value(
                 return_name,
                 literal(sort_by),
             ).cast(Float)
+            return_periods = func.jsonb_extract_path_text(
+                FactorVersion.parameters,
+                literal("return_specs"),
+                return_name,
+                literal("periods"),
+            ).cast(Float)
         elif dialect == "sqlite":
             sort_value = func.json_extract(
                 FactorVersion.metrics,
@@ -138,8 +144,16 @@ def factor_project_sort_value(
                 + return_name
                 + literal(f'"."{sort_by}"'),
             ).cast(Float)
+            return_periods = func.json_extract(
+                FactorVersion.parameters,
+                literal('$."return_specs"."')
+                + return_name
+                + literal('"."periods"'),
+            ).cast(Float)
         else:
             raise RuntimeError(f"不支持使用 {dialect} 排序因子项目摘要")
+        if sort_by == "ic_ir":
+            sort_value *= func.sqrt(literal(252.0) / func.nullif(return_periods, literal(0.0)))
     return (
         select(
             FactorVersion.project_id.label("project_id"),
@@ -402,7 +416,7 @@ def project_summaries(
         )
     ).all()
     latest_by_project = {
-        project_id: (version, selected_metric(metrics, parameters))
+        project_id: (version, selected_metric(metrics, parameters), selected_return_spec(parameters))
         for project_id, version, metrics, parameters in latest_versions
     }
     return [
@@ -411,6 +425,7 @@ def project_summaries(
             "title": project.title,
             "latest_version": latest_by_project[project.id][0] if project.id in latest_by_project else None,
             "latest_metric": latest_by_project[project.id][1] if project.id in latest_by_project else None,
+            "latest_return_spec": latest_by_project[project.id][2] if project.id in latest_by_project else None,
             "updated_at": project.updated_at,
         }
         for project in projects
@@ -431,6 +446,18 @@ def selected_metric(
     returns = metrics.get(factor_columns[0])
     metric = returns.get(return_columns[0]) if isinstance(returns, dict) else None
     return metric if isinstance(metric, dict) else None
+
+
+def selected_return_spec(parameters: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the persisted return specification paired with the project metric."""
+    if parameters is None:
+        return None
+    return_columns = parameters.get("return_columns")
+    return_specs = parameters.get("return_specs")
+    if not return_columns or not isinstance(return_specs, dict):
+        return None
+    return_spec = return_specs.get(return_columns[0])
+    return return_spec if isinstance(return_spec, dict) else None
 
 
 def project_information(

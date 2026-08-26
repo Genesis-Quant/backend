@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from runtime.apps.factor.schema import FactorReturnSpec
+
 from core.apps.schemas import DraftVersionSummary
 from core.utils.validation import (
     normalize_text,
@@ -72,6 +74,7 @@ class FactorProjectListItem(BaseModel):
     title: str
     latest_version: int | None
     latest_metric: FactorMetricSummary | None
+    latest_return_spec: FactorReturnSpec | None
     updated_at: datetime
 
 
