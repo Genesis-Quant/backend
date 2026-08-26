@@ -82,10 +82,18 @@ PROJECT_SUMMARY_FIELDS = ("totalReturn", "annualReturn", "sharpeRatio", "annualV
 BATCH_ANALYSIS_LABELS = {"fee_analysis": "手续费分析", "sensitivity": "参数敏感性"}
 BATCH_SUCCESS_STATES = frozenset({"SUCCESS"})
 BATCH_OUTPUTS = ["results"]
+LEGACY_OPTIONAL_BACKTEST_OUTPUTS = frozenset({"daily_trading_statistics"})
 
 
 def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
-    return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
+    return result_files(
+        session,
+        user_id,
+        workflow_instance_id,
+        "backtest",
+        OUTPUT_FILES,
+        legacy_optional_outputs=LEGACY_OPTIONAL_BACKTEST_OUTPUTS,
+    )
 
 
 def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:

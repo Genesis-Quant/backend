@@ -97,20 +97,29 @@ def result_files(
     workflow_instance_id: int,
     application: str,
     output_files: dict[str, str],
+    *,
+    legacy_optional_outputs: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
     if uses_cloud_output(workspace.application):
         storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         try:
-            return [
-                cloud_result_file(
-                    storage,
-                    output_key,
-                    name,
-                    result_filename(workflow_instance_id, name, output_files),
-                )
-                for name in attempt.requested_outputs
-            ]
+            files: list[dict[str, Any]] = []
+            for name in attempt.requested_outputs:
+                try:
+                    files.append(
+                        cloud_result_file(
+                            storage,
+                            output_key,
+                            name,
+                            result_filename(workflow_instance_id, name, output_files),
+                        )
+                    )
+                except ClientError as error:
+                    if name in legacy_optional_outputs and is_missing_object(error):
+                        continue
+                    raise
+            return files
         except (BotoCoreError, ClientError) as error:
             raise OSError(
                 f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}"
@@ -121,14 +130,19 @@ def result_files(
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
     files = []
     for name in attempt.requested_outputs:
-        files.append(
-            local_result_file(
-                workflow_instance_id,
-                output_dir,
-                name,
-                result_filename(workflow_instance_id, name, output_files),
+        try:
+            files.append(
+                local_result_file(
+                    workflow_instance_id,
+                    output_dir,
+                    name,
+                    result_filename(workflow_instance_id, name, output_files),
+                )
             )
-        )
+        except FileNotFoundError:
+            if name in legacy_optional_outputs:
+                continue
+            raise
     return files
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from botocore.exceptions import ClientError
 from runtime.config import ArenaSettings as RuntimeArenaSettings
 from runtime.manage.apps import build_parser
 from runtime.utils.storage import (
@@ -14,6 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from config import ArenaSettings
+from core.apps.backtest.services import backtest_result_files
 from core.apps.users.models import User
 from core.apps.workflows.artifacts import workspace_output_directory
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
@@ -42,13 +44,16 @@ def session() -> Session:
 
 def successful_run(
     session: Session,
+    *,
+    application: str = "query",
+    requested_outputs: list[str] | None = None,
 ) -> tuple[User, WorkflowWorkspace]:
     user = User(username="owner", password_hash="test")
     session.add(user)
     session.flush()
     run = WorkflowWorkspace(
         user_id=user.id,
-        application="query",
+        application=application,
         workspace_key=WORKSPACE_KEY,
     )
     session.add(run)
@@ -59,7 +64,7 @@ def successful_run(
         submission_state="WORKFLOW_CREATED",
         input_json={},
         start_parameters={},
-        requested_outputs=["data"],
+        requested_outputs=["data"] if requested_outputs is None else requested_outputs,
         events=[{
             "event": OUTPUTS_VALIDATED_EVENT,
             "workflow_instance_id": 101,
@@ -119,6 +124,32 @@ def test_cloud_result_listing_and_download_redirect(
     assert response.status_code == 307
     assert response.headers["location"] == "https://storage.example/query.parquet"
     assert all(storage.closed for storage in instances)
+
+
+def test_cloud_result_listing_only_skips_explicit_legacy_optional_output(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, _ = successful_run(
+        session,
+        application="backtest",
+        requested_outputs=["daily_portfolios", "daily_trading_statistics"],
+    )
+    missing_filename = "daily_trading_statistics.parquet"
+
+    def create_storage() -> FakeBacktestStorage:
+        return FakeBacktestStorage(missing_filename)
+
+    monkeypatch.setattr(results.ObjectStorage, "from_env", staticmethod(create_storage))
+    monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
+
+    files = backtest_result_files(session, user.id, 101)
+
+    assert [file["name"] for file in files] == ["daily_portfolios"]
+
+    missing_filename = "daily_portfolios.parquet"
+    with pytest.raises(OSError, match="无法读取对象存储结果"):
+        backtest_result_files(session, user.id, 101)
 
 
 def test_local_result_listing_and_download(
@@ -252,6 +283,29 @@ class FakeStorage:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeBacktestStorage:
+    def __init__(self, missing_filename: str) -> None:
+        self.missing_filename = missing_filename
+
+    @staticmethod
+    def object_key(key: str) -> str:
+        return f"arena-runtime/{key}"
+
+    def object_info(self, key: str) -> ObjectInfo:
+        if key.endswith(f"/{self.missing_filename}"):
+            raise ClientError(
+                {
+                    "Error": {"Code": "404", "Message": "Not Found"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                "HeadObject",
+            )
+        return ObjectInfo(7, datetime(2026, 8, 4, tzinfo=UTC))
+
+    def close(self) -> None:
+        pass
 
 
 class FakeDeleteClient:
