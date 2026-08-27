@@ -132,6 +132,8 @@ Parquet Schema。四张标准结果表都是必需输出；任一接口调用失
 | `floatingPnl` | DOUBLE | 是 | 截至当日的浮动盈亏 |
 | `realizedPnl` | DOUBLE | 是 | 截至当日的已实现盈亏 |
 | `totalPnl` | DOUBLE | 是 | 截至当日的总盈亏 |
+| `benchmarkClosePrice` | DOUBLE | 否 | 配置 `benchmark` 后返回的基准指数当日收盘价 |
+| `benchmarkNetValue` | DOUBLE | 否 | 配置 `benchmark` 后由插件计算的基准净值 |
 | `bottomNetValue` | DOUBLE | 否 | 配置底仓时的底仓净值；普通 Arena 请求不依赖 |
 | `strategyName` | STRING | 否 | 模拟交易模式可能出现；Arena 当前历史回测不依赖 |
 
@@ -151,8 +153,9 @@ feeIncrement[t] = totalFee[t] - totalFee[t-1]
 首行前值使用 `initialCash`、净值 1 和累计费用 0。费用已经进入现金和权益，不能再次从权益扣除。
 若存在公司行为、冻结资金或其他现金事件，现金变化检查必须加入相应现金流。
 
-当前禁止传入 `config.benchmark`，本表没有基准序列或基准指标。需要比较时，应下载后按明确的数据
-版本、日期轴和缺失值口径独立计算。
+配置 `config.benchmark` 后，网页使用 `benchmarkNetValue` 与策略净值按当前筛选区间首个有效值重新
+归一后绘制对比曲线；原始 Parquet 仍保留插件返回值，不会被网页覆写。基准行情来自同一
+`coreTable`、同一闭区间的指数日行情，缺少基准报价的日期不会自行前向填充。
 
 ## `daily_trading_statistics`
 

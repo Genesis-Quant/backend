@@ -4,9 +4,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from runtime import BacktestParameters, OptimizationAlgorithm
+from runtime.config import INDEX_CODES
 from sqlalchemy.orm import Session
 
 from core.apps.backtest.schemas import (
+    BacktestCatalog,
     BacktestOutput,
     BacktestOptimizationCreate,
     BacktestOptimizationPage,
@@ -63,7 +65,7 @@ from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
-from core.utils.dsl import DslCatalog, dsl_catalog
+from core.utils.dsl import dsl_catalog
 from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
@@ -396,6 +398,11 @@ def create_project_fee_analysis(project_id: int, version_number: int, request: F
         raise_api_http_error(error)
 
 
-@router.get("/dsl/catalog", response_model=DslCatalog, dependencies=[Depends(get_current_user)])
-def catalog() -> DslCatalog:
-    return dsl_catalog()
+@router.get("/dsl/catalog", response_model=BacktestCatalog, dependencies=[Depends(get_current_user)])
+def catalog() -> BacktestCatalog:
+    shared = dsl_catalog()
+    return BacktestCatalog(
+        factors=shared.factors,
+        operators=shared.operators,
+        benchmark_codes=list(INDEX_CODES),
+    )

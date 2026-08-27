@@ -78,7 +78,9 @@ tradeDate, cash, totalMarketValue, totalEquity, netValue, totalReturn,
 ratio, pnl, frozenFunds, totalFee, floatingPnl, realizedPnl, totalPnl
 ```
 
-Runtime 禁止 `benchmark`，因此策略不得依赖 `benchmarkClosePrice` 或 `benchmarkNetValue`。
+配置 `benchmark` 时，`getTotalPortfolios` / `getDailyTotalPortfolios` 还会返回
+`benchmarkClosePrice` 和 `benchmarkNetValue`。这两列属于组合结果，不是 `message` 的字段；策略
+需要读取当前基准行情时，应明确识别配置的基准代码，不能把组合结果列当成行情回调列。
 
 ## 指标订阅
 

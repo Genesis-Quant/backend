@@ -96,6 +96,12 @@ Runtime 强制设置：
 BacktestParameters 拒绝。当前模式使用快照回调，不生成 bar，因此 `onSnapshot` 会触发，`onBar`
 不会触发但仍必须定义。
 
+`benchmark` 是可选用户配置，但只接受 `INDEX_CODES` 中以 `.SH` 或 `.SZ` 结尾的指数。Runtime 从
+`coreTable` 单独查询该指数的未复权日行情，把 `000300.SH` 之类的请求代码转换为插件使用的
+`000300.XSHG`，再与策略快照按时间合并回放。基准快照会出现在 `onSnapshot` 的 `message` 中；
+遍历消息下单的策略必须按
+自身候选代码或信号截面限制可交易证券，不能把基准指数当成可交易股票。
+
 ## 日线生成合成快照
 
 DolphinDB 对 dataType=1 快照表的字段要求见

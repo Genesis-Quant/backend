@@ -124,6 +124,7 @@ Runtime 允许并校验的常用字段：
 | `commission` | finite number >= 0 | 手续费率 |
 | `tax` | finite number >= 0 | 印花税率 |
 | `syntheticSpread` | finite number，`0 <= x < 1` | 合成盘口完整相对买卖价差 |
+| `benchmark` | `INDEX_CODES` 中以 `.SH` 或 `.SZ` 结尾的指数代码 | 可选业绩基准，例如 `000300.SH` |
 | `latency` | integer >= 0 | 插件订单延时参数 |
 | `enableMinimumPerTransactionFee` | boolean | 最低单笔费用 |
 | `enableSellCloseRestrict` | boolean | 卖出可用量限制 |
@@ -133,8 +134,25 @@ Runtime 允许并校验的常用字段：
 其余 Runtime 已声明的插件 boolean 选项也按 boolean 校验。`config` 是开放字典，能通过 JSON 校验
 不代表某个 DolphinDB 版本或当前快照模式一定支持该选项。
 
-`benchmark` 当前明确禁止传入并会在请求校验阶段被拒绝。Arena 不创建基准行情、不向结果表添加
-基准列，也不自动计算基准收益；需要基准比较时应在下载结果后独立完成。
+`benchmark` 使用 Tushare 沪深代码格式，并且只能选择 Runtime `INDEX_CODES` 中已经配置、由
+`index-daily` Worker 写入 `coreTable` 的指数。Runtime 会单独读取相同回测区间的指数日行情，转换为
+Backtest 插件使用的 `XSHG/XSHE` 代码并加入行情回放；当前不接受其他交易所后缀，用户也不应把该
+指数重复加入策略代码域。
+
+```json
+{
+  "config": {
+    "cash": 1000000,
+    "commission": 0.0003,
+    "tax": 0.001,
+    "benchmark": "000300.SH"
+  }
+}
+```
+
+省略 `benchmark` 表示不计算基准。启用后，插件会在 `daily_portfolios` 中增加
+`benchmarkClosePrice` 和 `benchmarkNetValue`，并在直接读取插件收益汇总时提供基准收益、超额收益、
+Alpha 和 Beta。基准使用指数未复权价格，不跟随股票策略的 `adj` 设置。
 
 以下字段由 Runtime 强制设置，用户传入会被拒绝：
 

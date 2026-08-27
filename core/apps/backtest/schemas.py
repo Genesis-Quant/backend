@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from runtime import OptimizationAlgorithm, OptimizationParameters, OptimizationSettings, SensitivityParameters
 from core.apps.schemas import DraftVersionSummary
+from core.utils.dsl import DslCatalog
 from core.utils.validation import (
     normalize_text,
     strip_text,
@@ -33,6 +34,10 @@ type BacktestProjectSortField = Literal[
     "dailyWinningRate",
     "updated_at",
 ]
+
+
+class BacktestCatalog(DslCatalog):
+    benchmark_codes: list[str]
 
 
 class BacktestProjectCreate(BaseModel):
