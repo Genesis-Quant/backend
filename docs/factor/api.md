@@ -86,7 +86,7 @@ list_workflow_outputs("factor", workflow_instance_id)
 | 名称 | 文件 | 主要内容 |
 | --- | --- | --- |
 | `information_coefficient` | `factor_information_coefficients.parquet` | 各 factor × return 的 IC 与 Rank IC 时序列 |
-| `group_returns` | `factor_group_returns.parquet` | 各 factor × return × group 的分组收益时序列 |
+| `group_returns` | `factor_group_returns.parquet` | 各 factor × return 的极端 N 支及等数量分组收益时序列 |
 
 实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。以运行请求
 和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。

@@ -574,8 +574,14 @@ def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], inform
         for return_column in validated.return_columns:
             ic = numeric_series(information, f"{factor}_{return_column}_ic")
             rank_ic = numeric_series(information, f"{factor}_{return_column}_rank_ic")
-            low_column = f"{factor}_{return_column}_group0"
-            high_column = f"{factor}_{return_column}_group{count_groups - 1}"
+            extreme_low = f"{factor}_{return_column}_bottom"
+            extreme_high = f"{factor}_{return_column}_top"
+            if extreme_low in groups and extreme_high in groups:
+                low_column = extreme_low
+                high_column = extreme_high
+            else:
+                low_column = f"{factor}_{return_column}_group0"
+                high_column = f"{factor}_{return_column}_group{count_groups - 1}"
             low = numeric_series(groups, low_column)
             high = numeric_series(groups, high_column)
             returns = pd.DataFrame({"time": groups["time"], "value": high - low}).dropna().sort_values("time")["value"]

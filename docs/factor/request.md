@@ -29,6 +29,7 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
 | `return_specs` | object | 是 | — | 每个收益标签的口径与覆盖期数，键必须与 `return_columns` 完全一致 |
 | `n_groups` | integer | 否 | `5` | 每日等数量分组数，至少 2 |
+| `n_select` | integer | 否 | `10` | 每日额外选择因子值最小和最大的 N 支股票，至少 1 |
 | `preprocess` | boolean | 否 | `true` | 是否执行 Runtime 内置预处理 |
 | `market_value_column` | string | 否 | `circ_mv` | 中性化控制变量和分组收益权重 |
 
@@ -173,14 +174,18 @@ time
 
 ```text
 time
+{factor}_{return}_bottom
 {factor}_{return}_group0
 ...
 {factor}_{return}_group{n_groups-1}
+{factor}_{return}_top
 ```
 
 每个请求中的因子与收益列做笛卡尔组合。`group0` 是因子值最低组，最后一组是最高组。分组收益
-使用 `market_value_column` 加权。读取结果时必须由实际 `factor_columns` 和 `return_columns`
-构造列名，不能硬编码 `ret0`。
+使用 `market_value_column` 加权。`bottom` 和 `top` 分别使用预处理后因子值最小、最大的
+`n_select` 支股票，同样按市值加权；它们作为分组曲线的新首尾端，多空指标使用
+`top - bottom`。旧任务没有这两列时，读取端继续使用原来的首尾分组。读取结果时必须由实际
+`factor_columns` 和 `return_columns` 构造列名，不能硬编码 `ret0`。
 
 ## 批量执行
 
