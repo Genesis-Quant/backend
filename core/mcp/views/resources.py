@@ -16,7 +16,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/overview",
         title="Arena MCP 总览",
-        description="认证、返回值、文档导航、发现工具、项目入口和通用执行流程。",
+        description="认证、外部数据文档、开源仓库、返回值、文档导航、项目入口和通用执行流程。",
         mime_type="text/markdown",
     )
     def overview_document() -> str:
@@ -34,7 +34,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/dsl",
         title="Factor Query DSL",
-        description="基础字段、派生节点、依赖、过滤器、时序边界和算符发现方法。",
+        description="基础字段及 Tushare 语义参考、派生节点、依赖、过滤器、时序边界和算符发现方法。",
         mime_type="text/markdown",
     )
     def dsl_document() -> str:

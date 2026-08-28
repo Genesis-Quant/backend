@@ -4,6 +4,16 @@ Arena MCP 把网页中的 Query、Factor 和 Backtest 能力提供给 AI。它�
 提交、Workspace 轮询、运行历史、Task 与日志、结果下载，以及 Factor/Backtest 的版本和批量研究。
 本文件只介绍通用能力和入口；业务请求字段、专用工具和输出必须读取对应应用目录中的文档。
 
+## 外部参考与源码
+
+- [Tushare Pro 数据接口文档](https://tushare.pro/document/2)：对于源自 Tushare 的基础字段，可在
+  这里核对原始字段含义、单位、频率、接口输入输出和更新说明。Arena 会对数据源字段进行筛选、命名
+  规范化、时间轴对齐和填充；实际可提交的字段名仍以 `arena://dsl/catalog` 为准，不能直接把
+  Tushare 字段名当作 Arena DSL 字段。
+- [Genesis-Quant/compose 开源仓库](https://github.com/Genesis-Quant/compose)：用于核对 Compose 配置
+  以及 Backend、Frontend、Runtime 的具体实现和版本关系。线上能力仍应以当前 MCP Resource、Schema
+  和工具返回为准，因为部署版本可能与仓库最新提交不同。
+
 ## 连接与认证
 
 - Endpoint：`{ARENA_PUBLIC_URL}/mcp`
@@ -70,6 +80,8 @@ CallToolResult.structuredContent.result
 - `execute_dolphindb_script(script, max_rows=200)`：所有认证用户可用，使用只读运行账号在共享
   DolphinDB 中执行测试脚本；其无计算资源沙箱和超时边界必须先读 `arena://docs/overview/dolphindb`。
 - `get_current_user()`：读取当前认证用户。
+- `submit_feedback(content)`：以当前 Bearer Token 对应用户提交反馈，`content` 去除首尾空白后必须为
+  1 到 4000 个字符；服务端固定记录来源为 `mcp`。网页用户也可以在 Profile 页面提交反馈。
 
 发现结果不是执行结果。先完成发现和请求校验，再创建项目并运行。
 

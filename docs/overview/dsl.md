@@ -22,6 +22,13 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 “可用”表示请求能通过 Runtime 的字段白名单校验，不表示每个字段在每只证券、每个日期都存在非
 空数据。实际覆盖取决于已更新的数据源、证券类型、上市日期、财报日期和配置的指数代码。
 
+对于源自 Tushare 的基础字段，可进一步查阅
+[Tushare Pro 数据接口文档](https://tushare.pro/document/2)，核对供应商原始字段的含义、单位、
+频率、接口输入输出和更新说明。Tushare 文档是数据源语义参考，不是 Arena 请求 Schema：Worker
+可能对字段进行筛选、重命名、类型转换、时间轴对齐或组合派生，因此提交 DSL 前仍必须使用
+`arena://dsl/catalog` 确认 Arena 的实际字段名，并可在
+[Genesis-Quant/compose 开源仓库](https://github.com/Genesis-Quant/compose) 中核对具体映射实现。
+
 派生字段没有预先存在的全局列表：它们由当前请求的 `derivatives` key 动态命名。一个算符对象中
 允许出现哪些 `fields` key、每个 key 接受列引用还是常量，由
 `describe_dsl_operator(operator).result.definition` 决定。
@@ -240,7 +247,8 @@ Runtime 在计算任何 derivative 和执行 `filters` **之前**，对部分基
 按规则认定为非成员，`NULL` 表示填充后仍无有效值。不能从最终 NULL 反推源表究竟存有 NULL，还是
 根本没有该代码/日期/字段记录；需要这种来源信息时必须另行查询或保存源数据元数据。
 
-指数权重字段来自 Tushare `index_weight`。当前 Worker 对每个自然日以该日作为 `end_date` 查询，取
+指数权重字段来自 [Tushare Pro 数据接口](https://tushare.pro/document/2) 的 `index_weight`。当前
+Worker 对每个自然日以该日作为 `end_date` 查询，取
 响应中不晚于该日的最新 `trade_date` 权重快照，并以当前自然日写入 CoreData。当前存储没有保留
 供应商公告时间、抓取时间、版本号或修订批次；重新抓取历史区间可能收到供应商事后修订的数据。
 Arena 能说明当前抓取和填充规则，但不能据此证明权重是不可修订的严格历史时点版本。需要审计级
