@@ -20,6 +20,8 @@ from core.apps.backtest.schemas import (
 from core.apps.backtest.services import (
     create_backtest_project,
     create_backtest_version,
+    delete_backtest_project,
+    delete_backtest_version,
     get_backtest_project,
     get_backtest_version,
     list_backtest_projects,
@@ -41,6 +43,8 @@ from core.apps.factor.schemas import (
 from core.apps.factor.services import (
     create_factor_project,
     create_factor_version,
+    delete_factor_project,
+    delete_factor_version,
     get_factor_project,
     get_factor_version,
     list_factor_projects,
@@ -50,14 +54,16 @@ from core.apps.factor.services import (
     update_factor_version,
 )
 from core.apps.query.schemas import QueryProjectCreate, QueryProjectItem, QueryProjectListItem, QueryProjectSortField
-from core.apps.query.services import create_query_project, get_query_project, list_query_projects, submit_project_query
+from core.apps.query.services import create_query_project, delete_query_project, get_query_project, list_query_projects, submit_project_query
 from core.apps.schemas import ProjectPage, SortOrder, WorkflowSubmitted
+from core.apps.users.services import require_mcp_delete_permission
 from core.database.session import database_session_factory
 
 from ..auth import current_user
 from ..contracts import validate_mcp_factor_parameters
 from ..schemas import (
     McpResult,
+    CONTROL,
     ProjectListResult,
     ProjectResult,
     READ_ONLY,
@@ -156,6 +162,23 @@ def register_project_tools(server: MCPServer) -> None:
             else:
                 result = BacktestProjectItem.model_validate(get_backtest_project(session, user.id, project_id))
             return McpResult(result=result)
+
+    @server.tool(title="删除项目", annotations=CONTROL)
+    def delete_project(
+        application: Annotated[ProjectApplication, Field(description="要删除的项目类型。")],
+        project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
+    ) -> McpResult[dict[str, str | int]]:
+        """Delete one owned project when its application-specific MCP permission is enabled."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            require_mcp_delete_permission(user, f"allow_delete_{application}_projects")
+            if application == "query":
+                deleted_id = delete_query_project(session, user.id, project_id)
+            elif application == "factor":
+                deleted_id = delete_factor_project(session, user.id, project_id)
+            else:
+                deleted_id = delete_backtest_project(session, user.id, project_id)
+            return McpResult(result={"application": application, "id": deleted_id})
 
     @server.tool(title="重命名项目", annotations=WRITE)
     def update_project(
@@ -275,6 +298,26 @@ def register_project_tools(server: MCPServer) -> None:
             else:
                 result = BacktestVersionResponse.model_validate(create_backtest_version(session, user.id, project_id, workflow_instance_id, remark.strip()))
             return McpResult(result=result)
+
+    @server.tool(title="删除研究版本", annotations=CONTROL)
+    def delete_version(
+        application: Annotated[Literal["factor", "backtest"], Field(description="版本所属应用。")],
+        project_id: Annotated[int, Field(gt=0, description="项目 ID。")],
+        version: Annotated[int, Field(gt=0, description="要删除的已保存版本号。")],
+    ) -> McpResult[dict[str, str | int]]:
+        """Delete one saved Factor or Backtest version when its MCP permission is enabled."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            require_mcp_delete_permission(user, f"allow_delete_{application}_versions")
+            if application == "factor":
+                deleted_version = delete_factor_version(session, user.id, project_id, version)
+            else:
+                deleted_version = delete_backtest_version(session, user.id, project_id, version)
+            return McpResult(result={
+                "application": application,
+                "project_id": project_id,
+                "version": deleted_version,
+            })
 
     @server.tool(title="重命名研究版本", annotations=WRITE)
     def update_version(

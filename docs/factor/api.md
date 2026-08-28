@@ -16,6 +16,7 @@ list_projects("factor", page=1, page_size=20, search=null, sort_by="updated_at",
 create_project("factor", title)
 get_project("factor", project_id)
 update_project("factor", project_id, title)
+delete_project("factor", project_id)
 ```
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
@@ -49,6 +50,7 @@ list_versions(application="factor", project_id)
 get_version(application="factor", project_id, version)
 save_version(application="factor", project_id, workflow_instance_id, remark="")
 update_version(application="factor", project_id, version, remark)
+delete_version(application="factor", project_id, version)
 ```
 
 - `list_versions` 同时返回已保存版本和当前未保存版本。
@@ -56,6 +58,8 @@ update_version(application="factor", project_id, version, remark)
 - `save_version` 只能保存当前未保存版本的当前成功 Workflow Instance；不能拿历史 Instance 覆盖版本。
 - 保存成功后自动产生下一个未保存版本。
 - `update_version` 只修改显示备注，不修改参数和结果。
+- 两个删除工具分别要求个人主页中的 Factor 项目和 Factor 版本权限。当前未保存版本不能单独删除，
+  活动工作流关联的对象也会按业务规则拒绝；删除已保存版本会永久留下版本号空缺。
 
 ## 批量执行
 
@@ -113,4 +117,4 @@ ICIR 与 Rank ICIR 均按 `IC 均值 / IC 样本标准差` 计算，并以该原
 7. 需要固化时 save_version("factor", ...)
 ```
 
-MCP 不提供 Factor 项目、版本、Workspace、Attempt 或输出删除功能。
+MCP 不提供 Factor Workspace、Attempt、工作流实例或输出的独立删除功能。

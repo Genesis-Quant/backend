@@ -284,4 +284,6 @@ force_success_task(workflow_instance_id, task_instance_id)
 它会改变真实调度状态，只应在用户明确要求、已经确认 Task 可安全跳过时调用。Task 必须属于该
 Workflow Instance。强制成功只改变 Task 状态；失败工作流仍需调用 `retry-failed` 才能继续。即使
 调度器随后成功，Backend 仍会校验必需输出，跳过产出结果的 Task 会得到 `RESULT_FAILED`，不能保存
-版本或读取输出。MCP 不提供删除工作流、项目、版本、Attempt、Task 或输出的功能。
+版本或读取输出。MCP 不提供删除工作流实例、Attempt、Task 或输出的功能。用户按个人主页权限删除
+项目、版本或回测分析时，应调用对应应用文档列出的专用工具；这些工具会按业务关系清理其独占
+Workspace 和产物。

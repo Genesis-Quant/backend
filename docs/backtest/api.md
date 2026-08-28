@@ -22,6 +22,7 @@ list_projects("backtest", page=1, page_size=20, search=null, sort_by="updated_at
 create_project("backtest", title)
 get_project("backtest", project_id)
 update_project("backtest", project_id, title)
+delete_project("backtest", project_id)
 ```
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
@@ -54,12 +55,16 @@ list_versions("backtest", project_id)
 get_version("backtest", project_id, version)
 save_version("backtest", project_id, workflow_instance_id, remark="")
 update_version("backtest", project_id, version, remark)
+delete_version("backtest", project_id, version)
 ```
 
 - 列表包含已保存版本和当前未保存版本。
 - 版本详情包含完整 parameters、Workspace/Instance、summary、保存状态和备注。
 - 只能保存当前未保存版本绑定的当前成功 Instance；保存后自动创建下一未保存版本。
 - `update_version` 只修改显示备注。
+- 项目与版本删除分别要求个人主页中的 Backtest 项目、Backtest 版本权限。当前未保存版本不能单独
+  删除；删除已保存版本会一并删除其手续费分析、参数敏感性分析和参数调优报告，并永久留下版本号
+  空缺。任一关联工作流仍在活动时都会拒绝删除。
 
 ## 普通批量执行
 
@@ -141,6 +146,8 @@ create_backtest_fee_analysis(project_id, version, rates)
 ```text
 get_backtest_research(research_id)
 list_backtest_research_outputs(research_id)
+delete_backtest_fee_analysis(research_id)
+delete_backtest_sensitivity_analysis(research_id)
 ```
 
 轮询返回的唯一 `workflow_workspace_id`；运行中可通过通用 Workspace、Attempt、Task 和日志工具查看
@@ -148,6 +155,9 @@ list_backtest_research_outputs(research_id)
 研究输出接口下载该文件，并用 DuckDB 读取每个 case 的参数、状态、错误和指标。单个 case 失败会以
 `status=FAILURE` 行保留；至少一个 case 成功时工作流仍可成功，因此必须检查每一行的 `status`。
 `list_backtest_research_outputs` 在成功后返回固定的 `results` 输出及认证下载路径。
+
+两类研究共用 ID 空间，但删除工具按类型分开并分别受个人主页权限控制。传入另一种研究的 ID 会
+直接拒绝，不会把一个总开关同时授权两种分析。活动状态研究仍不能删除。
 
 Backend 会在工作流成功后校验 `results.parquet` 的行数、`case_index` 完整性和逐行 `status`，再把
 `completed_count`、`failed_count` 与当前 workflow instance 绑定。校验完成前研究状态为
@@ -176,12 +186,14 @@ create_backtest_optimization(
 )
 get_backtest_optimization(optimization_id)
 list_backtest_optimization_outputs(optimization_id)
+delete_backtest_optimization(optimization_id)
 ```
 
 `parameter_space` 只能引用来源版本 `params` 中已有的数值字段，每个字段提供 2 到 100 个有限候选，
 笛卡尔积最多 100000 个组合；`algorithms` 不能重复。日期为 `YYYY-MM-DD`，周期使用 `D/W/M/Y`，
 随机种子为非负 32 位整数。Runtime 只查询一次覆盖最早训练窗口至最后持有窗口的完整数据；每个算法
 生成一个同名 Parquet。先轮询报告的 `workflow_workspace_id`，仅 `SUCCESS` 后读取输出。
+删除报告要求个人主页启用参数调优删除权限，活动状态报告不能删除。
 
 ## 输出
 
@@ -216,4 +228,4 @@ list_workflow_outputs("backtest", workflow_instance_id)
 8. 需要网格研究时从已保存版本创建 research，轮询唯一 Workspace，成功后下载 `results.parquet`
 ```
 
-MCP 不提供 Backtest 项目、版本、研究、Workspace、Attempt 或输出删除功能。
+MCP 不提供 Backtest Workspace、Attempt、工作流实例或输出的独立删除功能。

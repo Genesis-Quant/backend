@@ -25,6 +25,8 @@ from core.apps.backtest.services import (
     create_batch_research,
     create_backtest_optimization as create_backtest_optimization_record,
     create_fee_analysis,
+    delete_backtest_optimization as delete_backtest_optimization_record,
+    delete_batch_research,
     get_batch_research,
     get_backtest_optimization as get_backtest_optimization_record,
     get_backtest_project,
@@ -37,11 +39,12 @@ from core.apps.backtest.services import (
 )
 from core.apps.factor.services import submit_factor_batch
 from core.apps.schemas import BatchRunAccepted, BatchRunRequest
+from core.apps.users.services import require_mcp_delete_permission
 from core.database.session import database_session_factory
 
 from ..auth import current_user
 from ..contracts import validate_mcp_factor_parameters
-from ..schemas import McpBatchRunItem, McpResult, READ_ONLY, WRITE, WorkflowOutputFile, WorkflowOutputs
+from ..schemas import CONTROL, McpBatchRunItem, McpResult, READ_ONLY, WRITE, WorkflowOutputFile, WorkflowOutputs
 
 
 def register_batch_tools(server: MCPServer) -> None:
@@ -183,6 +186,17 @@ def register_batch_tools(server: MCPServer) -> None:
                 result=BacktestOptimizationResponse.model_validate(result)
             )
 
+    @server.tool(title="删除回测参数调优报告", annotations=CONTROL)
+    def delete_backtest_optimization(
+        optimization_id: Annotated[int, Field(gt=0, description="参数调优报告 ID。")],
+    ) -> McpResult[dict[str, int]]:
+        """Delete one optimization report when the current user explicitly allows it."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            require_mcp_delete_permission(user, "allow_delete_optimizations")
+            deleted_id = delete_backtest_optimization_record(session, user, optimization_id)
+            return McpResult(result={"id": deleted_id})
+
     @server.tool(title="列出回测参数调优输出", annotations=READ_ONLY)
     def list_backtest_optimization_outputs(
         optimization_id: Annotated[int, Field(gt=0, description="参数调优报告 ID。")],
@@ -288,6 +302,38 @@ def register_batch_tools(server: MCPServer) -> None:
         with database_session_factory()() as session:
             user = current_user(session)
             return McpResult(result=BatchResearchResponse.model_validate(get_batch_research(session, user, research_id)))
+
+    @server.tool(title="删除手续费分析", annotations=CONTROL)
+    def delete_backtest_fee_analysis(
+        research_id: Annotated[int, Field(gt=0, description="手续费分析 ID。")],
+    ) -> McpResult[dict[str, int]]:
+        """Delete one fee analysis when its dedicated MCP permission is enabled."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            require_mcp_delete_permission(user, "allow_delete_fee_analyses")
+            deleted_id = delete_batch_research(
+                session,
+                user,
+                research_id,
+                expected_analysis_type=BatchAnalysisType.FEE_ANALYSIS,
+            )
+            return McpResult(result={"id": deleted_id})
+
+    @server.tool(title="删除参数敏感性分析", annotations=CONTROL)
+    def delete_backtest_sensitivity_analysis(
+        research_id: Annotated[int, Field(gt=0, description="参数敏感性分析 ID。")],
+    ) -> McpResult[dict[str, int]]:
+        """Delete one parameter-sensitivity analysis when its dedicated permission is enabled."""
+        with database_session_factory()() as session:
+            user = current_user(session)
+            require_mcp_delete_permission(user, "allow_delete_sensitivity_analyses")
+            deleted_id = delete_batch_research(
+                session,
+                user,
+                research_id,
+                expected_analysis_type=BatchAnalysisType.SENSITIVITY,
+            )
+            return McpResult(result={"id": deleted_id})
 
     @server.tool(title="列出策略研究结果", annotations=READ_ONLY)
     def list_backtest_research_outputs(

@@ -24,7 +24,9 @@ SERVER_INSTRUCTIONS = (
     "create project -> run -> poll Workspace -> list outputs; only a successful current Factor/Backtest workflow "
     "can be saved. Use Workspace Attempt history to inspect earlier submitted parameters. Project/version rename, "
     "browser batch queues, fee studies, sensitivity studies, parameter optimization, task queries, and log downloads all have dedicated "
-    "tools documented under the owning application or overview/workflows. No business deletion tool is exposed. "
+    "tools documented under the owning application or overview/workflows. Project, saved-version, fee-study, sensitivity-study, and "
+    "parameter-optimization deletion tools require the matching user switch from the personalized overview; no workflow-instance deletion "
+    "tool is exposed. "
     "The arbitrary DolphinScript tool uses a database account that cannot write or manage persistent data and limits "
     "each DolphinDB session to a ten-minute total lifetime, but it has no compute-resource sandbox."
 )

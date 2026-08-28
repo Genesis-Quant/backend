@@ -30,7 +30,7 @@ MCP_DOCUMENT_SECTIONS = (
         title="开始使用",
         description="连接、对象关系、查询语言与运行生命周期。",
         items=(
-            DocumentDefinition("overview/overview", "Arena MCP 总览", "认证、返回值、文档导航与通用执行流程。"),
+            DocumentDefinition("overview/overview", "Arena MCP 总览", "用户提示词、删除权限、认证、文档导航与通用执行流程。"),
             DocumentDefinition("overview/projects", "Arena 对象关系", "Project、Version、Workspace、Attempt、Workflow 与 Task 的关系。"),
             DocumentDefinition("overview/dsl", "Factor Query DSL", "字段、嵌套优先、结果列预算、依赖、过滤器与时序边界。"),
             DocumentDefinition("overview/workflows", "工作流与任务读取", "运行历史、任务、日志分页、输出下载与控制。"),

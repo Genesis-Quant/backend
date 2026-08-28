@@ -1,4 +1,4 @@
-"""Authenticated read-only MCP endpoints."""
+"""Authenticated MCP documentation endpoints."""
 
 from fastapi import APIRouter, Depends
 

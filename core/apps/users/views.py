@@ -8,11 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.apps.users.models import User
-from core.apps.users.schemas import AuthenticationResponse, Credentials, UserResponse
+from core.apps.users.schemas import AuthenticationResponse, Credentials, McpConfiguration, UserResponse
 from core.apps.users.services import (
     create_access_token,
     get_current_user,
     hash_password,
+    mcp_configuration,
+    update_mcp_configuration,
     verify_password,
 )
 from core.database.session import get_database_session
@@ -55,3 +57,17 @@ def authentication_response(user: User) -> AuthenticationResponse:
 @router.get("/users/me", response_model=UserResponse, tags=["users"])
 def current_user(user: Annotated[User, Depends(get_current_user)]) -> User:
     return user
+
+
+@router.get("/users/me/mcp-configuration", response_model=McpConfiguration, tags=["users"])
+def get_mcp_configuration(user: Annotated[User, Depends(get_current_user)]) -> McpConfiguration:
+    return mcp_configuration(user)
+
+
+@router.put("/users/me/mcp-configuration", response_model=McpConfiguration, tags=["users"])
+def put_mcp_configuration(
+    request: McpConfiguration,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_database_session)],
+) -> McpConfiguration:
+    return update_mcp_configuration(session, user, request)

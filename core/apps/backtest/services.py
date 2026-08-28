@@ -959,7 +959,13 @@ def get_batch_research(session: Session, user: User, research_id: int) -> dict[s
     return serialize_batch_research(*row)
 
 
-def delete_batch_research(session: Session, user: User, research_id: int) -> int:
+def delete_batch_research(
+    session: Session,
+    user: User,
+    research_id: int,
+    *,
+    expected_analysis_type: BatchAnalysisType | None = None,
+) -> int:
     """删除当前用户的一条手续费或参数敏感性分析及其独占工作空间。"""
     row = session.execute(
         select(BacktestResearch, WorkflowWorkspace)
@@ -978,6 +984,10 @@ def delete_batch_research(session: Session, user: User, research_id: int) -> int
     if row is None:
         raise FileNotFoundError(f"批量研究不存在: {research_id}")
     research, workspace = row
+    if expected_analysis_type is not None and research.analysis_type != expected_analysis_type.value:
+        raise ValueError(
+            f"批量研究 {research_id} 不是{BATCH_ANALYSIS_LABELS[expected_analysis_type.value]}"
+        )
     delete_analysis_workspace(
         session,
         research,

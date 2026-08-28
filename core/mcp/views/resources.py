@@ -7,7 +7,7 @@ from runtime import BacktestParameters, FactorAnalysisParameters, FactorQuery
 
 from core.utils.dsl import DslCatalog, dsl_catalog
 
-from ..services import document, runtime_schema
+from ..services import authenticated_document, document, runtime_schema
 
 
 def register_resources(server: MCPServer) -> None:
@@ -16,11 +16,11 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/overview",
         title="Arena MCP 总览",
-        description="认证、外部数据文档、开源仓库、返回值、文档导航、项目入口和通用执行流程。",
+        description="当前用户提示词与删除权限、认证、文档导航、上游参考、源码核对和通用执行流程。",
         mime_type="text/markdown",
     )
     def overview_document() -> str:
-        return document("overview/overview")
+        return authenticated_document("overview/overview")
 
     @server.resource(
         "arena://docs/overview/projects",

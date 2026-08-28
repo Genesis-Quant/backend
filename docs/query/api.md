@@ -19,6 +19,7 @@ Query 只有 Project，没有 Version。一个项目始终复用一个 Workspace
 list_projects(application="query", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project(application="query", title="项目名称")
 get_project(application="query", project_id=1)
+delete_project(application="query", project_id=1)
 ```
 
 - `page` 从 1 开始，`page_size` 为 1 到 100。
@@ -28,6 +29,8 @@ get_project(application="query", project_id=1)
 - `create_project` 的 `result.id` 是 `project_id`。
 - `get_project` 的 `current` 表示当前请求与当前 Attempt；Query 不支持 `list_versions`、
   `save_version`、`update_version` 或项目重命名。
+- `delete_project` 只有在个人主页启用“删除 Query 项目”后才会执行；项目存在活动工作流时仍会按业务
+  规则拒绝。删除会同时移除该项目的 Workspace 和结果产物，不能撤销。
 
 ## 执行查询
 
@@ -96,4 +99,4 @@ Bearer Token 下载。不能对历史但已不再绑定当前结果的 Instance 
 8. 下载并检查日期、股票域、字段、NULL、行数和过滤结果
 ```
 
-MCP 不提供 Query 项目或输出删除功能。
+MCP 不提供 Query 输出、Workspace、Attempt 或工作流实例的独立删除功能。

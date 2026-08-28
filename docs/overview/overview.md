@@ -4,15 +4,7 @@ Arena MCP 把网页中的 Query、Factor 和 Backtest 能力提供给 AI。它�
 提交、Workspace 轮询、运行历史、Task 与日志、结果下载，以及 Factor/Backtest 的版本和批量研究。
 本文件只介绍通用能力和入口；业务请求字段、专用工具和输出必须读取对应应用目录中的文档。
 
-## 外部参考与源码
-
-- [Tushare Pro 数据接口文档](https://tushare.pro/document/2)：对于源自 Tushare 的基础字段，可在
-  这里核对原始字段含义、单位、频率、接口输入输出和更新说明。Arena 会对数据源字段进行筛选、命名
-  规范化、时间轴对齐和填充；实际可提交的字段名仍以 `arena://dsl/catalog` 为准，不能直接把
-  Tushare 字段名当作 Arena DSL 字段。
-- [Genesis-Quant/compose 开源仓库](https://github.com/Genesis-Quant/compose)：用于核对 Compose 配置
-  以及 Backend、Frontend、Runtime 的具体实现和版本关系。线上能力仍应以当前 MCP Resource、Schema
-  和工具返回为准，因为部署版本可能与仓库最新提交不同。
+{ARENA_MCP_USER_CONFIGURATION}
 
 ## 连接与认证
 
@@ -21,7 +13,8 @@ Arena MCP 把网页中的 Query、Factor 和 Backtest 能力提供给 AI。它�
 - MCP 页面：`{ARENA_WEB_URL}/mcp`，与 MCP Resources 读取同一组 Markdown
 - Transport：MCP Streamable HTTP，无状态模式
 - 每个 HTTP 请求都必须携带 `Authorization: Bearer <access_token>`
-- MCP 不提供登录、注册、用户管理或业务对象删除工具；认证用户可使用只读 DolphinDB 诊断工具
+- MCP 不提供登录、注册或用户管理工具；项目、版本和回测分析删除工具默认禁止，只有当前用户在
+  个人主页逐项开启对应权限后才可执行；认证用户可使用只读 DolphinDB 诊断工具
 
 Token 由 REST 登录接口签发：
 
@@ -66,6 +59,15 @@ CallToolResult.structuredContent.result
 | 回调、持仓、订单、成交与拒单诊断边界 | `arena://docs/backtest/callback-data` |
 | 运行、结果 QA 与保存版本顺序 | `arena://docs/backtest/qa` |
 
+上述 Resource 与 Schema 定义当前部署的 Arena 契约。需要核对上游语义、官方能力或具体实现时，使用
+以下入口；不能用上游文档或仓库最新代码替代当前部署返回的契约：
+
+| 核对对象 | 入口 | 使用边界 |
+| --- | --- | --- |
+| Tushare 源数据字段 | [Tushare Pro 数据接口文档](https://tushare.pro/document/2) | 核对原始字段含义、单位、频率和更新说明；Arena 实际字段名、转换与填充仍以 `arena://dsl/catalog` 和 `arena://docs/overview/dsl` 为准 |
+| DolphinDB 语言与插件 | [函数参考](https://docs.dolphindb.com/zh/Functions/index.html)、[Backtest 插件总览](https://docs.dolphindb.com/zh/plugins/backtest.html) | 核对上游函数和插件能力；当前部署版本、固定配置、白名单和返回结构仍以 `arena://docs/overview/dolphindb`、`arena://docs/backtest/dolphindb` 与 `arena://docs/backtest/interfaces` 为准 |
+| Arena 实现与版本关系 | [Genesis-Quant/compose](https://github.com/Genesis-Quant/compose) | 核对 Compose、Backend、Frontend、Runtime 的具体实现；线上部署可能滞后于仓库最新提交 |
+
 使用 `read_arena_document(name)` 可读取同名文档；`name` 与上述 `arena://docs/*` 路径一致，例如
 `overview/workflows`。Schema 定义顶层业务对象，某个 DSL 节点的精确 `fields`、`params` 和 `on`
 约束必须以 `describe_dsl_operator(operator)` 返回的定义为准。
@@ -91,6 +93,7 @@ CallToolResult.structuredContent.result
 list_projects(application, page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
 create_project(application, title)
 get_project(application, project_id)
+delete_project(application, project_id)  # 需对应项目删除权限
 ```
 
 `application` 是 `query`、`factor` 或 `backtest`。`list_projects` 每页 1 到 100 条，`search` 按项目名称
@@ -140,6 +143,8 @@ Workspace 是稳定的业务执行容器，重跑会创建新的 Attempt 和新�
 ## 权限与副作用
 
 普通用户只能访问自己的资源。创建项目、提交工作流、保存/重命名版本、批量研究及工作流控制会改变
-状态；查询工具只读。MCP 不提供项目、版本、工作流或研究的专用删除工具。任意 DolphinScript
+状态；查询工具只读。MCP 提供 Query/Factor/Backtest 项目、Factor/Backtest 版本、手续费分析、参数
+敏感性分析和参数调优共 8 类删除能力。每项权限在个人主页独立配置且默认关闭；关闭时服务端会在
+调用业务删除逻辑前拒绝请求。MCP 不提供工作流实例、Attempt、Task 或输出删除工具。任意 DolphinScript
 工具使用只读数据库账号，持久化写入、删改和管理操作会被 DolphinDB 拒绝；但脚本仍可能消耗大量
 CPU、内存和执行时间，调用前必须按其独立资源边界处理。

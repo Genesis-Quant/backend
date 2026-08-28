@@ -17,7 +17,7 @@ from ..schemas import (
     McpResult,
     READ_ONLY,
 )
-from ..services import document, optional_parameter_count
+from ..services import authenticated_document, optional_parameter_count
 
 
 def register_discovery_tools(server: MCPServer) -> None:
@@ -28,7 +28,7 @@ def register_discovery_tools(server: MCPServer) -> None:
         name: Annotated[DocumentName, Field(description="文档名；可选值与 arena://docs/* Resources 一致。")],
     ) -> McpResult[str]:
         """Read one Arena request document."""
-        return McpResult(result=document(name))
+        return McpResult(result=authenticated_document(name))
 
     @server.tool(title="搜索 DSL 算符", annotations=READ_ONLY)
     def list_dsl_operators(
