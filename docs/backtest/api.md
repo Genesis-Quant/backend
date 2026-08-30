@@ -37,12 +37,14 @@ delete_project("backtest", project_id)
 run_backtest(project_id, parameters)
 ```
 
-`parameters` 必须直接是完整 `BacktestParameters`，不能只传修改部分。至少应包含合法
+`parameters` 必须直接是完整 Backtest 请求对象，不能只传修改部分。`codes_query` 和 `dataset_query`
+均支持 JSON/Python 双源码，活动版本由各自的 `dsl_source.language` 决定。请求至少应包含合法
 `dataset_query` 和八个固定名称 callbacks；完整外形见 request 文档。
 
 调用分两步：
 
-1. Runtime 模型严格校验参数，并在 DolphinDB 中编译 `utils` 与八个回调；
+1. Backend 编译活动 DSL 源码，用 Runtime 模型严格校验生成参数，并在 DolphinDB 中编译 `utils` 与
+   八个回调；
 2. 编译成功后才创建 Attempt 并提交调度器。
 
 编译错误会让 MCP 工具直接 `isError=true`，此时没有 Workspace。提交成功返回 `workspace_id` 与可能
@@ -72,8 +74,8 @@ delete_version("backtest", project_id, version)
 run_backtest_batch(project_id, items)
 ```
 
-`items` 为 1 到 100 项。每项必须包含唯一 `client_id`、可选 `remark`、完整
-`BacktestParameters parameters`，不是局部 override：
+`items` 为 1 到 100 项。每项必须包含唯一 `client_id`、可选 `remark` 和完整 Backtest 请求对象，
+不是局部 override；其中的 Query 同样支持双源码：
 
 ```json
 {
@@ -127,7 +129,7 @@ create_backtest_research(
 )
 ```
 
-`version` 必须是已保存版本；`parameter_sets` 为 1 到 100 份完整 BacktestParameters。服务端不会把
+`version` 必须是已保存版本；`parameter_sets` 为 1 到 100 份完整 Backtest 请求对象。服务端不会把
 局部字典合并进基准参数，因此调用方必须先读取基准 `get_version(...).parameters`，在本地生成每个
 完整请求，再提交。参数敏感性分析只允许各请求的 `params` 不同，手续费分析只允许
 `config.commission` 不同；其余数据查询、代码和回测配置必须与来源版本一致。校验通过后只创建一个

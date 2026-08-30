@@ -7,7 +7,7 @@ Factor 工作流研究一个或多个因子与一个或多个收益标签之间�
 
 ```text
 create_project(application="factor", title=...)
-run_factor_analysis(project_id=result.id, parameters=<FactorAnalysisParameters>)
+run_factor_analysis(project_id=result.id, parameters=<完整 Factor 请求>)
 get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="factor", workflow_instance_id=...)
 save_version(application="factor", project_id=..., workflow_instance_id=..., remark=...)
@@ -23,8 +23,8 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `codes_query` | FactorQuery \| null | 否 | `null` | `null` 表示全市场；非空时为第一阶段候选池查询 |
-| `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询 |
+| `codes_query` | FactorQuery \| null | 否 | `null` | `null` 表示全市场；非空时为第一阶段候选池查询，支持双源码 |
+| `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询，支持双源码 |
 | `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
 | `return_specs` | object | 是 | — | 每个收益标签的口径与覆盖期数，键必须与 `return_columns` 完全一致 |
@@ -36,6 +36,11 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 `factor_columns`、`return_columns`、`market_value_column` 不能互相承担冲突角色。Runtime 会把这
 些必要列自动加入 `dataset_query.factors`，但如果同名 derivative 已存在则使用 derivative 输出。
 
+使用 `dataset_query.dsl_source` 时，活动源码只负责用户编写的因子和其它过滤逻辑。收益标签节点由
+`return_columns` 对应的 `dataset_query.derivatives` 保留并在提交时合并，市值列由请求字段管理，
+`stock_pool_member` 则按下文股票池契约注入。JSON/Python 双源码的通用保存和编译规则见
+`arena://docs/overview/dsl`。
+
 ## 两阶段查询
 
 使用指数股票池时，`run_factor_analysis` 和 `run_factor_batch` 按两阶段执行：
@@ -45,25 +50,29 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 3. 将去重结果设为 `dataset_query.codes`；
 4. 执行完整 `dataset_query`，包括其自己的日期条件、derivatives 和 filters。
 
-第一阶段得到的是整个研究区间的候选代码并集，不会把第一阶段每日行过滤自动复制到第二阶段。
-需要逐日动态成员关系时，在 `dataset_query` 中再次定义成员 derivative 和 filter。
+第一阶段得到的是整个研究区间的候选代码并集，不会把第一阶段的任意估值、流动性或状态过滤自动
+复制到第二阶段。指数成分关系是唯一的托管例外：Backend 根据 `codes_query` 选择的指数，在编译
+`dataset_query` 时注入同一个 `stock_pool_member` BOOL 节点，并把它放在第二阶段 `filters` 首位，
+因此逐日动态成员关系不需要在分析 DSL 中重复定义。其它需要逐日生效的条件仍必须由
+`dataset_query` 自己提供。
 
 使用全市场股票池时采用另一种受托管结构：`codes_query=null`、`dataset_query.codes=[]`，并且
-`dataset_query` 不定义或过滤 `stock_pool_member`。此时 Runtime 直接在第二阶段加载全市场代码；
-请求自身的其他 `filters` 仍会正常执行。不要用一个任意价格或状态条件伪造全市场成员字段，否则
-实际基础截面会被静默缩小。
+源码不定义或过滤 `stock_pool_member`。Backend 在运行参数中注入恒为 true 的同名 BOOL 节点，
+因此分析 DSL 可以继续引用它，但不会缩小股票池。Runtime 直接在第二阶段加载全市场代码，请求自身
+的其他 `filters` 仍会正常执行。不要用一个任意价格或状态条件伪造全市场成员字段，否则实际基础
+截面会被静默缩小。
 
 ### MCP/Web 托管股票池契约
 
 网页股票池有两类合法状态：
 
-| 股票池类型 | `codes_query` | `dataset_query.codes` | `stock_pool_member` |
+| 股票池类型 | `codes_query` | `dataset_query.codes` | `dataset_query` 中的 `stock_pool_member` |
 | --- | --- | --- | --- |
-| 全市场 | `null` | `[]` | 两阶段均不使用 |
-| 指数动态池 | FactorQuery | `[]`（运行时写入候选并集） | 两阶段定义并过滤同一节点 |
+| 全市场 | `null` | `[]` | 源码不定义；Backend 在运行参数中注入恒真节点但不加入 filter，源码可以引用 |
+| 指数动态池 | 定义并过滤固定节点的 FactorQuery | `[]`（运行时写入候选并集） | 源码不定义；Backend 在运行参数中注入并过滤，源码可以引用 |
 
-选择指数动态池时，`codes_query` 与 `dataset_query` 必须同时定义名为 `stock_pool_member` 的节点，
-并把它加入各自的 `filters`。两个节点必须选择同一个指数权重字段，结构固定为：
+选择指数动态池时，客户端只在 `codes_query` 中定义名为 `stock_pool_member` 的节点并把它加入
+`codes_query.filters`。该节点是股票池选择的唯一来源，结构固定为：
 
 ```json
 {
@@ -86,8 +95,54 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 | 中证 1000 | `weight_000852SH` |
 
 第一阶段可以另外添加估值、流动性等候选筛选，但不能再用 `is_member` 等别名重复定义指数成员条件。
-网页只把 `stock_pool_member` 识别为股票池选择；别名会造成页面显示、复制版本与实际过滤条件不一致。
-MCP 在提交工作流前检查节点名称、结构、filter 和两阶段股票池一致性，失败时直接返回具体字段路径。
+网页和 MCP 只把 `codes_query.stock_pool_member` 识别为股票池选择；别名会造成页面显示、复制版本与
+实际过滤条件不一致。MCP 在提交工作流前检查节点名称、结构和 filter，失败时直接返回具体字段路径。
+
+### 在分析 DSL 中使用 `stock_pool_member`
+
+`stock_pool_member` 是 Backend 提供给 `dataset_query` DSL 的外部 BOOL 命名节点。
+它在保存的 JSON/Python 源码中没有定义，但编译时可用于接受 BOOL 引用的 `fields`，也可作为 TS/CS
+算符的 `on`。全市场运行参数注入恒真节点且不使用它过滤；指数动态池运行参数注入实际指数节点并
+把它加入 filter。随后两种模式都会执行完整 `FactorQuery` 校验和计算。
+
+JSON DSL 示例：
+
+```json
+{
+  "factors": [],
+  "derivatives": {
+    "pool_turnover_rank": {
+      "type": "CS",
+      "op": "unary.rank_pct",
+      "fields": { "col": "turnover_rate_f" },
+      "params": { "ascending": true, "ties_method": "average" },
+      "on": "stock_pool_member"
+    }
+  },
+  "filters": []
+}
+```
+
+等价的 Python DSL 核心写法：
+
+```python
+pool_turnover_rank = CS.unary_rank_pct(
+    "pool_turnover_rank",
+    col="turnover_rate_f",
+    ascending=True,
+    ties_method="average",
+    on="stock_pool_member",
+)
+
+FACTORS = []
+DERIVATIVES = [pool_turnover_rank]
+FILTERS = []
+```
+
+不要在 `dataset_query.derivatives`、JSON `derivatives` 或 Python `DERIVATIVES` 中自行声明
+`stock_pool_member`，也不要把它加入分析 DSL 的 `filters`；Backend 会根据 `codes_query` 自动完成。
+这个托管节点只适用于 Factor 分析的 `dataset_query`，不能据此假定 Query 或 Backtest DSL 也提供
+同名外部节点。
 
 ## 内置预处理
 
@@ -146,15 +201,17 @@ ICIR 与 Rank ICIR 始终保留原始观测口径，计算式为 `mean / sample_
 
 ## 请求构造
 
-精确顶层结构读取 `arena://schemas/factor`。两阶段中的每个 `FactorQuery` 都必须独立满足 Query 契约，
-每个 DSL 节点使用 `describe_dsl_operator` 核对。Schema 是 Runtime 通用结构；通过 MCP 提交时还必须
-满足上面的全市场或指数动态池契约。本文不提供具体因子、标签或分析构造。
+精确顶层结构读取 `arena://schemas/factor`。`codes_query` 必须独立满足 Query 契约；`dataset_query`
+除上述托管 `stock_pool_member` 外必须闭包完整，Backend 注入该节点后还会按完整 `FactorQuery` 再次
+校验。每个 DSL 节点使用 `describe_dsl_operator` 核对。Schema 是 Runtime 通用结构；通过 MCP 提交时
+还必须满足上面的全市场或指数动态池契约。本文不提供具体因子、标签或分析构造。
 
 第二阶段顶层 derivatives 应只保留分析和过滤真正需要的列：`factor_columns`、`return_columns`、
 必要的最终过滤 BOOL，以及确需直接输出或多处复用的列。构成某个因子或收益标签的一次性中间
 算术、shift、比较和转换，在算符 definition 允许时必须嵌套进最终命名节点，不能逐步提升为顶层
-列。`stock_pool_member` 因网页股票池契约和 `filters` 引用必须保持顶层并保持前述固定结构，不能把
-其它条件合并进该节点；其它一次性子条件应嵌套进各自最终的命名过滤 BOOL。
+列。`stock_pool_member` 只在 `codes_query` 中保持前述固定顶层结构；`dataset_query` 源码不重复声明，
+但指数动态池下可以把它作为托管 BOOL 名称用于 `on` 或其它接受 BOOL 引用的位置。其它一次性子条件
+应嵌套进各自最终的命名过滤 BOOL。
 
 两阶段分别执行并各自生成工作表，因此 `codes_query` 也要使用最小列集合：只需最终筛选 BOOL 时，
 把其一次性子条件嵌套到该 BOOL 中。完整的内存、输出列和重复计算权衡见
@@ -190,13 +247,14 @@ time
 ## 批量执行
 
 `run_factor_batch` 对应网页研究队列。每项包含唯一 `client_id`、版本 `remark` 和完整
-`FactorAnalysisParameters`。一次最多 100 项；成功项会自动保存为独立版本，无需再调用
+Factor 请求对象；其中的 Query 同样支持双源码。一次最多 100 项；成功项会自动保存为独立版本，无需再调用
 `save_version`。批量请求外形、自动保存和重试语义见 `arena://docs/factor/api`。
 
 ## 提交前检查
 
-- 两阶段都分别满足完整 `FactorQuery` 契约；
-- 股票池使用全市场规范，或两阶段都定义并过滤同一 `stock_pool_member` 且没有其它成员条件别名；
+- `codes_query` 独立有效，`dataset_query` 在托管节点注入后满足完整 `FactorQuery` 契约；
+- 股票池使用全市场规范，或仅由 `codes_query` 定义并过滤受支持的 `stock_pool_member`；
+- `dataset_query` 源码不重复声明托管节点；两种股票池模式都可按需引用 `stock_pool_member`；
 - 第二阶段仍包含需要逐日生效的其它状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
 - 两阶段都已嵌套单次使用的中间节点，没有输出与分析无关的临时列；

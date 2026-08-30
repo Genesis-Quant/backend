@@ -95,12 +95,15 @@ Attempt 一旦成功绑定调度实例，才有 `workflow_instance_id` 和 Task 
 - `get_project` / `get_version`：读取页面当前展示的参数、状态与结果绑定。
 - `get_workspace_status`：读取 Workspace 当前 Attempt，适合轮询。
 - `list_workflow_attempts`：分页读取同一 Workspace 的当前和历史 Attempt。
-- `get_workflow_attempt`：读取一次提交的完整 `payload.input_json`、输出请求、错误和事件。
+- `get_workflow_attempt`：读取一次提交后由 Backend 规范化并保存的完整 `payload.input_json`、输出请求、
+  错误和事件。
 - `get_workflow_details` / `list_workflow_tasks`：读取某个已产生的 Workflow Instance。
 
 以前每次提交的参数必须从 Attempt 读取。当前未保存 Version 的 parameters 会被下一次执行更新，而
-历史 Attempt 的 `payload.input_json` 保持不变。Query 的业务请求位于
-`payload.input_json.dataset_query`；Factor/Backtest 的 `input_json` 是完整 parameters。
+历史 Attempt 的 `payload.input_json` 保持不变。它保存双源码和规范化后的业务字段，不是 Worker
+读取的共享目录 `input.json`；后者会在运行前重新编译生成。Query 的业务请求位于
+`payload.input_json.dataset_query`；Factor/Backtest 的 `input_json` 是完整应用参数。两种输入的详细
+边界见 `arena://docs/overview/workflows` 和 `arena://docs/overview/dsl`。
 
 ## 结果与历史的保留边界
 

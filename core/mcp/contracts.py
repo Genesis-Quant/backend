@@ -2,13 +2,10 @@
 
 from runtime import FactorAnalysisParameters
 
-
-FACTOR_STOCK_POOL_FACTORS = frozenset({
-    "weight_000016SH",
-    "weight_000300SH",
-    "weight_000905SH",
-    "weight_000852SH",
-})
+from core.utils.dsl_source import (
+    FACTOR_ALL_MARKET_STOCK_POOL_NODE,
+    FACTOR_STOCK_POOL_FACTORS,
+)
 
 
 def validate_mcp_factor_parameters(
@@ -21,10 +18,21 @@ def validate_mcp_factor_parameters(
                 "MCP 因子分析使用 codes_query=null 时代表全市场，"
                 "dataset_query.codes 必须为空列表"
             )
-        if "stock_pool_member" in parameters.dataset_query.derivatives:
+        member = parameters.dataset_query.derivatives.get(
+            "stock_pool_member"
+        )
+        if (
+            member is None
+            or member.model_dump(mode="json")
+            != FACTOR_ALL_MARKET_STOCK_POOL_NODE
+        ):
             raise ValueError(
-                "全市场因子分析不能定义 "
+                "全市场因子分析的运行参数必须包含 Backend 托管的恒真 "
                 "dataset_query.derivatives.stock_pool_member"
+            )
+        if "stock_pool_member" in parameters.dataset_query.filters:
+            raise ValueError(
+                "全市场因子分析不能使用 stock_pool_member 过滤数据"
             )
         return parameters
 

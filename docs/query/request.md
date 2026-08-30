@@ -1,13 +1,13 @@
 # Query 请求
 
-Query 接收一份 `FactorQuery`，读取基础因子、计算派生列、执行逐行过滤，并生成
+Query 接收一份支持 JSON/Python 双源码的 `FactorQuery`，读取基础因子、计算派生列、执行逐行过滤，并生成
 `query.parquet`。Query 是单阶段接口；`run_query` 没有 `codes_query`。
 
 ## 调用
 
 ```text
 create_project(application="query", title=...)
-run_query(project_id=result.id, request=<FactorQuery>)
+run_query(project_id=result.id, request=<QueryApplicationRequest>)
 get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="query", workflow_instance_id=...)
 ```
@@ -27,12 +27,16 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 | `factors` | string[] | 否 | 需要直接输出的基础因子名；仅作为 DSL 输入的字段不要列入 |
 | `derivatives` | object | 否 | `{输出列名: DSL节点}`；单次使用的中间节点应嵌套，不要提升为输出列 |
 | `filters` | string[] | 否 | 顶层 BOOL derivative 名称；所有过滤条件按 AND 合并 |
+| `dsl_source` | object | 否 | 同时保存 JSON/Python 源码；`language` 指定本次执行版本 |
 
 `factors` 与 `derivatives` 至少有一项。列表不允许空字符串或重复项。`time`、`code` 是保留输出列，
 不能出现在 `factors` 或作为 derivative 名。`factors` 与 derivative 名不能重叠。
 
 `lookback` 使用 Pydantic TimeDelta 格式，例如 `P30D`、`P1Y`、`PT0S`。Runtime 会从
 `start_date - lookback` 开始加载数据，但最终输出只保留 `start_date..end_date`。
+
+传入 `dsl_source` 时，活动源码是 DSL 执行依据；双源码保存、Python 的三个必需结果变量和未选中
+源码的处理规则见 `arena://docs/overview/dsl` 的“JSON 与 Python 双源码”。
 
 ## 执行顺序
 

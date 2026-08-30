@@ -6,6 +6,75 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 本页只定义组合规则。当前有哪些算符、每个算符的准确字段与参数，必须通过
 `list_dsl_operators` 和 `describe_dsl_operator` 获取。
 
+## JSON 与 Python 双源码
+
+MCP 的 Query、Factor 和 Backtest 请求都接受带 `dsl_source` 的 `FactorQuery`：
+
+```json
+{
+  "start_date": "2020-01-01",
+  "end_date": "2020-12-31",
+  "lookback": "P0D",
+  "codes": [],
+  "factors": ["close"],
+  "derivatives": {},
+  "filters": [],
+  "dsl_source": {
+    "language": "json",
+    "json_source": "{\n  \"factors\": [\"close\"],\n  \"derivatives\": {},\n  \"filters\": []\n}",
+    "python_source": "FACTORS = [\"close\"]\nDERIVATIVES = []\nFILTERS = []"
+  }
+}
+```
+
+- `language` 只能是 `json` 或 `python`，指定本次提交实际编译的源码；
+- `json_source` 与 `python_source` 始终分别保存，切换语言不会用一种源码覆盖另一种；
+- 只有当前 `language` 对应源码的编译结果会生成本次 Runtime 参数；未选中的源码可以是尚未完成的
+  草稿，不会参与本次计算；
+- 只修改源码字符串但不修改 `language`，不会改变另一份源码，也不会让另一份源码参与本次执行；
+- 活动源码编译结果才是 `factors`、`derivatives`、`filters` 的执行依据，不能依赖与其冲突的旧快照；
+- 省略 `dsl_source` 时继续接受原始 `factors`、`derivatives`、`filters`，保存时 Backend 会生成两份
+  可编辑源码；新调用优先显式传入双源码以保留编辑意图。
+
+JSON 源码必须是且只能是包含 `factors`、`derivatives`、`filters` 的对象。Python 源码在受限环境中
+运行，不允许 import、文件、网络或任意内置函数，并且最终必须定义：
+
+```python
+FACTORS = []       # list[str]
+DERIVATIVES = []   # list[OP]
+FILTERS = []       # list[OP]
+```
+
+使用 `DIRECT`、`TS`、`CS` 创建有名称的 OP 后，将需要输出的算符放入 `DERIVATIVES`，将最终 BOOL
+过滤算符放入 `FILTERS`。允许用受限辅助函数、`range`、`zip` 和列表推导减少重复声明；执行结果仍会
+转换为同一套 JSON DSL 并通过 `FactorQuery` 校验。精确请求外形以对应 `arena://schemas/*` 为准。
+
+Factor 分析还会把收益标签和股票池作为托管状态合并到活动源码结果中，不能简单把保存的
+`dataset_query` 快照当成纯编辑源码；具体边界见 `arena://docs/factor/request`。
+
+## 从 MCP 源码到 Runtime JSON
+
+源码保存格式和 Runtime 执行格式是两个不同层次。一次 MCP 运行按以下顺序生成最终请求：
+
+1. `run_query` 直接接收一份完整 Query 请求；`run_factor_analysis` 和 `run_backtest` 接收完整应用
+   参数，其中每个 `codes_query` / `dataset_query` 都可以带自己的 `dsl_source`；
+2. Backend 用对应的 Application Request Schema 校验请求。存在 `dsl_source` 时，只取 `language`
+   指定的活动源码：JSON 源码解析为对象，Python 源码在受限环境中执行声明，两者都生成相同结构的
+   `factors`、`derivatives`、`filters`，再通过 Runtime `FactorQuery` 校验；
+3. Backend 的 `stored_payload` 将规范化后的业务请求写入 `WorkflowAttempt.input_json`。其中保留
+   `language`、`json_source` 和 `python_source`，也保留提交时活动源码对应的字段快照，用于回显和
+   历史追踪；它不是 Worker 最终读取的文件；
+4. 准备 Workspace 时，Backend 从该 Attempt 再次编译活动源码。Factor 会在此时合并保存请求中的
+   收益标签、所选股票池对应的 `stock_pool_member`、股票池 filter 及分析必需列；
+5. Backend 生成不含任何 `dsl_source` 的 Runtime 参数，并写入共享目录
+   `<shared-dir>/<application>/<workspace_key>/input.json`；
+6. DolphinScheduler Worker 只通过 `--input-file` 读取该文件。Runtime 再按 Query、Factor 或 Backtest
+   Schema 严格校验纯 JSON，然后把 DSL 定义交给 DolphinDB 计算。Runtime 不读取双源码，也不会执行
+   Python DSL。
+
+因此，`WorkflowAttempt.input_json` 是可回显、可追踪的双源码业务请求；共享目录中的 `input.json`
+才是当前 Attempt 的无源码执行载荷。历史参数应从 Attempt 读取，不能把共享文件当作历史记录。
+
 ## 获取全部可用基础字段
 
 读取 Resource `arena://dsl/catalog`，返回对象的 `factors` 是当前 Runtime 允许放入
@@ -71,6 +140,11 @@ TS/CS 的 `on` 可为：
 
 使用 `on` 时，只有条件为 true 的行参与该算符计算；false/NULL 行的算符结果为 NULL。`on` 不会
 从最终结果删除行，删行必须使用 Query 顶层 `filters`。
+
+通常，字符串形式的 BOOL 名称必须在当前 `derivatives` 中定义。唯一的托管外部依赖是 Factor 的
+`dataset_query.stock_pool_member`：分析 DSL 可以直接用字符串 `"stock_pool_member"` 作为 `on` 或
+其它 BOOL 引用。全市场时 Backend 注入恒真定义但不加入 filter；指数动态池时注入所选指数的定义和
+filter。普通 Query 和 Backtest 不提供这个外部节点。完整契约见 `arena://docs/factor/request`。
 
 ## 操作数
 

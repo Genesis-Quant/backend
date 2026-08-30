@@ -35,10 +35,14 @@ delete_project("factor", project_id)
 run_factor_analysis(project_id, parameters)
 ```
 
-`parameters` 必须直接是完整 `FactorAnalysisParameters`，不能只提交局部 override。机器可读基础结构
-以 `arena://schemas/factor` 为准；MCP 支持全市场与指数动态池两种托管结构。全市场使用
-`codes_query=null` 和 `dataset_query.codes=[]`；指数池要求两阶段定义并过滤同一个
-`stock_pool_member`。固定结构、支持的股票池字段以及别名限制见 `arena://docs/factor/request`。
+`parameters` 必须直接是完整 Factor 请求对象，不能只提交局部 override。`codes_query` 和
+`dataset_query` 均支持 JSON/Python 双源码，活动版本由各自的 `dsl_source.language` 决定。机器可读
+基础结构以 `arena://schemas/factor` 为准；MCP 支持全市场与指数动态池两种托管结构。全市场使用
+`codes_query=null` 和 `dataset_query.codes=[]`；指数池只在 `codes_query` 定义并过滤
+`stock_pool_member`。Backend 会向 `dataset_query` 运行参数注入托管节点：全市场为恒真且不加入
+filter，指数池为同一指数节点并加入 filter。分析 DSL 在两种模式下都可以在 `on` 或其它 BOOL 引用
+位置使用该名称，无需也不应重复定义。固定结构、支持的股票池字段和示例见
+`arena://docs/factor/request`。
 
 服务端严格校验请求，返回 `workspace_id` 和可能暂为空的 `workflow_instance_id`。用
 `get_workspace_status(workspace_id)` 轮询当前 Attempt。

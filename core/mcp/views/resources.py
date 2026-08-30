@@ -3,9 +3,12 @@
 from typing import Any
 
 from mcp.server import MCPServer
-from runtime import BacktestParameters, FactorAnalysisParameters, FactorQuery
-
 from core.utils.dsl import DslCatalog, dsl_catalog
+from core.utils.dsl_source import (
+    BacktestApplicationRequest,
+    FactorAnalysisApplicationRequest,
+    QueryApplicationRequest,
+)
 
 from ..services import authenticated_document, document, runtime_schema
 
@@ -34,7 +37,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/dsl",
         title="Factor Query DSL",
-        description="基础字段及 Tushare 语义参考、派生节点、依赖、过滤器、时序边界和算符发现方法。",
+        description="JSON/Python 双源码保存、Runtime JSON 生成、派生节点、托管依赖、过滤器和算符发现方法。",
         mime_type="text/markdown",
     )
     def dsl_document() -> str:
@@ -79,7 +82,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/factor/request",
         title="Factor 请求构造",
-        description="两阶段查询、因子列、收益列、预处理和提交前检查。",
+        description="两阶段查询、托管 stock_pool_member、因子列、收益列、预处理和提交前检查。",
         mime_type="text/markdown",
     )
     def factor_request_document() -> str:
@@ -177,30 +180,30 @@ def register_resources(server: MCPServer) -> None:
 
     @server.resource(
         "arena://schemas/query",
-        title="FactorQuery JSON Schema",
-        description="Runtime 当前实际使用的 FactorQuery JSON Schema。",
+        title="Query 请求 Schema",
+        description="支持 JSON 或 Python DSL 源码的数据查询请求 Schema。",
         mime_type="application/json",
     )
     def query_schema() -> dict[str, Any]:
-        return runtime_schema(FactorQuery)
+        return runtime_schema(QueryApplicationRequest)
 
     @server.resource(
         "arena://schemas/factor",
-        title="FactorAnalysisParameters JSON Schema",
-        description="Runtime 当前实际使用的因子分析参数 JSON Schema。",
+        title="Factor 请求 Schema",
+        description="支持 JSON 或 Python DSL 源码的因子分析请求 Schema。",
         mime_type="application/json",
     )
     def factor_schema() -> dict[str, Any]:
-        return runtime_schema(FactorAnalysisParameters)
+        return runtime_schema(FactorAnalysisApplicationRequest)
 
     @server.resource(
         "arena://schemas/backtest",
-        title="BacktestParameters JSON Schema",
-        description="Runtime 当前实际使用的策略回测参数 JSON Schema。",
+        title="Backtest 请求 Schema",
+        description="支持 JSON 或 Python DSL 源码的策略回测请求 Schema。",
         mime_type="application/json",
     )
     def backtest_schema() -> dict[str, Any]:
-        return runtime_schema(BacktestParameters)
+        return runtime_schema(BacktestApplicationRequest)
 
     @server.resource(
         "arena://dsl/catalog",

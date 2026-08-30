@@ -21,7 +21,7 @@ DolphinDB 插件原始定义可直接查阅
 
 ```text
 create_project(application="backtest", title=...)
-run_backtest(project_id=result.id, parameters=<BacktestParameters>)
+run_backtest(project_id=result.id, parameters=<完整 Backtest 请求>)
 get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="backtest", workflow_instance_id=...)
 save_version(application="backtest", project_id=..., workflow_instance_id=..., remark=...)
@@ -39,8 +39,8 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 | --- | --- | --- | --- | --- |
 | `config` | object | 否 | 见下文 | 插件资金、费用和可开放选项 |
 | `params` | object | 否 | `{}` | 用户回调参数，通过 `getParams()` 或 `getParam(key)` 读取 |
-| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询 |
-| `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询 |
+| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询，支持双源码 |
+| `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询，支持双源码 |
 | `adj` | `hfq`、`qfq` 或 null | 否 | `null` | 合成快照价格复权方式 |
 | `annual_trading_days` | integer | 否 | `250` | 年化指标使用的交易日数，至少 1 |
 | `risk_free_rate` | finite number | 否 | `0.04` | Sharpe 年化无风险收益率 |
@@ -49,11 +49,15 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
 
+`codes_query` 与 `dataset_query` 均可通过 `dsl_source` 同时保存 JSON/Python 源码，`language` 决定
+本次编译版本。活动源码、未选中草稿和 Python 必需结果变量的规则见
+`arena://docs/overview/dsl` 的“JSON 与 Python 双源码”。
+
 `adj` **不会复权 `dataset_query` 的 factors/derivatives**。它只改变用于插件撮合的 message 及由其
 产生的委托、成交和持仓价格。凡是把 DSL 中任意原始价格、价格差或价格型派生值与 message/持仓
 价格比较或相除，都必须先按运行契约换算到同一价格尺度。
 
-`run_backtest` 的 `parameters` 必须直接传完整 `BacktestParameters` 对象。精确机器可读结构以
+`run_backtest` 的 `parameters` 必须直接传完整 Backtest 请求对象。精确机器可读结构以
 `arena://schemas/backtest` 为准；本页不提供可能被误当成业务实现的完整请求。
 
 ## 代码范围与两阶段查询
@@ -227,7 +231,7 @@ def finalize(mutable context)
 - 工作流成功时 Runtime 已写出一份 `results.parquet`，其中每行对应一个 case，前端直接用 DuckDB
   生成报告，不再由后端逐项下载普通回测结果或二次计算指标。
 
-敏感性研究的 `parameter_sets` 必须是完整 `BacktestParameters` 数组。先用 `get_version` 读取
+敏感性研究的 `parameter_sets` 必须是完整 Backtest 请求对象数组。先用 `get_version` 读取
 基准参数，对每个网格点深拷贝并修改相应用户参数，再提交；不能只发送
 `{"params": {"KEY": value}}` 这样的局部对象。精确工具字段见 `arena://docs/backtest/api`。
 

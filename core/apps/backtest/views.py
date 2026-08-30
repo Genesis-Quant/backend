@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from runtime import BacktestParameters, OptimizationAlgorithm
+from runtime import OptimizationAlgorithm
 from runtime.config import INDEX_CODES
 from sqlalchemy.orm import Session
 
@@ -66,6 +66,7 @@ from core.apps.workflows.services import current_workflow_instance
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
 from core.utils.dsl import dsl_catalog
+from core.utils.dsl_source import BacktestApplicationRequest
 from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
@@ -141,9 +142,14 @@ def delete_project(project_id: int, user: Annotated[User, Depends(get_current_us
 
 
 @router.post("/projects/{project_id}/runs", response_model=WorkflowSubmitted, status_code=status.HTTP_202_ACCEPTED)
-def run_project(project_id: int, request: BacktestParameters, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
+def run_project(project_id: int, request: BacktestApplicationRequest, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> WorkflowSubmitted:
     try:
-        run = submit_project_backtest(session, user.id, project_id, request.model_dump(mode="json"))
+        run = submit_project_backtest(
+            session,
+            user.id,
+            project_id,
+            request.stored_payload(),
+        )
         workflow = current_workflow_instance(session, run.id)
         if workflow is None:
             raise DolphinSchedulerError("DolphinScheduler 未创建 workflow instance")
@@ -178,7 +184,7 @@ def version(project_id: int, version_number: int, user: Annotated[User, Depends(
 
 
 @router.post("/projects/{project_id}/batch-runs", response_model=list[BatchRunAccepted], status_code=status.HTTP_202_ACCEPTED)
-def execute_batch(project_id: int, request: BatchRunRequest[BacktestParameters], user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BatchRunAccepted]:
+def execute_batch(project_id: int, request: BatchRunRequest[BacktestApplicationRequest], user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> list[BatchRunAccepted]:
     try:
         return [BatchRunAccepted.model_validate(item) for item in submit_backtest_batch(session, user.id, project_id, request.items)]
     except (FileNotFoundError, ValueError) as error:

@@ -38,10 +38,11 @@ delete_project(application="query", project_id=1)
 run_query(project_id, request)
 ```
 
-`request` 必须直接是完整 `FactorQuery`，不能再包一层 `dataset_query`。机器可读结构以
+`request` 必须直接是完整 Query 请求对象，不能再包一层 `dataset_query`。它可以通过 `dsl_source`
+同时携带 JSON/Python 源码，`language` 选择本次执行版本；机器可读结构以
 `arena://schemas/query` 为准。
 
-服务端先用 Runtime `FactorQuery` 严格校验，再创建当前 Attempt。返回：
+服务端先编译活动源码，再用 Runtime `FactorQuery` 严格校验生成结果，然后创建当前 Attempt。返回：
 
 ```json
 {"workspace_id": 73, "workflow_instance_id": 163}
@@ -66,8 +67,9 @@ attempt = get_workflow_attempt(history.items[0].attempt_id)
 request = attempt.payload.input_json.dataset_query
 ```
 
-Query 工作流内部输入比 MCP `run_query.request` 多一层 `dataset_query`，这是工作流载荷，不是调用
-`run_query` 时应提交的外形。
+这里读到的是 Backend 规范化并保存的双源码业务请求，不保证与 MCP 原始请求逐字相同。Query
+Attempt 的业务载荷比 MCP `run_query.request` 多一层 `dataset_query`；它也不是共享目录中已经移除
+`dsl_source` 的 Runtime `input.json`。调用 `run_query` 时仍不应额外包裹 `dataset_query`。
 
 ## 输出
 

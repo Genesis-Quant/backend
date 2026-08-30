@@ -4,9 +4,8 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from runtime.apps.query.schema import FactorQuery
-
 from core.apps.schemas import WorkflowReference, WorkflowSummary
+from core.utils.dsl_source import FactorQueryRequest
 from core.utils.validation import normalize_text
 
 type QueryOutput = Literal["source_data", "computed_data", "filtered_data", "data"]
@@ -29,7 +28,7 @@ class QueryProjectCreate(BaseModel):
 class QueryProjectItem(BaseModel):
     id: int
     title: str
-    current: WorkflowSummary[FactorQuery] | None
+    current: WorkflowSummary[FactorQueryRequest] | None
     created_at: datetime
     updated_at: datetime
 

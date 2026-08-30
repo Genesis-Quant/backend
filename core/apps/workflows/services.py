@@ -62,6 +62,7 @@ from core.utils.results import (
     workflow_output_validation_state,
 )
 from core.utils.time import utc_now
+from core.utils.dsl_source import compile_application_payload
 
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -138,7 +139,10 @@ def prepare_workspace(
 
     temporary.write_text(
         json.dumps(
-            attempt.input_json,
+            compile_application_payload(
+                workspace.application,
+                attempt.input_json,
+            ),
             ensure_ascii=False,
             indent=2,
         ),

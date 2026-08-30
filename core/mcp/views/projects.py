@@ -4,7 +4,6 @@ from typing import Annotated, Any, Literal, get_args
 
 from mcp.server import MCPServer
 from pydantic import Field
-from runtime import BacktestParameters, FactorAnalysisParameters, FactorQuery
 from runtime.apps.backtest.api import compile_backtest_scripts
 
 from core.apps.backtest.schemas import (
@@ -58,6 +57,11 @@ from core.apps.query.services import create_query_project, delete_query_project,
 from core.apps.schemas import ProjectPage, SortOrder, WorkflowSubmitted
 from core.apps.users.services import require_mcp_delete_permission
 from core.database.session import database_session_factory
+from core.utils.dsl_source import (
+    BacktestApplicationRequest,
+    FactorAnalysisApplicationRequest,
+    QueryApplicationRequest,
+)
 
 from ..auth import current_user
 from ..contracts import validate_mcp_factor_parameters
@@ -202,14 +206,25 @@ def register_project_tools(server: MCPServer) -> None:
         project_id: Annotated[int, Field(gt=0, description="已存在的 Query 项目 ID。")],
         request: Annotated[
             dict[str, Any],
-            Field(description="FactorQuery 对象；必填 start_date/end_date，lookback/codes/factors/derivatives/filters 有默认值，精确契约见 Query Schema。"),
+            Field(
+                description=(
+                    "完整 Query 请求；dsl_source 同时保存 JSON 与 Python 源码，"
+                    "language 指定本次执行版本。Backend 将活动源码编译为无源码 "
+                    "Runtime JSON；精确契约见 Query Schema。"
+                )
+            ),
         ],
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Query workflow."""
-        validated = FactorQuery.model_validate(request)
+        validated = QueryApplicationRequest.model_validate(request)
         with database_session_factory()() as session:
             user = current_user(session)
-            workspace = submit_project_query(session, user.id, project_id, {"dataset_query": validated.model_dump(mode="json")})
+            workspace = submit_project_query(
+                session,
+                user.id,
+                project_id,
+                validated.stored_payload(),
+            )
             return McpResult(result=submitted_workspace(session, workspace.id))
 
     @server.tool(title="执行因子分析", annotations=WRITE)
@@ -219,20 +234,27 @@ def register_project_tools(server: MCPServer) -> None:
             dict[str, Any],
             Field(
                 description=(
-                    "完整因子分析对象；全市场使用 codes_query=null、"
+                    "完整 Factor 请求；codes_query/dataset_query 均支持双源码，"
+                    "各自 language 指定活动版本。全市场使用 codes_query=null、"
                     "dataset_query.codes=[] 且不定义 stock_pool_member；指数池则要求"
-                    "两阶段使用同一受支持指数权重定义并过滤 stock_pool_member。"
+                    "仅在 codes_query 使用受支持指数权重定义并过滤 stock_pool_member。"
+                    "Backend 会向 dataset_query 运行参数注入对应 BOOL 节点；全市场为恒真且不过滤，"
+                    "分析 DSL 在两种模式下均可直接引用该名称。"
                 )
             ),
         ],
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Factor workflow."""
-        validated = validate_mcp_factor_parameters(
-            FactorAnalysisParameters.model_validate(parameters)
-        )
+        prepared = FactorAnalysisApplicationRequest.model_validate(parameters)
+        validate_mcp_factor_parameters(prepared.runtime_parameters())
         with database_session_factory()() as session:
             user = current_user(session)
-            workspace = submit_project_analysis(session, user.id, project_id, validated.model_dump(mode="json"))
+            workspace = submit_project_analysis(
+                session,
+                user.id,
+                project_id,
+                prepared.stored_payload(),
+            )
             return McpResult(result=submitted_workspace(session, workspace.id))
 
     @server.tool(title="执行策略回测", annotations=WRITE)
@@ -240,18 +262,30 @@ def register_project_tools(server: MCPServer) -> None:
         project_id: Annotated[int, Field(gt=0, description="已存在的 Backtest 项目 ID。")],
         parameters: Annotated[
             dict[str, Any],
-            Field(description="回测对象；必填 dataset_query/callbacks，config/params/codes_query/adj/年化参数/utils 有默认值，精确契约见 Backtest Schema。"),
+            Field(
+                description=(
+                    "完整 Backtest 请求；codes_query/dataset_query 均支持双源码，"
+                    "各自 language 指定活动版本。必填 dataset_query/callbacks，"
+                    "其它字段及默认值见 Backtest Schema。"
+                )
+            ),
         ],
     ) -> McpResult[WorkflowSubmitted]:
         """Compile scripts in DolphinDB and submit one Backtest workflow."""
-        validated = BacktestParameters.model_validate(parameters)
+        prepared = BacktestApplicationRequest.model_validate(parameters)
+        validated = prepared.runtime_parameters()
         with database_session_factory()() as session:
             user = current_user(session)
             get_backtest_project(session, user.id, project_id)
         compile_backtest_scripts(validated)
         with database_session_factory()() as session:
             user = current_user(session)
-            workspace = submit_project_backtest(session, user.id, project_id, validated.model_dump(mode="json"))
+            workspace = submit_project_backtest(
+                session,
+                user.id,
+                project_id,
+                prepared.stored_payload(),
+            )
             return McpResult(result=submitted_workspace(session, workspace.id))
 
     @server.tool(title="列出研究版本", annotations=READ_ONLY)

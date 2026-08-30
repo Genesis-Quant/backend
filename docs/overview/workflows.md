@@ -64,13 +64,24 @@ get_workflow_attempt(attempt_id)
 ```
 
 历史按创建时间倒序，`page_size` 为 1 到 50。摘要包含 `attempt_id`、`is_current`、状态、Instance ID
-和时间；详情包含本次提交的 `payload.input_json`、requested outputs、错误、状态历史和生命周期事件。
+和时间；详情包含本次提交后由 Backend 规范化并保存的 `payload.input_json`、requested outputs、
+错误、状态历史和生命周期事件。
 `include_tasks=false` 时不会为分页中的每条 Attempt 请求 DolphinScheduler；需要批量读取
 Task 摘要时才设为 `true`。诊断某一次运行时应优先使用 `list_workflow_tasks`。
 
 读取以前提交参数时必须读 Attempt：当前项目或未保存版本的 parameters 会被下一次运行更新，历史
-Attempt 的 `payload.input_json` 不会。Query 的原始请求位于
-`payload.input_json.dataset_query`；Factor/Backtest 的 `input_json` 是完整 parameters。
+Attempt 的 `payload.input_json` 不会。它是 Backend `stored_payload` 生成的不可变业务请求，可能包含
+自动生成的双源码和规范化字段，因此不是 MCP 原始请求的逐字副本。Query 的业务请求位于
+`payload.input_json.dataset_query`；Factor/Backtest 的 `input_json` 是完整应用参数。
+
+不要把数据库字段 `WorkflowAttempt.input_json` 与共享目录文件 `input.json` 混为一谈：
+
+| 对象 | 内容 | 用途与保留边界 |
+| --- | --- | --- |
+| `WorkflowAttempt.input_json` | 双源码、活动 `language` 及规范化业务字段 | 每个 Attempt 独立保存，用于回显、审计和重新构造执行参数 |
+| `<shared-dir>/<application>/<workspace_key>/input.json` | 提交前重新编译并移除 `dsl_source` 的 Runtime 纯 JSON | Worker 通过 `--input-file` 读取；同一 Workspace 再次运行时会重写，不是历史记录 |
+
+完整的 DSL 编译与托管节点合并顺序见 `arena://docs/overview/dsl` 的“从 MCP 源码到 Runtime JSON”。
 
 ## Workflow Instance 信息
 
@@ -248,8 +259,9 @@ Token 只能发送到当前 Arena API 的 origin。Arena 可以返回指向对�
   保存版本首次访问时惰性校验；
 - `list_workflow_outputs` 只对仍绑定当前业务结果且通过输出校验的成功 Instance 提供文件元数据。
 
-需要复现时，建议在结果仍可下载时一并归档：原始请求或 Attempt `payload.input_json`、Project/
-Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、Runtime/Backend 版本、基础
+需要复现时，建议在结果仍可下载时一并归档：另行保存的 MCP 原始请求或 Attempt 中的规范化
+`payload.input_json`、Project/Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、
+Runtime/Backend 版本、基础
 数据版本、费用与年化参数。不要只保存截图或摘要指标。
 
 ## 工作流控制

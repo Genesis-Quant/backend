@@ -45,6 +45,11 @@ from core.utils.results import (
     result_response,
 )
 from core.utils.time import utc_now
+from core.utils.dsl_source import (
+    FactorAnalysisApplicationRequest,
+    compile_application_payload,
+    upgrade_factor_dsl_sources,
+)
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
 PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
@@ -201,7 +206,12 @@ def delete_factor_project(session: Session, user_id: int, project_id: int) -> in
     return project_id
 
 
-def submit_project_analysis(session: Session, user_id: int, project_id: int, payload: dict[str, Any]) -> WorkflowWorkspace:
+def submit_project_analysis(
+    session: Session,
+    user_id: int,
+    project_id: int,
+    payload: dict[str, Any],
+) -> WorkflowWorkspace:
     project = session.scalar(select(FactorProject).where(FactorProject.id == project_id, FactorProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"因子项目不存在: {project_id}")
@@ -271,10 +281,9 @@ def save_factor_version(session: Session, project: FactorProject, version: Facto
     if version.saved:
         return version
     validated = validate_historical_factor_analysis_parameters(
-        attempt.input_json
+        compile_application_payload("factor", attempt.input_json)
     )
     parameters = validated.model_dump(mode="json")
-    attempt.input_json = parameters
     information = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "information_coefficient", OUTPUT_FILES)
     groups = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "group_returns", OUTPUT_FILES)
     metrics = factor_metrics(validated, information, groups)
@@ -285,7 +294,7 @@ def save_factor_version(session: Session, project: FactorProject, version: Facto
     version.saved = True
     version.is_current = False
     version.remark = remark
-    version.parameters = parameters
+    version.parameters = attempt.input_json
     version.metrics = metrics
     version.updated_at = utc_now()
     project.updated_at = utc_now()
@@ -449,7 +458,7 @@ def project_information(
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": workflow_attempt_state(attempt, workflow) if attempt is not None else "DRAFT",
         "error": (workflow.error if workflow is not None else None) or (attempt.error if attempt is not None else None),
-        "parameters": version.parameters,
+        "parameters": upgrade_factor_dsl_sources(version.parameters),
         "updated_at": max(attempt.updated_at, workflow.updated_at) if attempt is not None and workflow is not None else attempt.updated_at if attempt is not None else version.updated_at,
     }
     return {"id": project.id, "title": project.title, "latest_version": latest_version, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
@@ -461,7 +470,7 @@ def serialize_version(session: Session, version: FactorVersion) -> dict[str, Any
         attempt = current_workflow_attempt(session, version.workflow_workspace_id)
         workflow = None if attempt is None else session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_attempt_id == attempt.id))
         workflow_instance_id = workflow.workflow_instance_id if workflow is not None else None
-    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": version.parameters, "metrics": version.metrics, "created_at": version.created_at, "updated_at": version.updated_at}
+    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": upgrade_factor_dsl_sources(version.parameters), "metrics": version.metrics, "created_at": version.created_at, "updated_at": version.updated_at}
 
 
 def create_factor_draft(session: Session, project: FactorProject, user_id: int, parameters: dict[str, Any]) -> FactorVersion:
@@ -485,7 +494,7 @@ def validate_metric_dimensions(parameters: dict[str, Any], metrics: dict[str, An
             raise ValueError(f"metrics[{factor!r}] 收益列必须与 return_columns 一致: {sorted(returns)}")
 
 
-def submit_factor_batch(session: Session, user_id: int, project_id: int, items: Sequence[BatchRunItem[FactorAnalysisParameters]]) -> list[dict[str, Any]]:
+def submit_factor_batch(session: Session, user_id: int, project_id: int, items: Sequence[BatchRunItem[Any]]) -> list[dict[str, Any]]:
     project = session.scalar(select(FactorProject).where(FactorProject.id == project_id, FactorProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"因子项目不存在: {project_id}")
@@ -503,6 +512,14 @@ def submit_factor_batch(session: Session, user_id: int, project_id: int, items: 
         run = WorkflowWorkspace(user_id=user_id, application="factor")
         session.add(run)
         session.flush()
+        prepared = (
+            item.parameters
+            if isinstance(item.parameters, FactorAnalysisApplicationRequest)
+            else FactorAnalysisApplicationRequest.model_validate(
+                item.parameters.model_dump(mode="json")
+            )
+        )
+        stored_payload = prepared.stored_payload()
         version = FactorVersion(
             project_id=project.id,
             workflow_workspace_id=run.id,
@@ -510,13 +527,13 @@ def submit_factor_batch(session: Session, user_id: int, project_id: int, items: 
             saved=False,
             is_current=False,
             remark=item.remark,
-            parameters=item.parameters.model_dump(mode="json"),
+            parameters=stored_payload,
         )
         session.add(version)
         attempt = create_workflow_attempt(
             session,
             run,
-            item.parameters.model_dump(mode="json"),
+            stored_payload,
             PROJECT_OUTPUTS,
             submission_state=BATCH_PENDING_STATE,
         )

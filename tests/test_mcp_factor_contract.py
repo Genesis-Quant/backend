@@ -78,19 +78,16 @@ def test_mcp_factor_contract_rejects_membership_alias() -> None:
 
 
 def full_market_parameters() -> FactorAnalysisParameters:
-    parameters = factor_parameters()
-    dataset_query = parameters.dataset_query.model_copy(update={
-        "derivatives": {
-            name: node
-            for name, node in parameters.dataset_query.derivatives.items()
-            if name != "stock_pool_member"
-        },
-        "filters": [],
-    })
-    return parameters.model_copy(update={
-        "codes_query": None,
-        "dataset_query": dataset_query,
-    })
+    payload = factor_parameters().model_dump(mode="json")
+    payload["codes_query"] = None
+    payload["dataset_query"]["derivatives"]["stock_pool_member"] = {
+        "type": "DIRECT",
+        "op": "nullary.true",
+        "fields": {},
+        "params": {},
+    }
+    payload["dataset_query"]["filters"] = []
+    return FactorAnalysisParameters.model_validate(payload)
 
 
 def test_mcp_factor_contract_accepts_full_market() -> None:
@@ -107,11 +104,19 @@ def test_mcp_factor_contract_rejects_full_market_codes() -> None:
         validate_mcp_factor_parameters(parameters)
 
 
-def test_mcp_factor_contract_rejects_full_market_member_derivative() -> None:
+def test_mcp_factor_contract_rejects_non_true_full_market_member() -> None:
     parameters = full_market_parameters()
     parameters.dataset_query.derivatives["stock_pool_member"] = (
         factor_parameters().dataset_query.derivatives["stock_pool_member"]
     )
 
-    with pytest.raises(ValueError, match="不能定义"):
+    with pytest.raises(ValueError, match="必须包含 Backend 托管的恒真"):
+        validate_mcp_factor_parameters(parameters)
+
+
+def test_mcp_factor_contract_rejects_filtering_full_market_member() -> None:
+    parameters = full_market_parameters()
+    parameters.dataset_query.filters.append("stock_pool_member")
+
+    with pytest.raises(ValueError, match="不能使用 stock_pool_member 过滤"):
         validate_mcp_factor_parameters(parameters)

@@ -130,7 +130,12 @@ def submit_project_query(
         raise RuntimeError(f"项目已有 {state} 状态的查询工作流")
     executor = WorkflowExecutionService("query")
     if state == "DRAFT":
-        create_workflow_attempt(session, run, payload, PROJECT_OUTPUTS)
+        create_workflow_attempt(
+            session,
+            run,
+            payload,
+            PROJECT_OUTPUTS,
+        )
         executor.submit_workspace(session, run, create_directory=True)
     else:
         executor.resubmit_workspace(session, run, payload, PROJECT_OUTPUTS)

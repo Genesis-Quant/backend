@@ -1,0 +1,279 @@
+"""Tests for declarative Python Factor Query DSL compilation."""
+
+import ast
+import json
+
+import pytest
+
+from core.utils.dsl import PythonDslCompileError, compile_python_dsl
+
+
+def test_compile_python_dsl_builds_named_dependencies() -> None:
+    result = compile_python_dsl(
+        '''
+spread = DIRECT.sub("price_spread", left="close", right="open")
+spread_mean = TS.rolling_mean(
+    "price_spread_mean_20d",
+    col=spread,
+    window=20,
+)
+spread_rank = CS.rank_pct("price_spread_rank", col=spread_mean)
+selected = DIRECT.gt("selected", left=spread_rank, right=0.8)
+
+FACTORS: list[str] = ["open", "close"]
+DERIVATIVES: list = [spread_rank]
+FILTERS: list = [selected]
+'''
+    )
+
+    assert result["factors"] == ["open", "close"]
+    assert list(result["derivatives"]) == [
+        "price_spread",
+        "price_spread_mean_20d",
+        "price_spread_rank",
+        "selected",
+    ]
+    assert result["derivatives"]["price_spread_mean_20d"]["fields"] == {
+        "col": "price_spread"
+    }
+    assert result["derivatives"]["selected"]["fields"]["left"] == (
+        "price_spread_rank"
+    )
+    assert result["filters"] == ["selected"]
+    json.dumps(result, ensure_ascii=False)
+
+
+def test_compile_python_dsl_resolves_overloaded_aliases() -> None:
+    result = compile_python_dsl(
+        '''
+binary = DIRECT.add("binary", left="open", right="close")
+multiary = DIRECT.add("multiary", cols=["open", "high", "low", "close"])
+market_mean = CS.mean("market_mean", col="close")
+industry_mean = CS.mean("industry_mean", col="close", by="industry")
+FACTORS = ["close"]
+DERIVATIVES = [binary, multiary, market_mean, industry_mean]
+FILTERS = []
+'''
+    )
+
+    assert result["derivatives"]["binary"]["op"] == "binary.add"
+    assert result["derivatives"]["multiary"]["op"] == "multiary.add"
+    assert result["derivatives"]["market_mean"]["op"] == "unary.mean"
+    assert result["derivatives"]["industry_mean"]["op"] == "grouped.mean"
+
+
+def test_compile_python_dsl_keeps_unnamed_operations_nested() -> None:
+    result = compile_python_dsl(
+        '''
+valid = DIRECT.and_(
+    "valid",
+    cols=[
+        DIRECT.gt(left="close", right=0),
+        DIRECT.gt(left="open", right=0),
+    ],
+)
+FACTORS = []
+DERIVATIVES = [valid]
+FILTERS = [valid]
+'''
+    )
+
+    assert list(result["derivatives"]) == ["valid"]
+    assert result["derivatives"]["valid"]["fields"]["cols"][0]["op"] == (
+        "binary.gt"
+    )
+
+
+def test_compile_python_dsl_supports_bounded_python_composition() -> None:
+    result = compile_python_dsl(
+        '''
+periods = [1, 2, 3]
+lags = [
+    TS.shift(f"close_lag_{period:02d}", col="close", periods=period)
+    for period in periods
+]
+
+def positive(name, col):
+    return DIRECT.gt(name, left=col, right=0)
+
+selected = positive("selected", lags[0])
+FACTORS = ["close"]
+DERIVATIVES = [*lags]
+FILTERS = [selected]
+'''
+    )
+
+    assert list(result["derivatives"]) == [
+        "close_lag_01",
+        "close_lag_02",
+        "close_lag_03",
+        "selected",
+    ]
+    assert result["derivatives"]["selected"]["fields"]["left"] == (
+        "close_lag_01"
+    )
+
+
+def test_compile_python_dsl_bounds_range_comprehensions() -> None:
+    with pytest.raises(PythonDslCompileError, match="range 最多生成"):
+        compile_python_dsl(
+            '''
+lags = [
+    TS.shift(f"lag_{period}", col="close", periods=period)
+    for period in range(10001)
+]
+FACTORS = []
+DERIVATIVES = lags
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_bounds_total_comprehension_work() -> None:
+    source = "\n".join([
+        *[
+            f"unused_{batch} = [value for value in range(10000)]"
+            for batch in range(4)
+        ],
+        "FACTORS = ['close']",
+        "DERIVATIVES = []",
+        "FILTERS = []",
+    ])
+
+    with pytest.raises(PythonDslCompileError, match="累计生成"):
+        compile_python_dsl(source)
+
+
+def test_compile_python_dsl_bounds_starred_expansion() -> None:
+    with pytest.raises(PythonDslCompileError, match="累计生成"):
+        compile_python_dsl(
+            '''
+base = [value for value in range(10000)]
+expanded = [*base, *base, *base]
+FACTORS = ["close"]
+DERIVATIVES = []
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_accepts_large_generated_programs() -> None:
+    source = "\n".join([
+        "generated_columns = [" + ", ".join(["'close'"] * 6_000) + "]",
+        "FACTORS = ['close']",
+        "DERIVATIVES = []",
+        "FILTERS = []",
+    ])
+
+    assert sum(1 for _ in ast.walk(ast.parse(source))) > 5_000
+    assert compile_python_dsl(source) == {
+        "factors": ["close"],
+        "derivatives": {},
+        "filters": [],
+    }
+
+
+@pytest.mark.parametrize("missing", ["FACTORS", "DERIVATIVES", "FILTERS"])
+def test_compile_python_dsl_requires_all_result_variables(missing: str) -> None:
+    declarations = {
+        "FACTORS": "FACTORS = ['close']",
+        "DERIVATIVES": "DERIVATIVES = []",
+        "FILTERS": "FILTERS = []",
+    }
+    source = "\n".join(
+        declaration
+        for name, declaration in declarations.items()
+        if name != missing
+    )
+
+    with pytest.raises(PythonDslCompileError, match=missing):
+        compile_python_dsl(source)
+
+
+def test_compile_python_dsl_rejects_non_operation_results() -> None:
+    with pytest.raises(PythonDslCompileError, match=r"DERIVATIVES\[0\]"):
+        compile_python_dsl(
+            '''
+FACTORS = ["close"]
+DERIVATIVES = ["not-an-operation"]
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_non_boolean_filter() -> None:
+    with pytest.raises(PythonDslCompileError, match="必须返回 BOOL"):
+        compile_python_dsl(
+            '''
+mean = TS.rolling_mean("mean", col="close", window=20)
+FACTORS = ["close"]
+DERIVATIVES = []
+FILTERS = [mean]
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_duplicate_operation_names() -> None:
+    with pytest.raises(PythonDslCompileError, match="算符名称重复"):
+        compile_python_dsl(
+            '''
+left = DIRECT.sub("duplicate", left="close", right="open")
+right = DIRECT.add("duplicate", left="close", right="open")
+FACTORS = ["close"]
+DERIVATIVES = [left, right]
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_arbitrary_python_statements() -> None:
+    with pytest.raises(PythonDslCompileError, match="只允许变量声明、安全辅助函数"):
+        compile_python_dsl(
+            '''
+import os
+FACTORS = ["close"]
+DERIVATIVES = []
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_indirect_callable_parameters() -> None:
+    with pytest.raises(PythonDslCompileError, match="不允许调用函数 'operation'"):
+        compile_python_dsl(
+            '''
+def invoke(operation):
+    return operation(operation)
+
+FACTORS = []
+DERIVATIVES = [invoke(invoke)]
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_nested_comprehensions() -> None:
+    with pytest.raises(PythonDslCompileError, match="不支持嵌套推导式"):
+        compile_python_dsl(
+            '''
+lags = [
+    [TS.shift(f"lag_{left}_{right}", col="close", periods=right) for right in range(2)]
+    for left in range(2)
+]
+FACTORS = []
+DERIVATIVES = []
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_bounds_format_width() -> None:
+    with pytest.raises(PythonDslCompileError, match="宽度或精度过大"):
+        compile_python_dsl(
+            '''
+name = f"factor_{1:1000000000d}"
+FACTORS = [name]
+DERIVATIVES = []
+FILTERS = []
+'''
+        )

@@ -5,8 +5,6 @@ from typing import Annotated, Any, Literal
 from mcp.server import MCPServer
 from pydantic import Field
 from runtime import (
-    BacktestParameters,
-    FactorAnalysisParameters,
     OptimizationAlgorithm,
     OptimizationSettings,
 )
@@ -41,6 +39,10 @@ from core.apps.factor.services import submit_factor_batch
 from core.apps.schemas import BatchRunAccepted, BatchRunRequest
 from core.apps.users.services import require_mcp_delete_permission
 from core.database.session import database_session_factory
+from core.utils.dsl_source import (
+    BacktestApplicationRequest,
+    FactorAnalysisApplicationRequest,
+)
 
 from ..auth import current_user
 from ..contracts import validate_mcp_factor_parameters
@@ -60,18 +62,20 @@ def register_batch_tools(server: MCPServer) -> None:
                 max_length=100,
                 description=(
                     "每项包含唯一 client_id、可选 remark 和完整 parameters；"
-                    "股票池可使用全市场规范，或在两阶段使用同一 "
-                    "stock_pool_member 指数条件。"
+                    "codes_query/dataset_query 均支持双源码，各自 language 指定活动版本；"
+                    "股票池可使用全市场规范，或只在 codes_query 定义并过滤 "
+                    "stock_pool_member 指数条件；dataset_query 运行时自动注入恒真或"
+                    "对应指数的同名节点。"
                 ),
             ),
         ],
     ) -> McpResult[list[BatchRunAccepted]]:
         """Submit Factor requests; successful results receive monotonic versions only when saved."""
-        request = BatchRunRequest[FactorAnalysisParameters].model_validate({
+        request = BatchRunRequest[FactorAnalysisApplicationRequest].model_validate({
             "items": [item.model_dump() for item in items],
         })
         for item in request.items:
-            validate_mcp_factor_parameters(item.parameters)
+            validate_mcp_factor_parameters(item.parameters.runtime_parameters())
         with database_session_factory()() as session:
             user = current_user(session)
             result = submit_factor_batch(session, user.id, project_id, request.items)
@@ -85,19 +89,22 @@ def register_batch_tools(server: MCPServer) -> None:
             Field(
                 min_length=1,
                 max_length=100,
-                description="每项必须包含唯一 client_id、可选 remark 和完整 BacktestParameters parameters。",
+                description=(
+                    "每项必须包含唯一 client_id、可选 remark 和完整 Backtest 请求；"
+                    "codes_query/dataset_query 均支持双源码，各自 language 指定活动版本。"
+                ),
             ),
         ],
     ) -> McpResult[list[BatchRunAccepted]]:
         """Submit Backtests; successful results receive monotonic versions only when saved."""
-        request = BatchRunRequest[BacktestParameters].model_validate({
+        request = BatchRunRequest[BacktestApplicationRequest].model_validate({
             "items": [item.model_dump() for item in items],
         })
         with database_session_factory()() as session:
             user = current_user(session)
             get_backtest_project(session, user.id, project_id)
         for item in request.items:
-            compile_backtest_scripts(item.parameters)
+            compile_backtest_scripts(item.parameters.runtime_parameters())
         with database_session_factory()() as session:
             user = current_user(session)
             result = submit_backtest_batch(session, user.id, project_id, request.items)
@@ -270,19 +277,32 @@ def register_batch_tools(server: MCPServer) -> None:
             Field(
                 min_length=1,
                 max_length=100,
-                description="1 到 100 份完整 BacktestParameters；不是局部 override。",
+                description=(
+                    "1 到 100 份完整 Backtest 请求；不是局部 override。"
+                    "每份请求中的 Query 均支持双源码。"
+                ),
             ),
         ],
         description: Annotated[str, Field(max_length=512, description="研究备注。")] = "",
     ) -> McpResult[BatchResearchResponse]:
         """Create one sensitivity workflow that reuses data for all parameter sets."""
-        validated_parameters = [BacktestParameters.model_validate(parameters) for parameters in parameter_sets]
+        prepared_parameters = [
+            BacktestApplicationRequest.model_validate(parameters)
+            for parameters in parameter_sets
+        ]
+        validated_parameters = [
+            parameters.runtime_parameters()
+            for parameters in prepared_parameters
+        ]
         request = BatchResearchCreate.model_validate({
             "analysis_type": BatchAnalysisType(analysis_type),
             "project_id": project_id,
             "version": version,
             "description": description,
-            "items": [{"parameters": parameters.model_dump(mode="json")} for parameters in validated_parameters],
+            "items": [
+                {"parameters": parameters.stored_payload()}
+                for parameters in prepared_parameters
+            ],
         })
         with database_session_factory()() as session:
             user = current_user(session)
