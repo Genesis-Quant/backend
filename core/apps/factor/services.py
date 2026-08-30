@@ -52,7 +52,7 @@ from core.utils.dsl_source import (
 )
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
-PROJECT_OUTPUTS = ["information_coefficient", "group_returns", "diagnostics"]
+PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
 
 
 def factor_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:

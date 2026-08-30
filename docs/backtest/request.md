@@ -78,6 +78,11 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 保留失效代码以继续观察或退出时，不能用第二阶段 `filters` 删除这些行；完整时点契约见
 `arena://docs/backtest/dynamic-pool`。
 
+Backend 在生成调度器输入 JSON 时统一补全
+`dataset_query.derivatives.stock_pool_member`：动态股票池复用 `codes_query` 中参与过滤的同名节点，
+静态股票池使用恒真节点。该节点只作为策略可读取的逐日状态列，不会自动加入第二阶段 `filters`；
+保存的编辑器源码保持不变。Runtime 只接收补全后的请求，不再负责猜测或注入该业务字段。
+
 ## `dataset_query`
 
 Runtime 自动补充合成快照需要的基础因子：

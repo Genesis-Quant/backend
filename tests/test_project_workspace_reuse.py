@@ -34,7 +34,6 @@ from core.apps.factor.services import (
 from core.apps.factor.services import (
     create_factor_project,
     create_factor_version,
-    factor_metrics,
     return_growth,
     submit_project_analysis,
 )
@@ -477,47 +476,6 @@ def test_factor_maximum_drawdown_includes_initial_wealth() -> None:
     assert maximum_drawdown == pytest.approx(0.5)
 
 
-def test_factor_metrics_expose_return_compounding_contract() -> None:
-    parameters = {
-        "codes_query": None,
-        "dataset_query": {
-            "start_date": "2024-01-01",
-            "end_date": "2024-01-31",
-            "lookback": "P0D",
-            "codes": [],
-            "factors": ["alpha", "future_return", "circ_mv"],
-            "derivatives": {},
-            "filters": [],
-        },
-        "factor_columns": ["alpha"],
-        "return_columns": ["future_return"],
-        "return_specs": {
-            "future_return": {"kind": "log", "periods": 5},
-        },
-        "n_groups": 5,
-        "n_select": 10,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    }
-    information = pd.DataFrame({
-        "time": ["2024-01-02", "2024-01-03"],
-        "alpha_future_return_ic": [0.1, 0.2],
-        "alpha_future_return_rank_ic": [0.2, 0.3],
-    })
-    groups = pd.DataFrame({
-        "time": ["2024-01-02", "2024-01-03"],
-        "alpha_future_return_bottom": [0.01, 0.02],
-        "alpha_future_return_top": [0.03, 0.04],
-    })
-
-    metric = factor_metrics(parameters, information, groups)["alpha"]["future_return"]
-
-    assert metric["return_kind"] == "log"
-    assert metric["return_periods"] == 5
-    assert metric["compoundable"] is False
-    assert metric["long_short_cumulative_return"] is None
-
-
 def test_reusing_cloud_workspace_clears_existing_output_prefix(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -585,22 +543,6 @@ def write_requested_outputs(
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_ic": [0.1, 0.2], "factor_return_rank_ic": [0.2, 0.3]}).to_parquet(path)
         elif name == "group_returns":
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_group0": [0.01, 0.02], "factor_return_group4": [0.02, 0.04]}).to_parquet(path)
-        elif name == "diagnostics":
-            pd.DataFrame({
-                "time": ["2020-01-01", "2020-01-02"],
-                "factor": ["factor", "factor"],
-                "return_column": ["return", "return"],
-                "universe_count": [2, 2],
-                "factor_valid_count": [2, 2],
-                "return_valid_count": [2, 2],
-                "paired_valid_count": [2, 2],
-                "group_valid_count": [2, 2],
-                "group_min": [0, 0],
-                "group_max": [4, 4],
-                "occupied_group_count": [2, 2],
-                "min_group_size": [1, 1],
-                "max_group_size": [1, 1],
-            }).to_parquet(path)
         elif name == "daily_portfolios":
             pd.DataFrame({"tradeDate": ["2020-01-01", "2020-01-02"], "ratio": [0.0, 0.01]}).to_parquet(path)
         else:

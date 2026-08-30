@@ -136,7 +136,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/backtest/results",
         title="Backtest 结果与审计契约",
-        description="四张 Parquet 的完整字段、订单状态、成交字段标准化、费用、对账公式和结果 QA。",
+        description="四张 Parquet 的完整字段、订单状态、费用、对账公式、已知限制和结果 QA。",
         mime_type="text/markdown",
     )
     def backtest_results_document() -> str:

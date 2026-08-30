@@ -159,11 +159,6 @@ Task 日志，而不是只显示在 DolphinDB 客户端终端。
 交易报告，也不能用一条“提交订单”日志代替 `onOrder`、`onTrade` 和 Parquet 对账。大量逐行打印会
 显著增加 Task 日志体积和调度开销，定位完成后应删除或降到必要摘要。
 
-当前 Query 执行会另外写入机器可读的 `DSL 执行摘要` 和结果规模摘要，包含股票域类型、候选代码
-区间并集、源字段/命名节点/filter/输出列数量，以及最终行数和有效代码区间并集。Factor 的第二阶段
-也使用同一摘要，因此全市场与指数动态池都能对照候选和最终有效规模；这些数量是研究区间并集，
-不是某一个交易日的截面数量。逐日 Factor 样本与分组规模应读取 `factor_diagnostics.parquet`。
-
 ## 通用失败诊断顺序
 
 ```text
@@ -183,17 +178,8 @@ list_workflow_outputs(application, workflow_instance_id)
 ```
 
 `application` 为 `query`、`factor` 或 `backtest`。Instance 必须成功且仍绑定当前业务结果。每个输出
-返回逻辑名称、文件名、大小、修改时间、`row_count`、`columns`、`sha256` 和 `download_path`，不内嵌
-Parquet 数据。`columns` 按文件中的顶层列顺序返回 `name`、Arrow 逻辑 `type` 和 `nullable`；
-`sha256` 是完整文件内容的 64 位十六进制 SHA-256，不能用 `size` 或对象存储 ETag 替代。具体输出名称、
+返回逻辑名称、文件名、大小、修改时间和 `download_path`，不内嵌 Parquet 数据。具体输出名称、
 业务语义和读取方式见对应应用的 `api` 文档。
-
-Backend 在通过当前用户、当前 Attempt 和工作流成功状态校验后读取元数据。本地文件与对象存储使用
-同一套完整内容哈希；首次读取后按本地文件纳秒时间戳/文件标识或对象存储 ETag/Version ID 缓存在
-Backend 进程的有界缓存中，内容被替换时自动失效。缓存不会写入 Attempt、改变任务更新时间或混入
-业务事件；Backend 重启后首次读取会重新计算。对象存储下载使用 Version ID 或 ETag 条件请求绑定
-HEAD 快照，避免对象并发替换时混合两版元数据。首次计算 SHA-256 必须流式读取完整对象，但不会把
-完整文件一次性放入内存；后续快照未变化的列表请求不会重复下载对象。
 
 下载时把相对 `download_path` 拼接到 `{ARENA_PUBLIC_URL}` 的 origin，并使用同一 Bearer Token。不要把
 一个部署环境签发的 Token 发送到另一个域名。旧 Attempt 的 Instance 不等于永久输出归档；同一
@@ -290,11 +276,6 @@ Token 只能发送到当前 Arena API 的 origin。Arena 可以返回指向对�
 `payload.input_json`、Project/Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、
 Runtime/Backend 版本、基础
 数据版本、费用与年化参数。不要只保存截图或摘要指标。
-
-一轮可复核的最低输出验收应至少记录：实际逻辑输出名称、Parquet Schema、行数、日期范围、业务键
-重复数、关键列 NULL/非有限值数量，以及完整文件的 SHA-256。Factor/Backtest 还要先确认当前
-`workflow_instance_id` 仍绑定被验收的 Workspace 结果，再保存版本；否则同一 Workspace 的后续运行
-可能使“已检查文件”和“准备保存的 Instance”不再是同一次结果。
 
 ## 工作流控制
 

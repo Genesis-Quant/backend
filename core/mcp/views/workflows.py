@@ -178,7 +178,7 @@ def register_workflow_tools(server: MCPServer) -> None:
         application: Annotated[Literal["query", "factor", "backtest"], Field(description="工作流应用。")],
         workflow_instance_id: Annotated[int, Field(gt=0, description="成功且仍为当前 Attempt 的 workflow instance ID。")],
     ) -> McpResult[WorkflowOutputs]:
-        """List generated Parquet outputs with row/schema/hash metadata and download paths."""
+        """List generated Parquet outputs and download paths."""
         with database_session_factory()() as session:
             user = current_user(session)
             if application == "query":

@@ -1,31 +1,18 @@
 """Result-file access keyed by DolphinScheduler workflow instance ID."""
 
-from collections import OrderedDict
-from dataclasses import dataclass
 from datetime import UTC, datetime
-import hashlib
 from io import BytesIO
-import json
-import logging
-import os
 from pathlib import Path
 from stat import S_ISREG
-from tempfile import SpooledTemporaryFile
-from threading import Lock
-from typing import Any, BinaryIO, Literal
+from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Response
 from fastapi.responses import FileResponse, RedirectResponse
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from runtime.utils.storage import (
-    MAX_RESULT_MANIFEST_SIZE,
     PARQUET_CONTENT_TYPE,
-    RESULT_MANIFEST_FILENAME,
-    RESULT_MANIFEST_VERSION,
     ObjectStorage,
     ObjectStorageConfigurationError,
 )
@@ -41,74 +28,20 @@ from core.apps.workflows.artifacts import (
 from core.apps.workflows.models import WorkflowAttempt, WorkflowInstance, WorkflowWorkspace
 from core.utils.time import utc_now
 
-LOGGER = logging.getLogger(__name__)
-
 RESULT_FAILED_STATE = "RESULT_FAILED"
 OUTPUTS_VALIDATED_EVENT = "WORKFLOW_OUTPUTS_VALIDATED"
 OUTPUT_VALIDATION_FAILED_EVENT = "WORKFLOW_OUTPUT_VALIDATION_FAILED"
-HASH_CHUNK_SIZE = 1024 * 1024
-METADATA_SPOOL_MAX_SIZE = 64 * 1024 * 1024
-METADATA_CACHE_SIZE = 256
 
 
-class ResultColumn(BaseModel):
-    """One top-level Parquet column in physical file order."""
-
-    name: str
-    type: str
-    nullable: bool
-
-
-class ParquetResultMetadata(BaseModel):
-    row_count: int = Field(ge=0)
-    columns: list[ResultColumn]
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class ResultFile[Name: str](ParquetResultMetadata):
+class ResultFile[Name: str](BaseModel):
     name: Name
     filename: str
     size: int
     modified_at: datetime
 
 
-class ResultManifestEntry(ParquetResultMetadata):
-    """Persisted metadata bound to one immutable output-file snapshot."""
-
-    filename: str
-    size: int = Field(ge=0)
-    modified_at: datetime
-    snapshot_token: str | None = None
-
-
-class ResultManifest(BaseModel):
-    """Small sidecar used to list outputs without rereading Parquet bodies."""
-
-    version: Literal[1] = RESULT_MANIFEST_VERSION
-    files: dict[str, ResultManifestEntry]
-
-
-@dataclass(frozen=True)
-class ResultSnapshot:
-    """Storage identity used to invalidate cached content metadata."""
-
-    size: int
-    modified_at: datetime
-    cache_token: str | None = None
-
-
-_RESULT_METADATA_CACHE: OrderedDict[str, ParquetResultMetadata] = OrderedDict()
-_RESULT_METADATA_CACHE_LOCK = Lock()
-
-
 class WorkflowOutputValidationError(ValueError):
     """表示工作流输出确定性地缺失、为空或不完整。"""
-
-
-class ResultNotRequestedError(FileNotFoundError):
-    """The requested output belongs to the API but not to this attempt."""
-
-    api_code = "RESULT_NOT_REQUESTED"
 
 
 def owned_result_workspace(
@@ -171,73 +104,46 @@ def result_files(
     if uses_cloud_output(workspace.application):
         storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
         try:
-            manifest = read_cloud_result_manifest(storage, output_key)
             files: list[dict[str, Any]] = []
             for name in attempt.requested_outputs:
                 try:
-                    file = cloud_result_file(
-                        workflow_instance_id,
-                        storage,
-                        output_key,
-                        name,
-                        result_filename(workflow_instance_id, name, output_files),
-                        manifest_entry=(manifest.files.get(name) if manifest else None),
+                    files.append(
+                        cloud_result_file(
+                            storage,
+                            output_key,
+                            name,
+                            result_filename(workflow_instance_id, name, output_files),
+                        )
                     )
-                    files.append(file)
                 except ClientError as error:
                     if name in legacy_optional_outputs and is_missing_object(error):
                         continue
                     raise
-            if manifest is None or any(not file["_manifest_hit"] for file in files):
-                try:
-                    write_cloud_result_manifest(
-                        storage,
-                        output_key,
-                        result_manifest_from_files(files),
-                    )
-                except (BotoCoreError, ClientError, OSError) as error:
-                    LOGGER.warning(
-                        "Unable to backfill result manifest for workflow %s: %s",
-                        workflow_instance_id,
-                        error,
-                    )
+            return files
         except (BotoCoreError, ClientError) as error:
             raise OSError(
                 f"工作流 {workflow_instance_id} 无法读取对象存储结果: {error}"
             ) from error
         finally:
             storage.close()
-    else:
-        output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
-        manifest = read_local_result_manifest(output_dir)
-        files = []
-        for name in attempt.requested_outputs:
-            try:
-                file = local_result_file(
+
+    output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
+    files = []
+    for name in attempt.requested_outputs:
+        try:
+            files.append(
+                local_result_file(
                     workflow_instance_id,
                     output_dir,
                     name,
                     result_filename(workflow_instance_id, name, output_files),
-                    manifest_entry=(manifest.files.get(name) if manifest else None),
                 )
-                files.append(file)
-            except FileNotFoundError:
-                if name in legacy_optional_outputs:
-                    continue
-                raise
-        if manifest is None or any(not file["_manifest_hit"] for file in files):
-            try:
-                write_local_result_manifest(
-                    output_dir,
-                    result_manifest_from_files(files),
-                )
-            except OSError as error:
-                LOGGER.warning(
-                    "Unable to backfill result manifest for workflow %s: %s",
-                    workflow_instance_id,
-                    error,
-                )
-    return [public_result_file(file) for file in files]
+            )
+        except FileNotFoundError:
+            if name in legacy_optional_outputs:
+                continue
+            raise
+    return files
 
 
 def validate_required_result_files(
@@ -430,7 +336,7 @@ def result_response(
         raise FileNotFoundError(f"未知结果: {name}")
     workspace, attempt = owned_result_workspace(session, user_id, workflow_instance_id, application)
     if name not in attempt.requested_outputs:
-        raise ResultNotRequestedError(f"工作流未请求结果: {name}")
+        raise FileNotFoundError(f"工作流未请求结果: {name}")
     filename = output_files[name]
     if uses_cloud_output(workspace.application):
         storage, output_key = cloud_storage(workspace.application, workspace.workspace_key)
@@ -447,17 +353,12 @@ def result_response(
         return RedirectResponse(url, headers={"Cache-Control": "private, no-store"})
 
     output_dir = workspace_output_directory(workspace.application, workspace.workspace_key)
-    try:
-        path = local_result_path(
-            workflow_instance_id,
-            output_dir,
-            name,
-            filename,
-        )
-    except FileNotFoundError as error:
-        raise OSError(
-            f"工作流 {workflow_instance_id} 成功但缺少已请求结果: {name}"
-        ) from error
+    path = local_result_path(
+        workflow_instance_id,
+        output_dir,
+        name,
+        filename,
+    )
     return FileResponse(path, filename=filename, media_type=PARQUET_CONTENT_TYPE)
 
 
@@ -530,8 +431,6 @@ def local_result_file(
     output_dir: Path,
     name: str,
     filename: str,
-    *,
-    manifest_entry: ResultManifestEntry | None = None,
 ) -> dict[str, Any]:
     path = local_result_path(
         workflow_instance_id,
@@ -539,182 +438,13 @@ def local_result_file(
         name,
         filename,
     )
-    initial_stat = path.stat()
-    initial_snapshot = local_result_snapshot(initial_stat)
-    if manifest_entry_matches(
-        manifest_entry,
-        filename,
-        initial_snapshot,
-    ):
-        return result_file_from_manifest(
-            name,
-            manifest_entry,
-            initial_snapshot,
-            manifest_hit=True,
-        )
-
-    for attempt in range(2):
-        with path.open("rb") as source:
-            before = os.fstat(source.fileno())
-            if not S_ISREG(before.st_mode):
-                raise OSError(
-                    f"工作流 {workflow_instance_id} 的结果不是普通文件: {name}"
-                )
-            snapshot = local_result_snapshot(before)
-            cache_key = result_metadata_cache_key("local", str(path), snapshot)
-            metadata = cached_result_metadata(cache_key)
-            try:
-                if metadata is None:
-                    metadata = parquet_result_metadata(
-                        source,
-                        workflow_instance_id,
-                        name,
-                    )
-            except OSError:
-                after = os.fstat(source.fileno())
-                if attempt == 0 and not same_local_snapshot(before, after):
-                    continue
-                raise
-            after = os.fstat(source.fileno())
-        if same_local_snapshot(before, after):
-            cache_result_metadata(cache_key, metadata)
-            return {
-                "name": name,
-                "filename": filename,
-                "size": snapshot.size,
-                "modified_at": snapshot.modified_at,
-                "_snapshot_token": snapshot.cache_token,
-                "_manifest_hit": False,
-                **metadata.model_dump(),
-            }
-    raise OSError(f"工作流结果 {name} 在读取元数据时持续变化")
-
-
-def local_result_snapshot(file_stat: os.stat_result) -> ResultSnapshot:
-    return ResultSnapshot(
-        size=file_stat.st_size,
-        modified_at=datetime.fromtimestamp(file_stat.st_mtime, UTC),
-        cache_token=(
-            f"local:{file_stat.st_mtime_ns}:"
-            f"{getattr(file_stat, 'st_ino', 0)}"
-        ),
-    )
-
-
-def same_local_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
-    return (
-        left.st_size,
-        left.st_mtime_ns,
-        left.st_ctime_ns,
-        getattr(left, "st_ino", 0),
-    ) == (
-        right.st_size,
-        right.st_mtime_ns,
-        right.st_ctime_ns,
-        getattr(right, "st_ino", 0),
-    )
-
-
-def read_local_result_manifest(output_dir: Path) -> ResultManifest | None:
-    """Read the bounded local sidecar; invalid legacy sidecars are ignored."""
-    path = output_dir / RESULT_MANIFEST_FILENAME
-    try:
-        if path.is_symlink():
-            return None
-        size = path.stat().st_size
-    except FileNotFoundError:
-        return None
-    if size <= 0 or size > MAX_RESULT_MANIFEST_SIZE:
-        return None
-    try:
-        return ResultManifest.model_validate_json(path.read_bytes())
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-
-
-def manifest_entry_matches(
-    entry: ResultManifestEntry | None,
-    filename: str,
-    snapshot: ResultSnapshot,
-) -> bool:
-    """Require the sidecar to describe the current storage snapshot exactly."""
-    if entry is None:
-        return False
-    if (
-        entry.filename != filename
-        or entry.size != snapshot.size
-        or entry.modified_at != snapshot.modified_at
-    ):
-        return False
-    return entry.snapshot_token is None or entry.snapshot_token == snapshot.cache_token
-
-
-def result_file_from_manifest(
-    name: str,
-    entry: ResultManifestEntry,
-    snapshot: ResultSnapshot,
-    *,
-    manifest_hit: bool,
-) -> dict[str, Any]:
+    file_stat = path.stat()
     return {
         "name": name,
-        "filename": entry.filename,
-        "size": snapshot.size,
-        "modified_at": snapshot.modified_at,
-        "_snapshot_token": snapshot.cache_token,
-        "_manifest_hit": manifest_hit,
-        **ParquetResultMetadata(
-            row_count=entry.row_count,
-            columns=entry.columns,
-            sha256=entry.sha256,
-        ).model_dump(),
+        "filename": filename,
+        "size": file_stat.st_size,
+        "modified_at": datetime.fromtimestamp(file_stat.st_mtime, UTC),
     }
-
-
-def public_result_file(file: dict[str, Any]) -> dict[str, Any]:
-    """Remove storage-only fields before returning the API/MCP contract."""
-    return {
-        key: value
-        for key, value in file.items()
-        if key not in {"_snapshot_token", "_manifest_hit"}
-    }
-
-
-def result_manifest_from_files(files: list[dict[str, Any]]) -> ResultManifest:
-    return ResultManifest(
-        files={
-            str(file["name"]): ResultManifestEntry(
-                filename=str(file["filename"]),
-                size=int(file["size"]),
-                modified_at=file["modified_at"],
-                snapshot_token=file.get("_snapshot_token"),
-                row_count=int(file["row_count"]),
-                columns=file["columns"],
-                sha256=str(file["sha256"]),
-            )
-            for file in files
-        },
-    )
-
-
-def result_manifest_bytes(manifest: ResultManifest) -> bytes:
-    return manifest.model_dump_json(exclude_none=False).encode("utf-8")
-
-
-def write_local_result_manifest(
-    output_dir: Path,
-    manifest: ResultManifest,
-) -> None:
-    """Atomically backfill a local sidecar after reading legacy outputs."""
-    path = output_dir / RESULT_MANIFEST_FILENAME
-    temporary = output_dir / f"{RESULT_MANIFEST_FILENAME}.tmp"
-    if path.is_symlink() or temporary.is_symlink():
-        raise OSError("结果清单路径不能是符号链接")
-    data = result_manifest_bytes(manifest)
-    if len(data) > MAX_RESULT_MANIFEST_SIZE:
-        raise OSError("结果清单超过大小限制")
-    temporary.write_bytes(data)
-    temporary.replace(path)
 
 
 def local_result_path(
@@ -739,235 +469,18 @@ def local_result_path(
 
 
 def cloud_result_file(
-    workflow_instance_id: int,
     storage: ObjectStorage,
     output_key: str,
     name: str,
     filename: str,
-    *,
-    manifest_entry: ResultManifestEntry | None = None,
 ) -> dict[str, Any]:
-    key = f"{output_key}/{filename}"
-    for attempt in range(2):
-        head = storage.client.head_object(Bucket=storage.bucket, Key=key)
-        etag = normalized_etag(head.get("ETag"))
-        version_id = normalized_version_id(head.get("VersionId"))
-        snapshot = ResultSnapshot(
-            size=int(head["ContentLength"]),
-            modified_at=head["LastModified"],
-            cache_token=f"cloud:{etag or ''}:{version_id or ''}",
-        )
-        if manifest_entry_matches(manifest_entry, filename, snapshot):
-            return result_file_from_manifest(
-                name,
-                manifest_entry,
-                snapshot,
-                manifest_hit=True,
-            )
-        identity = (
-            f"{storage_endpoint_identity(storage)}:{storage.bucket}:{key}"
-        )
-        cache_key = result_metadata_cache_key("cloud", identity, snapshot)
-        metadata = cached_result_metadata(cache_key)
-        if metadata is not None:
-            break
-        request: dict[str, Any] = {"Bucket": storage.bucket, "Key": key}
-        if version_id is not None:
-            request["VersionId"] = version_id
-        elif head.get("ETag"):
-            request["IfMatch"] = head["ETag"]
-        try:
-            response = storage.client.get_object(**request)
-        except ClientError as error:
-            if attempt == 0 and is_object_snapshot_changed(error):
-                continue
-            raise
-        body = response["Body"]
-        try:
-            with SpooledTemporaryFile(
-                max_size=METADATA_SPOOL_MAX_SIZE,
-                mode="w+b",
-            ) as source:
-                digest = hashlib.sha256()
-                downloaded = 0
-                while chunk := body.read(HASH_CHUNK_SIZE):
-                    digest.update(chunk)
-                    source.write(chunk)
-                    downloaded += len(chunk)
-                if downloaded != snapshot.size:
-                    raise OSError(
-                        f"工作流结果 {name} 下载不完整: "
-                        f"预期 {snapshot.size} bytes，实际 {downloaded} bytes"
-                    )
-                source.seek(0)
-                metadata = parquet_result_metadata(
-                    source,
-                    workflow_instance_id,
-                    name,
-                    sha256=digest.hexdigest(),
-                )
-        finally:
-            body.close()
-        cache_result_metadata(cache_key, metadata)
-        break
-    else:  # pragma: no cover - the loop always returns or raises
-        raise OSError(f"工作流结果 {name} 的对象版本持续变化")
-    result = {
+    info = storage.object_info(f"{output_key}/{filename}")
+    return {
         "name": name,
         "filename": filename,
-        "size": snapshot.size,
-        "modified_at": snapshot.modified_at,
-        "_snapshot_token": snapshot.cache_token,
-        "_manifest_hit": False,
-        **metadata.model_dump(),
+        "size": info.size,
+        "modified_at": info.modified_at,
     }
-    return result
-
-
-def read_cloud_result_manifest(
-    storage: ObjectStorage,
-    output_key: str,
-) -> ResultManifest | None:
-    """Download only the bounded JSON sidecar, never an output body."""
-    key = f"{output_key}/{RESULT_MANIFEST_FILENAME}"
-    try:
-        response = storage.client.get_object(
-            Bucket=storage.bucket,
-            Key=key,
-            Range=f"bytes=0-{MAX_RESULT_MANIFEST_SIZE}",
-        )
-    except ClientError as error:
-        if is_missing_object(error):
-            return None
-        raise
-    body = response["Body"]
-    try:
-        data = body.read(MAX_RESULT_MANIFEST_SIZE + 1)
-    finally:
-        body.close()
-    if not data or len(data) > MAX_RESULT_MANIFEST_SIZE:
-        return None
-    try:
-        return ResultManifest.model_validate_json(data)
-    except (ValueError, json.JSONDecodeError):
-        return None
-
-
-def write_cloud_result_manifest(
-    storage: ObjectStorage,
-    output_key: str,
-    manifest: ResultManifest,
-) -> None:
-    """Backfill a cloud sidecar after reading legacy outputs once."""
-    data = result_manifest_bytes(manifest)
-    if len(data) > MAX_RESULT_MANIFEST_SIZE:
-        raise OSError("结果清单超过大小限制")
-    storage.client.put_object(
-        Bucket=storage.bucket,
-        Key=f"{output_key}/{RESULT_MANIFEST_FILENAME}",
-        Body=data,
-        ContentType="application/json",
-    )
-
-
-def parquet_result_metadata(
-    source: BinaryIO,
-    workflow_instance_id: int,
-    name: str,
-    *,
-    sha256: str | None = None,
-) -> ParquetResultMetadata:
-    """Read exact top-level schema/row count and a full-file SHA-256."""
-    if sha256 is None:
-        digest = hashlib.sha256()
-        while chunk := source.read(HASH_CHUNK_SIZE):
-            digest.update(chunk)
-        sha256 = digest.hexdigest()
-        source.seek(0)
-    try:
-        parquet = pq.ParquetFile(source)
-        schema = parquet.schema_arrow
-        return ParquetResultMetadata(
-            row_count=parquet.metadata.num_rows,
-            columns=[
-                ResultColumn(
-                    name=field.name,
-                    type=str(field.type),
-                    nullable=field.nullable,
-                )
-                for field in schema
-            ],
-            sha256=sha256,
-        )
-    except (pa.ArrowException, OSError, ValueError) as error:
-        instance = (
-            f"工作流 {workflow_instance_id} "
-            if workflow_instance_id > 0
-            else ""
-        )
-        raise OSError(
-            f"{instance}无法读取结果 {name} 的 Parquet 元数据: {error}"
-        ) from error
-
-
-def result_metadata_cache_key(
-    storage_kind: str,
-    identity: str,
-    snapshot: ResultSnapshot,
-) -> str:
-    return ":".join((
-        storage_kind,
-        identity,
-        str(snapshot.size),
-        snapshot.modified_at.isoformat(),
-        snapshot.cache_token or "",
-    ))
-
-
-def cached_result_metadata(key: str) -> ParquetResultMetadata | None:
-    with _RESULT_METADATA_CACHE_LOCK:
-        metadata = _RESULT_METADATA_CACHE.get(key)
-        if metadata is not None:
-            _RESULT_METADATA_CACHE.move_to_end(key)
-        return metadata
-
-
-def cache_result_metadata(key: str, metadata: ParquetResultMetadata) -> None:
-    with _RESULT_METADATA_CACHE_LOCK:
-        _RESULT_METADATA_CACHE[key] = metadata
-        _RESULT_METADATA_CACHE.move_to_end(key)
-        while len(_RESULT_METADATA_CACHE) > METADATA_CACHE_SIZE:
-            _RESULT_METADATA_CACHE.popitem(last=False)
-
-
-def clear_result_metadata_cache() -> None:
-    """Clear the bounded process-local cache (also useful for isolated tests)."""
-    with _RESULT_METADATA_CACHE_LOCK:
-        _RESULT_METADATA_CACHE.clear()
-
-
-def normalized_etag(value: Any) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().strip('"')
-    return normalized or None
-
-
-def normalized_version_id(value: Any) -> str | None:
-    normalized = str(value).strip() if value is not None else ""
-    return normalized if normalized and normalized != "null" else None
-
-
-def storage_endpoint_identity(storage: ObjectStorage) -> str:
-    metadata = getattr(storage.client, "meta", None)
-    return str(getattr(metadata, "endpoint_url", ""))
-
-
-def is_object_snapshot_changed(error: ClientError) -> bool:
-    response = error.response
-    code = str(response.get("Error", {}).get("Code", ""))
-    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-    return status == 412 or code in {"412", "PreconditionFailed"}
 
 
 def is_missing_object(error: ClientError) -> bool:

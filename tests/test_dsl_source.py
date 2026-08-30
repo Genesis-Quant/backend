@@ -13,7 +13,9 @@ from core.utils.dsl_source import (
     compile_dsl_source,
     compile_factor_dsl_source,
     factor_dsl_source,
+    upgrade_factor_dsl_sources,
     upgrade_dsl_sources,
+    with_historical_factor_return_specs,
 )
 
 
@@ -195,6 +197,106 @@ def test_factor_python_source_keeps_backend_generated_return_nodes() -> None:
         "ret0",
     }
     assert "circ_mv" in runtime["dataset_query"]["factors"]
+
+
+def historical_factor_parameters() -> dict:
+    return {
+        "codes_query": None,
+        "dataset_query": {
+            "start_date": "2020-01-01",
+            "end_date": "2020-12-31",
+            "lookback": "P30D",
+            "codes": [],
+            "factors": [],
+            "derivatives": {
+                "momentum": {
+                    "type": "TS",
+                    "op": "unary.pct_change",
+                    "fields": {"col": "close_hfq"},
+                    "params": {"periods": 20},
+                },
+                "daily_log_return": {
+                    "type": "TS",
+                    "op": "unary.log_return",
+                    "fields": {"col": "close_hfq"},
+                    "params": {"periods": 1},
+                },
+                "five_day_log_return": {
+                    "type": "TS",
+                    "op": "unary.log_return",
+                    "fields": {"col": "close_hfq"},
+                    "params": {"periods": 5},
+                },
+                "future_1d_log_return": {
+                    "type": "TS",
+                    "op": "unary.shift",
+                    "fields": {"col": "daily_log_return"},
+                    "params": {"periods": -1},
+                },
+                "future_5d_log_return": {
+                    "type": "TS",
+                    "op": "unary.shift",
+                    "fields": {"col": "five_day_log_return"},
+                    "params": {"periods": -5},
+                },
+            },
+            "filters": [],
+        },
+        "factor_columns": ["momentum"],
+        "return_columns": [
+            "future_1d_log_return",
+            "future_5d_log_return",
+        ],
+        "n_groups": 5,
+        "preprocess": True,
+        "market_value_column": "circ_mv",
+    }
+
+
+def test_historical_factor_return_specs_follow_named_derivatives() -> None:
+    stored = historical_factor_parameters()
+    original = json.loads(json.dumps(stored))
+
+    prepared = with_historical_factor_return_specs(stored)
+
+    assert prepared["return_specs"] == {
+        "future_1d_log_return": {"kind": "log", "periods": 1},
+        "future_5d_log_return": {"kind": "log", "periods": 5},
+    }
+    assert stored == original
+
+
+def test_historical_factor_project_serialization_adds_return_contracts() -> None:
+    prepared = upgrade_factor_dsl_sources(historical_factor_parameters())
+
+    assert prepared["return_specs"] == {
+        "future_1d_log_return": {"kind": "log", "periods": 1},
+        "future_5d_log_return": {"kind": "log", "periods": 5},
+    }
+
+
+def test_historical_factor_payload_compiles_without_runtime_inference() -> None:
+    runtime = compile_application_payload(
+        "factor",
+        historical_factor_parameters(),
+    )
+
+    assert runtime["return_specs"] == {
+        "future_1d_log_return": {"kind": "log", "periods": 1},
+        "future_5d_log_return": {"kind": "log", "periods": 5},
+    }
+
+
+def test_unknown_historical_return_expression_is_not_guessed() -> None:
+    stored = historical_factor_parameters()
+    stored["dataset_query"]["derivatives"]["future_1d_log_return"] = {
+        "type": "DIRECT",
+        "op": "binary.add",
+        "fields": {"left": "close", "right": 1},
+        "params": {},
+    }
+
+    assert with_historical_factor_return_specs(stored) is stored
 
 
 def test_factor_index_pool_is_injected_only_into_runtime_dataset() -> None:
@@ -533,9 +635,71 @@ def test_backtest_python_dataset_is_compiled_before_submission() -> None:
     runtime = compile_application_payload("backtest", stored)
 
     assert stored["dataset_query"]["dsl_source"]["language"] == "python"
+    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
     assert runtime["dataset_query"]["factors"] == ["close"]
-    assert set(runtime["dataset_query"]["derivatives"]) == {"momentum"}
+    assert set(runtime["dataset_query"]["derivatives"]) == {
+        "momentum",
+        "stock_pool_member",
+    }
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == {
+        "type": "DIRECT",
+        "op": "nullary.true",
+        "fields": {},
+        "params": {},
+    }
     assert "dsl_source" not in runtime["dataset_query"]
+
+
+def test_backtest_dynamic_stock_pool_is_injected_by_backend() -> None:
+    codes_query = {
+        "start_date": "2020-01-01",
+        "end_date": "2020-12-31",
+        "lookback": "P0D",
+        "codes": [],
+        "factors": [],
+        "derivatives": {
+            "stock_pool_member": {
+                "type": "DIRECT",
+                "op": "binary.gt",
+                "fields": {"left": "weight_000300SH", "right": 0},
+                "params": {},
+            },
+        },
+        "filters": ["stock_pool_member"],
+    }
+    request = BacktestApplicationRequest.model_validate({
+        "codes_query": codes_query,
+        "dataset_query": query_request(),
+        "callbacks": CALLBACKS,
+    })
+
+    stored = request.stored_payload()
+    runtime = compile_application_payload("backtest", stored)
+
+    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == (
+        codes_query["derivatives"]["stock_pool_member"]
+    )
+    assert "stock_pool_member" not in runtime["dataset_query"]["filters"]
+
+
+def test_legacy_backtest_json_is_completed_before_runtime_submission() -> None:
+    dataset_query = query_request()
+    dataset_query.pop("dsl_source")
+    payload = {
+        "codes_query": None,
+        "dataset_query": dataset_query,
+        "callbacks": CALLBACKS,
+    }
+
+    runtime = compile_application_payload("backtest", payload)
+
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == {
+        "type": "DIRECT",
+        "op": "nullary.true",
+        "fields": {},
+        "params": {},
+    }
 
 
 def test_legacy_runtime_payload_is_not_rewritten() -> None:

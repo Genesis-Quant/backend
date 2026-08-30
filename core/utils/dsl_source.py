@@ -586,6 +586,38 @@ def without_factor_stock_pool(query: FactorQuery) -> FactorQuery:
     })
 
 
+def backtest_dataset_runtime_query(
+    codes_query: FactorQuery | None,
+    dataset_query: FactorQuery,
+) -> FactorQuery:
+    """Build the complete Backtest dataset query before Runtime submission."""
+    member = None
+    if (
+        codes_query is not None
+        and FACTOR_STOCK_POOL_NODE in codes_query.filters
+    ):
+        codes_member = codes_query.derivatives.get(FACTOR_STOCK_POOL_NODE)
+        if codes_member is not None:
+            member = codes_member.model_dump(mode="json")
+    if member is None:
+        dataset_member = dataset_query.derivatives.get(FACTOR_STOCK_POOL_NODE)
+        if dataset_member is not None:
+            member = dataset_member.model_dump(mode="json")
+    if member is None:
+        member = FACTOR_ALL_MARKET_STOCK_POOL_NODE
+
+    derivatives = dict(dataset_query.derivatives)
+    derivatives[FACTOR_STOCK_POOL_NODE] = member
+    return dataset_query.model_copy(update={
+        "factors": [
+            factor
+            for factor in dataset_query.factors
+            if factor != FACTOR_STOCK_POOL_NODE
+        ],
+        "derivatives": derivatives,
+    })
+
+
 def factor_dsl_source(
     source: DslSource,
     return_columns: list[str],
@@ -640,7 +672,7 @@ def upgrade_factor_dsl_sources(payload: dict[str, Any]) -> dict[str, Any]:
     upgraded = upgrade_dsl_sources(payload)
     dataset_query = upgraded.get("dataset_query")
     if not isinstance(dataset_query, dict):
-        return upgraded
+        return with_historical_factor_return_specs(upgraded)
     factors = dataset_query.get("factors")
     derivatives = dataset_query.get("derivatives")
     filters = dataset_query.get("filters")
@@ -649,7 +681,7 @@ def upgrade_factor_dsl_sources(payload: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(derivatives, dict)
         or not isinstance(filters, list)
     ):
-        return upgraded
+        return with_historical_factor_return_specs(upgraded)
     return_columns_value = upgraded.get("return_columns")
     return_columns = (
         return_columns_value
@@ -686,7 +718,186 @@ def upgrade_factor_dsl_sources(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         **({"dsl_source": source} if source is not None else {}),
     }
-    return result
+    return with_historical_factor_return_specs(result)
+
+
+def with_historical_factor_return_specs(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Infer missing return contracts from the persisted DSL without mutation."""
+    if "return_specs" in payload:
+        return payload
+    return_columns = payload.get("return_columns")
+    dataset_query = payload.get("dataset_query")
+    derivatives = (
+        dataset_query.get("derivatives")
+        if isinstance(dataset_query, dict)
+        else None
+    )
+    if (
+        not isinstance(return_columns, list)
+        or not return_columns
+        or not all(isinstance(name, str) and name for name in return_columns)
+        or not isinstance(derivatives, dict)
+    ):
+        return payload
+
+    specs: dict[str, dict[str, Any]] = {}
+    for column in return_columns:
+        spec = historical_factor_return_spec(
+            column,
+            derivatives,
+            frozenset(),
+        )
+        if spec is None:
+            return payload
+        specs[column] = spec
+    return {**payload, "return_specs": specs}
+
+
+def historical_factor_return_spec(
+    reference: Any,
+    derivatives: dict[str, Any],
+    visited: frozenset[str],
+) -> dict[str, Any] | None:
+    """Resolve one historical return expression through named derivatives."""
+    resolved = resolve_historical_derivative(reference, derivatives, visited)
+    if resolved is None:
+        return None
+    node, next_visited = resolved
+    operation = node.get("op")
+    fields = node.get("fields")
+    params = node.get("params")
+    if operation == "unary.pct_change" and isinstance(params, dict):
+        periods = params.get("periods")
+        if (
+            isinstance(periods, int)
+            and not isinstance(periods, bool)
+            and periods != 0
+        ):
+            return {"kind": "simple", "periods": abs(periods)}
+        return None
+    if operation == "unary.log_return" and isinstance(params, dict):
+        periods = params.get("periods")
+        if (
+            isinstance(periods, int)
+            and not isinstance(periods, bool)
+            and periods != 0
+        ):
+            return {"kind": "log", "periods": abs(periods)}
+        return None
+    if operation == "unary.log" and isinstance(fields, dict):
+        periods = historical_factor_return_periods(
+            fields.get("col"),
+            derivatives,
+            next_visited,
+        )
+        return (
+            {"kind": "log", "periods": periods}
+            if periods is not None
+            else None
+        )
+    if operation == "unary.shift" and isinstance(fields, dict):
+        return historical_factor_return_spec(
+            fields.get("col"),
+            derivatives,
+            next_visited,
+        )
+    return None
+
+
+def historical_factor_return_periods(
+    reference: Any,
+    derivatives: dict[str, Any],
+    visited: frozenset[str],
+) -> int | None:
+    resolved = resolve_historical_derivative(
+        reference,
+        derivatives,
+        visited,
+    )
+    if resolved is None:
+        return None
+    node, next_visited = resolved
+    if node.get("op") != "binary.div":
+        return None
+    fields = node.get("fields")
+    if not isinstance(fields, dict):
+        return None
+    left = historical_shifted_source(
+        fields.get("left"),
+        derivatives,
+        next_visited,
+    )
+    right = historical_shifted_source(
+        fields.get("right"),
+        derivatives,
+        next_visited,
+    )
+    if left is None or right is None or left[0] != right[0]:
+        return None
+    distance = abs(left[1] - right[1])
+    return distance or None
+
+
+def historical_shifted_source(
+    reference: Any,
+    derivatives: dict[str, Any],
+    visited: frozenset[str],
+) -> tuple[str, int] | None:
+    if isinstance(reference, str):
+        if reference not in derivatives:
+            return reference, 0
+        resolved = resolve_historical_derivative(
+            reference,
+            derivatives,
+            visited,
+        )
+        if resolved is None:
+            return None
+        node, next_visited = resolved
+    elif isinstance(reference, dict):
+        node = reference
+        next_visited = visited
+    else:
+        return None
+
+    if node.get("op") != "unary.shift":
+        return json.dumps(node, ensure_ascii=False, sort_keys=True), 0
+    fields = node.get("fields")
+    params = node.get("params")
+    periods = params.get("periods") if isinstance(params, dict) else None
+    if (
+        not isinstance(fields, dict)
+        or not isinstance(periods, int)
+        or isinstance(periods, bool)
+    ):
+        return None
+    source = historical_shifted_source(
+        fields.get("col"),
+        derivatives,
+        next_visited,
+    )
+    return None if source is None else (source[0], source[1] + periods)
+
+
+def resolve_historical_derivative(
+    reference: Any,
+    derivatives: dict[str, Any],
+    visited: frozenset[str],
+) -> tuple[dict[str, Any], frozenset[str]] | None:
+    if isinstance(reference, dict):
+        return reference, visited
+    if (
+        not isinstance(reference, str)
+        or reference not in derivatives
+        or reference in visited
+    ):
+        return None
+    node = derivatives[reference]
+    if not isinstance(node, dict):
+        return None
+    return node, visited | {reference}
 
 
 def compile_application_payload(
@@ -694,6 +905,25 @@ def compile_application_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Return the Runtime payload without mutating the stored business request."""
+    if (
+        application == "factor"
+        and "dataset_query" in payload
+        and "factor_columns" in payload
+        and "return_columns" in payload
+    ):
+        prepared = with_historical_factor_return_specs(payload)
+        if "return_specs" in prepared:
+            return FactorAnalysisApplicationRequest.model_validate(
+                prepared
+            ).runtime_payload()
+    if (
+        application == "backtest"
+        and "dataset_query" in payload
+        and "callbacks" in payload
+    ):
+        return BacktestApplicationRequest.model_validate(
+            payload
+        ).runtime_payload()
     if not contains_dsl_source(payload):
         return payload
     if application == "query":
@@ -701,10 +931,6 @@ def compile_application_payload(
         return query.runtime_payload()
     if application == "factor":
         return FactorAnalysisApplicationRequest.model_validate(
-            payload
-        ).runtime_payload()
-    if application == "backtest":
-        return BacktestApplicationRequest.model_validate(
             payload
         ).runtime_payload()
     return payload
@@ -759,15 +985,24 @@ class BacktestApplicationRequest(BaseModel):
         return self
 
     def runtime_parameters(self) -> BacktestParameters:
+        codes_query = (
+            self.codes_query.runtime_query()
+            if self.codes_query is not None
+            else None
+        )
+        dataset_query = backtest_dataset_runtime_query(
+            codes_query,
+            self.dataset_query.runtime_query(),
+        )
         return BacktestParameters.model_validate({
             "config": self.config,
             "params": self.params,
             "codes_query": (
-                self.codes_query.runtime_query().model_dump(mode="json")
-                if self.codes_query is not None
+                codes_query.model_dump(mode="json")
+                if codes_query is not None
                 else None
             ),
-            "dataset_query": self.dataset_query.runtime_query().model_dump(mode="json"),
+            "dataset_query": dataset_query.model_dump(mode="json"),
             "adj": self.adj,
             "annual_trading_days": self.annual_trading_days,
             "risk_free_rate": self.risk_free_rate,
@@ -781,6 +1016,7 @@ class BacktestApplicationRequest(BaseModel):
     def stored_payload(self) -> dict[str, Any]:
         runtime = self.runtime_parameters()
         runtime_data = runtime.model_dump(mode="json")
+        stored_dataset_query = self.dataset_query.runtime_query()
         return {
             **runtime_data,
             "codes_query": (
@@ -788,7 +1024,9 @@ class BacktestApplicationRequest(BaseModel):
                 if self.codes_query is not None and runtime.codes_query is not None
                 else None
             ),
-            "dataset_query": self.dataset_query.stored_json(runtime.dataset_query),
+            "dataset_query": self.dataset_query.stored_json(
+                stored_dataset_query
+            ),
         }
 
 
@@ -806,4 +1044,5 @@ __all__ = [
     "factor_dsl_source",
     "upgrade_factor_dsl_sources",
     "upgrade_dsl_sources",
+    "with_historical_factor_return_specs",
 ]

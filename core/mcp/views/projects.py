@@ -266,7 +266,9 @@ def register_project_tools(server: MCPServer) -> None:
                 description=(
                     "完整 Backtest 请求；codes_query/dataset_query 均支持双源码，"
                     "各自 language 指定活动版本。必填 dataset_query/callbacks，"
-                    "其它字段及默认值见 Backtest Schema。"
+                    "Backend 会在调度前向 dataset_query 注入托管的 "
+                    "stock_pool_member，保存的编辑器源码不变；其它字段及默认值见 "
+                    "Backtest Schema。"
                 )
             ),
         ],

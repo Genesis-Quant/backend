@@ -11,7 +11,7 @@ from core.utils.validation import (
     strip_text,
 )
 
-type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns", "diagnostics"]
+type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns"]
 type FactorProjectSortField = Literal[
     "id",
     "title",

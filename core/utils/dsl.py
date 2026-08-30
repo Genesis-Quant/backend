@@ -6,8 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from runtime.apps.query.dsl import CS, DIRECT, OP, TS
 from runtime.apps.query.schema import Derivative, FactorQuery
+
+from core.utils.dsl_builder import CS, DIRECT, OP, TS
 
 
 OperatorType = Literal["DIRECT", "TS", "CS"]

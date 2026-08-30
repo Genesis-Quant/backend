@@ -18,13 +18,12 @@ Parquet Schema。四张标准结果表都是必需输出；任一接口调用失
 再按 `tradeDate` 汇总到组合表。`NULL`、数值 0 和缺行含义不同，聚合时只能按明确口径补值。时间戳
 当前没有时区元数据，按中国证券交易所本地时间解释。
 
-四个 Workspace 输出从以下插件接口生成；`daily_positions` 在导出边界还有一次明确的卖出字段
-标准化，其余字段保持插件返回值：
+四个 Workspace 输出与插件接口一一对应：
 
 | 输出 | Runtime 取数接口 |
 | --- | --- |
 | `trade_details` | `Backtest::getTradeDetails(engine)` |
-| `daily_positions` | `Backtest::getDailyPosition(engine)`，并使用 `Backtest::getDailyTradingStatistics(engine)` 标准化当日卖出列 |
+| `daily_positions` | `Backtest::getDailyPosition(engine)` |
 | `daily_portfolios` | `Backtest::getDailyTotalPortfolios(engine)` |
 | `daily_trading_statistics` | `Backtest::getDailyTradingStatistics(engine)` |
 
@@ -97,8 +96,8 @@ Parquet Schema。四张标准结果表都是必需输出；任一接口调用失
 | `shortPositionAvgPrice` | DOUBLE | 是 | 空头成交均价 |
 | `todayBuyVolume` | LONG | 是 | 当日买入成交数量 |
 | `todayBuyValue` | DOUBLE | 是 | 当日买入成交金额 |
-| `todaySellVolume` | LONG | 是 | 当日卖出成交数量；Runtime 按同证券、同日期的卖开与卖平成交统计标准化 |
-| `todaySellValue` | DOUBLE | 是 | 当日卖出成交金额；Runtime 按同证券、同日期的卖开与卖平成交统计标准化 |
+| `todaySellVolume` | LONG | 是 | 插件报告的当日卖出数量；有当前部署限制，见下文 |
+| `todaySellValue` | DOUBLE | 是 | 插件报告的当日卖出金额；有当前部署限制，见下文 |
 | `closePrice` | DOUBLE | 当前版本是 | 插件用于每日持仓估值的收盘价；历史 Parquet 可能缺列，且该值不能证明当日可交易 |
 | `strategyName` | STRING | 否 | 模拟交易模式可能出现；Arena 当前历史回测不依赖 |
 
@@ -106,19 +105,10 @@ Parquet Schema。四张标准结果表都是必需输出；任一接口调用失
 实际 Parquet schema 为准：当前验证的 `2.00.16.32` 输出 `closePrice`，升级前生成的历史文件可能
 缺少该列。不得把 `longPositionAvgPrice` 当作当日估值价。
 
-当前插件原始 `getDailyPosition` 可能不填充两个卖出字段。Runtime 在返回和写出 `daily_positions`
-之前，以 `(symbol, tradeDate)` 汇总 `daily_trading_statistics` 的卖开与卖平成交量、成交额并覆盖这两
-列；没有卖出统计的持仓行填 0，输出类型保持持仓表原类型。因此可以检查净持仓数量恒等式：
-
-```text
-longPosition - shortPosition
-  = lastDayLongPosition - lastDayShortPosition
-  + todayBuyVolume - todaySellVolume
-```
-
-这仍不是独立成交来源。审计时应继续把 `todaySellVolume/Value` 与原始
-`daily_trading_statistics` 的卖开、卖平字段以及 `trade_details` 的方向、累计成交量和终态交叉核对；
-历史 Runtime 已生成的旧 Parquet 不会被自动回填。
+当前部署已观察到 `todaySellVolume` 和 `todaySellValue` 不能可靠反映真实卖出，因此不得用它们单独
+审计卖出，也不得强制使用它们验证持仓数量恒等式。卖出审计以
+`daily_trading_statistics.todaySellCloseTradeVolume/Value` 为主，并结合 `trade_details` 的订单方向、
+累计成交字段和终态核对。
 
 停牌或必要价格缺失时，持仓仍可能存在，`closePrice` 也可能沿用最近估值价格；它不能证明该证券
 当日存在可交易 message，不能用它或持仓均价回填因子数据。
