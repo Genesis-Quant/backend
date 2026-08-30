@@ -78,3 +78,23 @@ def test_list_projects_tool_exposes_search_and_sort_contract() -> None:
     assert validate_project_sort_field("query", "state") == "state"
     with pytest.raises(ValueError, match="query 项目不支持按 sharpeRatio 排序"):
         validate_project_sort_field("query", "sharpeRatio")
+
+
+def test_task_log_tool_exposes_full_and_worker_scopes() -> None:
+    tools = asyncio.run(mcp_server.list_tools())
+    tool = next(item for item in tools if item.name == "get_task_logs")
+
+    assert tool.input_schema["properties"]["scope"]["default"] == "full"
+    assert tool.input_schema["$defs"]["TaskLogScope"]["enum"] == ["full", "worker"]
+
+
+def test_workflow_output_tool_exposes_parquet_audit_metadata() -> None:
+    tools = asyncio.run(mcp_server.list_tools())
+    tool = next(item for item in tools if item.name == "list_workflow_outputs")
+    output = tool.output_schema["$defs"]["WorkflowOutputFile"]
+
+    assert {"row_count", "columns", "sha256"} <= set(output["required"])
+    assert output["properties"]["sha256"]["pattern"] == "^[0-9a-f]{64}$"
+    assert output["properties"]["columns"]["items"] == {
+        "$ref": "#/$defs/ResultColumn",
+    }

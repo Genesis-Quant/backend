@@ -23,6 +23,7 @@ FACTOR_OUTPUT_FILES = {
     "processed_data": "factor_processed.parquet",
     "information_coefficient": "factor_information_coefficients.parquet",
     "group_returns": "factor_group_returns.parquet",
+    "diagnostics": "factor_diagnostics.parquet",
 }
 BACKTEST_OUTPUT_FILES = {
     "trade_details": "trade_details.parquet",

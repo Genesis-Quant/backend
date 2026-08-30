@@ -112,7 +112,7 @@ Task API 必须同时传入 `workflow_instance_id`，Backend 会实时确认 Tas
 
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
-| `GET` | `/api/v1/tasks/{task_instance_id}/logs?workflow_instance_id=...` | 分页读取 Task 日志 |
+| `GET` | `/api/v1/tasks/{task_instance_id}/logs?workflow_instance_id=...&scope=full` | 分页读取 Task 日志；`scope=worker` 只返回 Worker 子进程输出 |
 | `GET` | `/api/v1/tasks/{task_instance_id}/logs/download?workflow_instance_id=...` | 流式下载完整日志 |
 | `POST` | `/api/v1/tasks/{task_instance_id}/actions/force-success?workflow_instance_id=...` | 将 Task 强制标记成功 |
 
@@ -123,15 +123,21 @@ Task API 必须同时传入 `workflow_instance_id`，Backend 会实时确认 Tas
   "workflow_instance_id": 123,
   "task_instance_id": 456,
   "state": "RUNNING_EXECUTION",
+  "scope": "full",
   "skip_line_num": 50,
   "returned_lines": 25,
   "next_line_num": 75,
   "has_more": true,
-  "message": "..."
+  "message": "...",
+  "next_cursor": null
 }
 ```
 
-下一次请求将 `next_line_num` 作为 `skip_line_num`。完整日志由 Backend 流式转发，不会
+下一次请求将 `next_line_num` 作为 `skip_line_num`。游标属于当前 `scope`；切换 `full` 与
+`worker` 时必须从 `skip_line_num=0` 重新读取。省略 `scope` 时仍返回完整调度日志。`worker`
+只保留 DolphinScheduler 收集的 Worker 子进程 stdout/stderr，包括 Runtime、Loguru、DOS 输出和
+异常，不包含任务初始化、环境、脚本内容等调度上下文。Worker 范围的后续请求应同时回传上次的
+`next_cursor`，以便从原始日志增量续读；完整范围的该字段为空。完整日志由 Backend 流式转发，不会
 一次性加载到内存。
 
 ### 研究项目与版本

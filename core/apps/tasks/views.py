@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from core.apps.tasks.schemas import TaskAction, TaskActionResponse, TaskLogResponse
+from core.apps.tasks.schemas import TaskAction, TaskActionResponse, TaskLogResponse, TaskLogScope
 from core.apps.tasks.services import TaskGatewayService
 from core.apps.users.models import User
 from core.apps.users.services import get_current_user
@@ -18,10 +18,10 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 
 @router.get("/{task_instance_id}/logs", response_model=TaskLogResponse)
-def get_task_log(task_instance_id: int, workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], skip_line_num: int = Query(0, ge=0), limit: int = Query(1000, ge=1, le=10000)) -> TaskLogResponse:
+def get_task_log(task_instance_id: int, workflow_instance_id: int, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)], skip_line_num: int = Query(0, ge=0), limit: int = Query(1000, ge=1, le=10000), scope: TaskLogScope = Query(TaskLogScope.FULL), cursor: str | None = Query(default=None, max_length=512)) -> TaskLogResponse:
     try:
-        return TaskLogResponse.model_validate(TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit))
-    except (DolphinSchedulerError, FileNotFoundError) as error:
+        return TaskLogResponse.model_validate(TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit, scope, cursor))
+    except (DolphinSchedulerError, FileNotFoundError, ValueError) as error:
         raise_api_http_error(error)
 
 

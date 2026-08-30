@@ -8,7 +8,7 @@ from pydantic import Field
 from core.apps.backtest.services import backtest_result_files
 from core.apps.factor.services import factor_result_files
 from core.apps.query.services import query_result_files
-from core.apps.tasks.schemas import TaskAction, TaskActionResponse, TaskLogResponse
+from core.apps.tasks.schemas import TaskAction, TaskActionResponse, TaskLogResponse, TaskLogScope
 from core.apps.tasks.services import TaskGatewayService
 from core.apps.workflows.schemas import (
     WorkflowAction,
@@ -129,11 +129,13 @@ def register_workflow_tools(server: MCPServer) -> None:
         task_instance_id: Annotated[int, Field(gt=0, description="工作流详情中某个 Task 的 instance ID。")],
         skip_line_num: Annotated[int, Field(ge=0, description="首次使用 0，后续使用上次返回的 next_line_num。")] = 0,
         limit: Annotated[int, Field(ge=1, le=10000, description="本页最多返回的日志行数。")] = 1000,
+        scope: Annotated[TaskLogScope, Field(description="full 返回完整调度日志；worker 只返回 Worker 子进程的 stdout/stderr。切换范围后必须从 skip_line_num=0 重新分页。")] = TaskLogScope.FULL,
+        cursor: Annotated[str | None, Field(max_length=512, description="worker 范围后续页传入上次返回的 next_cursor；首次或切换范围时为空。")] = None,
     ) -> McpResult[TaskLogResponse]:
         """Read one authenticated task log page."""
         with database_session_factory()() as session:
             user = current_user(session)
-            result = TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit)
+            result = TaskGatewayService().log(session, user, workflow_instance_id, task_instance_id, skip_line_num, limit, scope, cursor)
             return McpResult(result=TaskLogResponse.model_validate(result))
 
     @server.tool(title="获取完整任务日志下载地址", annotations=READ_ONLY)
@@ -176,7 +178,7 @@ def register_workflow_tools(server: MCPServer) -> None:
         application: Annotated[Literal["query", "factor", "backtest"], Field(description="工作流应用。")],
         workflow_instance_id: Annotated[int, Field(gt=0, description="成功且仍为当前 Attempt 的 workflow instance ID。")],
     ) -> McpResult[WorkflowOutputs]:
-        """List generated Parquet outputs and download paths."""
+        """List generated Parquet outputs with row/schema/hash metadata and download paths."""
         with database_session_factory()() as session:
             user = current_user(session)
             if application == "query":

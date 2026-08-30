@@ -167,6 +167,11 @@ Backend 会在工作流成功后校验 `results.parquet` 的行数、`case_index
 产生新 Attempt 后，旧实例的计数不会用于新实例。即使全部 case 都失败，Runtime 仍保存逐行错误，
 工作流可以成功且 `completed_count=0`，因此业务有效性必须以这两个计数和结果行状态为准。
 
+源码审计存在明确边界：来源版本本身的双源码可从 `get_version(...).parameters` 读取；研究详情和
+研究 Worker Attempt 不逐字节回显由来源版本派生出的完整双源码请求，Attempt 保存的是已编译并移除
+`dsl_source` 的 Runtime JSON。因此当前接口只能核对来源版本和实际执行语义，不能据此声称已经完成
+派生研究记录的源码级审计。需要这种审计时，应在创建研究前归档来源版本 parameters 及其内容哈希。
+
 ## 滚动参数调优
 
 参数调优同样基于已保存 Backtest 版本，每份报告对应一个 `optimization` Workspace。可用工具：
@@ -197,6 +202,11 @@ delete_backtest_optimization(optimization_id)
 生成一个同名 Parquet。先轮询报告的 `workflow_workspace_id`，仅 `SUCCESS` 后读取输出。
 删除报告要求个人主页启用参数调优删除权限，活动状态报告不能删除。
 
+参数调优沿用相同的源码审计边界：`get_version(...).parameters` 可以读取来源版本双源码，但
+`get_backtest_optimization` 和优化 Worker Attempt 不回显派生执行请求中的两份源码。若需要逐字节
+证明来源，创建调优报告前必须自行归档来源版本 parameters 及哈希；不能用已编译 Runtime JSON 反推
+原始 JSON/Python 源码文本。
+
 ## 输出
 
 当前工作流成功后：
@@ -208,13 +218,13 @@ list_workflow_outputs("backtest", workflow_instance_id)
 | 名称 | 文件 | 内容 |
 | --- | --- | --- |
 | `trade_details` | `trade_details.parquet` | 订单状态事件；同一订单多行，当前没有费用列 |
-| `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓；当前卖出量/额字段有已知限制 |
+| `daily_positions` | `daily_positions.parquet` | 每日盘后证券持仓；卖出量/额由 Runtime 用每日成交统计标准化 |
 | `daily_portfolios` | `daily_portfolios.parquet` | 每日现金、市值、权益、净值、累计收益和累计费用 |
 | `daily_trading_statistics` | `daily_trading_statistics.parquet` | 每日实际成交量、成交额和方向均价 |
 
 以上均为必需输出；任何结果接口调用失败都会使工作流失败。下载与鉴权见
 `arena://docs/overview/workflows`。读取报告前必须执行
-`arena://docs/backtest/results` 的字段解释、已知限制、对账公式和 QA 清单。
+`arena://docs/backtest/results` 的字段解释、标准化边界、对账公式和 QA 清单。
 
 ## 完整调用顺序
 

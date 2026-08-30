@@ -84,8 +84,11 @@ Workspace 创建新 Attempt：
 
 - 用户修改参数后再次执行；
 - 使用相同输入完整重跑；
-- 失败续跑；
 - 提交失败后的安全重试。
+
+`control_workflow(..., "retry-failed")` 是例外：它让 DolphinScheduler 在原 Attempt 和原 Workflow
+Instance 内重新调度失败节点，只会产生新的 Task Instance，不会创建新 Attempt 或新 Workflow
+Instance。
 
 新 Attempt 可以还没有 Workflow Instance，例如 `QUEUED`、`SUBMITTING` 或 `SUBMIT_FAILED`。
 Attempt 一旦成功绑定调度实例，才有 `workflow_instance_id` 和 Task 信息。
@@ -137,7 +140,8 @@ Attempt 历史是参数与状态审计记录，不是每次 Parquet 的永久归
 | --- | --- | --- |
 | 再次调用业务 `run_*` | 新提交的完整请求 | 原 Workspace 新增 Attempt |
 | `control_workflow(..., "rerun")` | 原 Attempt 输入 | 原 Workspace 新增 Attempt 和 Instance |
-| `control_workflow(..., "retry-failed")` | 原 Attempt 输入 | 原 Workspace 新增 Attempt 和 Instance |
+| `control_workflow(..., "retry-failed")` | 原 Attempt 与失败 Task | 原 Attempt、原 Instance 内新增 Task Instance |
 
-重跑后旧 `workflow_instance_id` 不再代表当前运行。始终保留 `workspace_id` 并重新读取当前 Instance。
+完整重跑后旧 `workflow_instance_id` 不再代表当前运行，应保留 `workspace_id` 并重新读取当前 Instance；
+失败节点续跑仍使用原 `workflow_instance_id`，但必须重新读取 Task 列表取得新 Task Instance ID。
 通用轮询、历史、日志、输出和控制 API 见 `arena://docs/overview/workflows`。

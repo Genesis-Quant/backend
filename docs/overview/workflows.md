@@ -113,14 +113,26 @@ get_task_logs(
   workflow_instance_id,
   task_instance_id,
   skip_line_num=0,
-  limit=1000
+  limit=1000,
+  scope="full",
+  cursor=null
 )
 ```
 
 - `limit` 为 1 到 10000 行，不是字节上限。
+- `scope="full"` 是默认值，返回完整 DolphinScheduler 调度日志，与原有行为一致。
+- `scope="worker"` 只返回 Worker 子进程的 stdout/stderr，包括 Runtime、Loguru、DOS 输出和异常，
+  省略任务初始化、环境和脚本内容等调度上下文。它适合快速检查实际计算过程。
 - 首次从 `skip_line_num=0` 开始。
 - 当 `has_more=true` 时，把 `next_line_num` 原样作为下一页的 `skip_line_num`。
+- `skip_line_num`、`next_line_num` 和 `returned_lines` 都按当前 `scope` 的可见行计数；切换范围后必须
+  从 0 重新分页，不能混用两个范围的游标。
+- `scope="worker"` 时，后续页和实时增量读取还应把上次响应的 `next_cursor` 作为 `cursor` 传回；它
+  保存原始 DolphinScheduler 行位置和跨页子进程段状态，避免每次从完整日志开头重扫。旧调用方省略
+  `cursor` 仍能按 `skip_line_num` 得到正确内容，但长日志效率较低。`full` 范围不使用该字段。
 - 直到 `has_more=false` 才是完整日志；不能只根据第一屏尾部猜测根因。
+- 正在创建或尚未产生 stdout/stderr 的 Task，Worker 范围会暂时返回 0 行；继续从 0 刷新即可读取
+  随后产生的输出。
 
 需要一次下载完整日志时：
 
@@ -128,7 +140,8 @@ get_task_logs(
 get_task_log_download(workflow_instance_id, task_instance_id)
 ```
 
-返回 `download_path`。将它拼接到 `{ARENA_PUBLIC_URL}` 的 origin，并携带同一 Bearer Token。Task 必须
+返回 `download_path`。下载始终是未经筛选的完整日志；Worker-only 范围通过 `get_task_logs` 分页读取。
+将下载路径拼接到 `{ARENA_PUBLIC_URL}` 的 origin，并携带同一 Bearer Token。Task 必须
 属于指定 Workflow Instance，服务端会同时校验两者的所有权。
 
 ### DolphinDB/DOS 输出已进入 Task 日志
@@ -145,6 +158,11 @@ Task 日志，而不是只显示在 DolphinDB 客户端终端。
 日志仅用于调试，不是结构化结果：不要在日志中输出 Token、密码或完整大表，不要依赖日志文本生成
 交易报告，也不能用一条“提交订单”日志代替 `onOrder`、`onTrade` 和 Parquet 对账。大量逐行打印会
 显著增加 Task 日志体积和调度开销，定位完成后应删除或降到必要摘要。
+
+当前 Query 执行会另外写入机器可读的 `DSL 执行摘要` 和结果规模摘要，包含股票域类型、候选代码
+区间并集、源字段/命名节点/filter/输出列数量，以及最终行数和有效代码区间并集。Factor 的第二阶段
+也使用同一摘要，因此全市场与指数动态池都能对照候选和最终有效规模；这些数量是研究区间并集，
+不是某一个交易日的截面数量。逐日 Factor 样本与分组规模应读取 `factor_diagnostics.parquet`。
 
 ## 通用失败诊断顺序
 
@@ -164,9 +182,18 @@ Task 日志，而不是只显示在 DolphinDB 客户端终端。
 list_workflow_outputs(application, workflow_instance_id)
 ```
 
-`application` 为 `query`、`factor` 或 `backtest`。Instance 必须成功且仍绑定当前业务结果。返回值只含
-逻辑名称、文件名、大小、修改时间和 `download_path`，不内嵌 Parquet。具体输出名称、列和读取方式见
-对应应用的 `api` 文档。
+`application` 为 `query`、`factor` 或 `backtest`。Instance 必须成功且仍绑定当前业务结果。每个输出
+返回逻辑名称、文件名、大小、修改时间、`row_count`、`columns`、`sha256` 和 `download_path`，不内嵌
+Parquet 数据。`columns` 按文件中的顶层列顺序返回 `name`、Arrow 逻辑 `type` 和 `nullable`；
+`sha256` 是完整文件内容的 64 位十六进制 SHA-256，不能用 `size` 或对象存储 ETag 替代。具体输出名称、
+业务语义和读取方式见对应应用的 `api` 文档。
+
+Backend 在通过当前用户、当前 Attempt 和工作流成功状态校验后读取元数据。本地文件与对象存储使用
+同一套完整内容哈希；首次读取后按本地文件纳秒时间戳/文件标识或对象存储 ETag/Version ID 缓存在
+Backend 进程的有界缓存中，内容被替换时自动失效。缓存不会写入 Attempt、改变任务更新时间或混入
+业务事件；Backend 重启后首次读取会重新计算。对象存储下载使用 Version ID 或 ETag 条件请求绑定
+HEAD 快照，避免对象并发替换时混合两版元数据。首次计算 SHA-256 必须流式读取完整对象，但不会把
+完整文件一次性放入内存；后续快照未变化的列表请求不会重复下载对象。
 
 下载时把相对 `download_path` 拼接到 `{ARENA_PUBLIC_URL}` 的 origin，并使用同一 Bearer Token。不要把
 一个部署环境签发的 Token 发送到另一个域名。旧 Attempt 的 Instance 不等于永久输出归档；同一
@@ -263,6 +290,11 @@ Token 只能发送到当前 Arena API 的 origin。Arena 可以返回指向对�
 `payload.input_json`、Project/Version/Workspace/Attempt/Workflow ID、所有输出文件、文件大小与哈希、
 Runtime/Backend 版本、基础
 数据版本、费用与年化参数。不要只保存截图或摘要指标。
+
+一轮可复核的最低输出验收应至少记录：实际逻辑输出名称、Parquet Schema、行数、日期范围、业务键
+重复数、关键列 NULL/非有限值数量，以及完整文件的 SHA-256。Factor/Backtest 还要先确认当前
+`workflow_instance_id` 仍绑定被验收的 Workspace 结果，再保存版本；否则同一 Workspace 的后续运行
+可能使“已检查文件”和“准备保存的 Instance”不再是同一次结果。
 
 ## 工作流控制
 

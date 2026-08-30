@@ -133,10 +133,13 @@ Runtime 允许并校验的常用字段：
 | `enableMinimumPerTransactionFee` | boolean | 最低单笔费用 |
 | `enableSellCloseRestrict` | boolean | 卖出可用量限制 |
 | `outputOrderInfo` | boolean | 请求插件输出可选 `orderInfo`；不保证存在或形成结构化拒单原因 |
+| `outputSeqNum` | boolean | 请求可选订单状态事件序号；只有实际 `trade_details` Schema 含 `seqNum` 时才能用于稳定事件排序 |
+| `outputTradeSeqNum` | boolean | 请求可选成交序号；只有实际 Schema 含 `tradeSeqNum` 时才能用于成交排序 |
 | `outputQueuePosition` | 0、1 或 2 | Runtime 可校验该插件选项，但非零值只适用于含逐笔行情模式；当前固定 `dataType=1` 不应设置 |
 
 其余 Runtime 已声明的插件 boolean 选项也按 boolean 校验。`config` 是开放字典，能通过 JSON 校验
-不代表某个 DolphinDB 版本或当前快照模式一定支持该选项。
+不代表某个 DolphinDB 版本或当前快照模式一定支持该选项。两个序号开关也只表示向插件请求对应
+可选列；未设置或实际 Schema 未返回列时，`trade_details` 仍没有稳定的单行事件键。
 
 `benchmark` 使用 Tushare 沪深代码格式，并且只能选择 Runtime `INDEX_CODES` 中已经配置、由
 `index-daily` Worker 写入 `coreTable` 的指数。Runtime 会单独读取相同回测区间的指数日行情，转换为

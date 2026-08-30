@@ -11,7 +11,7 @@ from core.utils.validation import (
     strip_text,
 )
 
-type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns"]
+type FactorOutput = Literal["processed_data", "information_coefficient", "group_returns", "diagnostics"]
 type FactorProjectSortField = Literal[
     "id",
     "title",
@@ -49,6 +49,9 @@ class FactorProjectItem(BaseModel):
 class FactorMetricSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    return_kind: Literal["simple", "log"] | None = None
+    return_periods: int | None = Field(default=None, ge=1)
+    compoundable: bool | None = None
     observations: int = Field(ge=0)
     ic_mean: float | None = Field(default=None, allow_inf_nan=False)
     ic_std: float | None = Field(default=None, allow_inf_nan=False)

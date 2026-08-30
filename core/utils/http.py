@@ -16,4 +16,8 @@ def raise_api_http_error(error: Exception) -> NoReturn:
         status_code = 409
     else:
         status_code = 502
-    raise HTTPException(status_code=status_code, detail=str(error)) from error
+    api_code = getattr(error, "api_code", None)
+    detail: str | dict[str, str] = str(error)
+    if isinstance(api_code, str):
+        detail = {"code": api_code, "message": str(error)}
+    raise HTTPException(status_code=status_code, detail=detail) from error

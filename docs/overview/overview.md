@@ -83,7 +83,8 @@ CallToolResult.structuredContent.result
   DolphinDB 中执行测试脚本；其无计算资源沙箱和超时边界必须先读 `arena://docs/overview/dolphindb`。
 - `get_current_user()`：读取当前认证用户。
 - `submit_feedback(content)`：以当前 Bearer Token 对应用户提交反馈，`content` 去除首尾空白后必须为
-  1 到 4000 个字符；服务端固定记录来源为 `mcp`。网页用户也可以在 Profile 页面提交反馈。
+  1 到 4000 个字符；服务端固定记录来源为 `mcp`。成功返回本次新建的反馈记录。MCP 当前不提供
+  反馈列表或历史读取工具，因此调用方需要自行保留提交结果；网页用户也可以在 Profile 页面提交反馈。
 
 发现结果不是执行结果。先完成发现和请求校验，再创建项目并运行。
 

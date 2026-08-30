@@ -165,7 +165,47 @@ FILTERS = []
 - 输出分析所用因子列是中性化后的值。
 
 `preprocess=false` 时 Runtime 不修改因子值，也不生成分组；`dataset_query` 必须为每个因子输出
-`<factor>_group`，分组值应为 `0..n_groups-1`。
+`<factor>_group`。每个非空分组值必须是有限整数且位于 `0..n_groups-1`；Runtime 会在任何分组收益
+聚合前校验，负数、越界值、小数和非数值列都会使任务明确失败，不再被静默忽略。
+
+例如，因子列名为 `alpha`、`n_groups=5` 时，Python DSL 可以显式生成同名因子和规定的分组列：
+
+```python
+alpha = CS.unary_robust_zscore("alpha", col="close")
+alpha_group = CS.unary_qcut("alpha_group", col=alpha, q=5)
+
+FACTORS = []
+DERIVATIVES = [alpha, alpha_group]
+FILTERS = []
+```
+
+等价的 JSON 节点为：
+
+```json
+{
+  "factors": [],
+  "derivatives": {
+    "alpha": {
+      "type": "CS",
+      "op": "unary.robust_zscore",
+      "fields": { "col": "close" },
+      "params": {}
+    },
+    "alpha_group": {
+      "type": "CS",
+      "op": "unary.qcut",
+      "fields": { "col": "alpha" },
+      "params": { "q": 5 }
+    }
+  },
+  "filters": []
+}
+```
+
+其中 `q` 必须等于请求的 `n_groups`；`unary.qcut` 按日截面把非 NULL 观测映射到 `0..q-1`，输入
+NULL 的位置仍为 NULL，有效样本过少或并列值较多时允许部分组为空。示例使用 Catalog 中的 `close`；
+替换为其它字段或算符前，
+仍需分别通过 Catalog 与 `describe_dsl_operator` 确认。
 
 ## 收益标签
 
@@ -243,6 +283,24 @@ time
 `n_select` 支股票，同样按市值加权；它们作为分组曲线的新首尾端，多空指标使用
 `top - bottom`。旧任务没有这两列时，读取端继续使用原来的首尾分组。读取结果时必须由实际
 `factor_columns` 和 `return_columns` 构造列名，不能硬编码 `ret0`。
+
+逻辑输出 `diagnostics` 对应 `factor_diagnostics.parquet`，每行粒度为一个交易日 × 一个因子 × 一个
+收益列：
+
+```text
+time, factor, return_column
+universe_count
+factor_valid_count, return_valid_count, paired_valid_count
+group_valid_count, group_min, group_max, occupied_group_count
+min_group_size, max_group_size
+```
+
+它描述最终分析表中可直接观测的事实：当日证券并集、因子/收益/配对有效数，以及实际分组范围、
+占用组数和已占用组的最小/最大样本数。分组相关计数按当前 `factor × return` 组合统计，只包含分组
+非空、收益有限且市值权重非空的证券，与分组加权收益的有效样本口径一致；不会把其它收益列有效的
+成员计入当前组合。该表由 DolphinDB 在服务端聚合，不把完整预处理表下载到 Python。它不能反推出
+匿名滚动节点的精确预热覆盖、OLS 设计矩阵秩或被删除控制变量；不要把最终非空覆盖率误写成这些
+执行现场诊断。
 
 ## 批量执行
 

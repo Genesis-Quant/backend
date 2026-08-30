@@ -52,7 +52,7 @@ from core.utils.dsl_source import (
 )
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
-PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
+PROJECT_OUTPUTS = ["information_coefficient", "group_returns", "diagnostics"]
 
 
 def factor_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
@@ -632,6 +632,9 @@ def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], inform
                 annual_volatility = None
                 annual_return = None
             result[factor][return_column] = {
+                "return_kind": return_kind,
+                "return_periods": return_periods,
+                "compoundable": return_periods == 1,
                 "observations": observations,
                 "ic_mean": clean_number(ic.mean()),
                 "ic_std": ic_std,

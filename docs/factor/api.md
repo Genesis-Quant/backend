@@ -95,11 +95,19 @@ list_workflow_outputs("factor", workflow_instance_id)
 | --- | --- | --- |
 | `information_coefficient` | `factor_information_coefficients.parquet` | 各 factor × return 的 IC 与 Rank IC 时序列 |
 | `group_returns` | `factor_group_returns.parquet` | 各 factor × return 的极端 N 支及等数量分组收益时序列 |
+| `diagnostics` | `factor_diagnostics.parquet` | 各交易日、factor × return 的有效样本覆盖、实际分组范围与组样本摘要 |
 
 实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。以运行请求
 和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。
 
-保存版本时，Backend 根据 `return_specs` 计算并持久化因子摘要指标。单期简单收益与单期对数收益
+新工作流固定请求这三份轻量结果；历史 Attempt 仍按其原 `requested_outputs` 返回，不会因为缺少后来
+新增的 `diagnostics` 而失效。下载这类历史 Attempt 未请求的输出时，API 返回 404 和业务码
+`RESULT_NOT_REQUESTED`；已请求但实际丢失的产物属于存储故障，不使用该业务码。诊断表只包含服务端
+聚合计数，不保存或下载完整 `processed_data`。
+
+保存版本时，Backend 根据 `return_specs` 计算并持久化因子摘要指标。每个 factor × return 指标同时
+显式返回 `return_kind`、`return_periods` 和 `compoundable`，避免把重叠收益的空复利指标误判为计算
+失败。单期简单收益与单期对数收益
 分别按各自口径生成财富路径；覆盖多个交易期的重叠收益不连续复利，因此对应累计收益、年化收益、
 年化波动率、Sharpe 和最大回撤为 `null`，IC 与 Rank IC 指标仍保留。浏览器读取 Parquet 时遵循同一
 契约，不能自行把重叠标签当作逐日可实现收益。
@@ -117,7 +125,7 @@ ICIR 与 Rank ICIR 均按 `IC 均值 / IC 样本标准差` 计算，并以该原
 3. create_project("factor", title)
 4. run_factor_analysis(project_id, parameters)
 5. 按 Workspace 轮询；失败时读完整日志
-6. SUCCESS 后列出并检查 IC/group outputs
+6. SUCCESS 后列出并检查 IC、group 与 diagnostics outputs
 7. 需要固化时 save_version("factor", ...)
 ```
 
