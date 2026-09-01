@@ -11,7 +11,9 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from runtime.apps.backtest.schema import BacktestParameters
 from runtime.apps.factor.schema import (
+    FACTOR_INDUSTRY_COLUMNS,
     FactorAnalysisParameters,
+    FactorIndustryColumn,
     FactorReturnSpec,
 )
 from runtime.apps.query.schema import FactorQuery
@@ -19,7 +21,11 @@ from runtime.apps.query.schema import FactorQuery
 from core.utils.dsl import PythonDslCompileError, compile_python_dsl
 
 
-FACTOR_MANAGED_COLUMNS = frozenset({"circ_mv", "total_mv"})
+FACTOR_MANAGED_COLUMNS = frozenset({
+    "circ_mv",
+    "total_mv",
+    *FACTOR_INDUSTRY_COLUMNS,
+})
 FACTOR_STOCK_POOL_FACTORS = frozenset({
     "weight_000016SH",
     "weight_000300SH",
@@ -405,6 +411,7 @@ class FactorAnalysisApplicationRequest(BaseModel):
     n_select: int = Field(default=10, ge=1)
     preprocess: bool = True
     market_value_column: str = Field(default="circ_mv", min_length=1)
+    industry_column: FactorIndustryColumn = "industry"
 
     @model_validator(mode="after")
     def validate_runtime_parameters(self) -> "FactorAnalysisApplicationRequest":
@@ -475,6 +482,7 @@ class FactorAnalysisApplicationRequest(BaseModel):
             "n_select": self.n_select,
             "preprocess": self.preprocess,
             "market_value_column": self.market_value_column,
+            "industry_column": self.industry_column,
         })
 
     def runtime_payload(self) -> dict[str, Any]:

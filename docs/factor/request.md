@@ -32,9 +32,11 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 | `n_select` | integer | 否 | `10` | 每日额外选择因子值最小和最大的 N 支股票，至少 1 |
 | `preprocess` | boolean | 否 | `true` | 是否执行 Runtime 内置预处理 |
 | `market_value_column` | string | 否 | `circ_mv` | 中性化控制变量和分组收益权重 |
+| `industry_column` | string | 否 | `industry` | 行业中性化分类列，可选 `industry`、`industry_l0`、`industry_l1`、`industry_l2`、`industry_l3` |
 
-`factor_columns`、`return_columns`、`market_value_column` 不能互相承担冲突角色。Runtime 会把这
-些必要列自动加入 `dataset_query.factors`，但如果同名 derivative 已存在则使用 derivative 输出。
+`factor_columns`、`return_columns`、`market_value_column` 不能互相承担冲突角色。启用内置预处理时，
+`industry_column` 也不能同时作为因子或收益率列。Runtime 会把这些必要列自动加入
+`dataset_query.factors`，但如果同名 derivative 已存在则使用 derivative 输出。
 
 使用 `dataset_query.dsl_source` 时，活动源码只负责用户编写的因子和其它过滤逻辑。收益标签节点由
 `return_columns` 对应的 `dataset_query.derivatives` 保留并在提交时合并，市值列由请求字段管理，
@@ -155,8 +157,11 @@ FILTERS = []
 5. 将残差再次 z-score；
 6. 按残差从小到大划分 `n_groups` 个等数量组。
 
-行业映射从 Runtime 应用进程启动时加载的 Python 模块变量读取，不由 `dataset_query` 提供。若某日
-某因子的有效样本数不足以完成回归，该日该因子的处理值和分组保持空值，不会用未中性化值代替。
+`industry_column=industry` 时，行业映射从 Runtime 应用进程启动时加载的 Python 模块变量读取，
+不由 `dataset_query` 提供。选择 `industry_l0` 至 `industry_l3` 时，Runtime 改用 CoreData 中按日期
+变化的动态行业字段，并自动把该字段加入 `dataset_query`；其中 `industry_l0` 是项目 11 类行业，
+另外三个字段分别是申万一至三级分类。若某日某因子的有效样本数不足以完成回归，该日该因子的
+处理值和分组保持空值，不会用未中性化值代替。
 
 启用内置预处理时：
 

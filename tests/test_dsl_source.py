@@ -200,6 +200,40 @@ def test_factor_python_source_keeps_backend_generated_return_nodes() -> None:
     assert "circ_mv" in runtime["dataset_query"]["factors"]
 
 
+def test_factor_dynamic_industry_is_managed_outside_editor_dsl() -> None:
+    request = FactorAnalysisApplicationRequest.model_validate({
+        "codes_query": None,
+        "dataset_query": {
+            **query_request(),
+            "codes": [],
+            "derivatives": {
+                "ret0": {
+                    "type": "TS",
+                    "op": "unary.pct_change",
+                    "fields": {"col": "close"},
+                    "params": {"periods": 1},
+                },
+            },
+        },
+        "factor_columns": ["momentum"],
+        "return_columns": ["ret0"],
+        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
+        "preprocess": True,
+        "market_value_column": "circ_mv",
+        "industry_column": "industry_l2",
+    })
+
+    stored = request.stored_payload()
+    runtime = compile_application_payload("factor", stored)
+
+    assert stored["industry_column"] == "industry_l2"
+    assert runtime["industry_column"] == "industry_l2"
+    assert "industry_l2" in runtime["dataset_query"]["factors"]
+    assert "industry_l2" not in json.loads(
+        stored["dataset_query"]["dsl_source"]["json_source"]
+    )["factors"]
+
+
 def historical_factor_parameters() -> dict:
     return {
         "codes_query": None,
