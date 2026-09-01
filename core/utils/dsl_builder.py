@@ -1,5 +1,6 @@
 """Build validated Python DSL expressions without extending Runtime's public API."""
 
+import keyword
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, get_args
@@ -38,28 +39,30 @@ def operator_type(model: type[Derivative]) -> OperatorType:
     return values[0]
 
 
+def normalize_member(name: str) -> str:
+    """Map Python-safe keyword members such as ``and_`` back to ``and``."""
+    if name.endswith("_") and keyword.iskeyword(name[:-1]):
+        return name[:-1]
+    return name
+
+
 @lru_cache(maxsize=None)
-def operator_candidates(
+def operator_model(
     expected_type: OperatorType,
-    alias: str,
-) -> tuple[tuple[str, type[Derivative]], ...]:
-    normalized = alias[:-1] if alias.endswith("_") else alias
-    candidates = [
-        (operation, model)
+    operation: str,
+) -> type[Derivative] | None:
+    model = Derivative.operators.get(operation)
+    if model is None or operator_type(model) != expected_type:
+        return None
+    return model
+
+
+@lru_cache(maxsize=None)
+def operator_categories(expected_type: OperatorType) -> frozenset[str]:
+    return frozenset(
+        operation.split(".", 1)[0]
         for operation, model in Derivative.operators.items()
-        if operator_type(model) == expected_type
-    ]
-    exact = [
-        candidate
-        for candidate in candidates
-        if candidate[0].replace(".", "_") == normalized
-    ]
-    if exact:
-        return tuple(exact)
-    return tuple(
-        candidate
-        for candidate in candidates
-        if candidate[0].rsplit(".", 1)[-1] == normalized
+        if operator_type(model) == expected_type and "." in operation
     )
 
 
@@ -128,7 +131,7 @@ def build_derivative(
 @dataclass(frozen=True, slots=True)
 class Operator:
     operator_type: OperatorType
-    alias: str
+    operation: str
 
     def __call__(
         self,
@@ -136,29 +139,22 @@ class Operator:
         *operands: Any,
         **arguments: Any,
     ) -> OP:
-        candidates = operator_candidates(self.operator_type, self.alias)
-        if not candidates:
-            raise DslBuildError(f"不存在算符 {self.operator_type}.{self.alias}")
-
-        matches: list[Derivative] = []
-        failures: list[str] = []
-        for operation, model in candidates:
-            try:
-                matches.append(
-                    build_derivative(operation, model, operands, arguments)
-                )
-            except (TypeError, ValueError, ValidationError) as error:
-                failures.append(f"{operation}: {error}")
-        if not matches:
+        model = operator_model(self.operator_type, self.operation)
+        if model is None:
             raise DslBuildError(
-                f"{self.operator_type}.{self.alias} 参数无效："
-                + "; ".join(failures)
+                f"不存在算符 {self.operator_type}.{self.operation}"
             )
-        if len(matches) > 1:
+        try:
+            derivative = build_derivative(
+                self.operation,
+                model,
+                operands,
+                arguments,
+            )
+        except (TypeError, ValueError, ValidationError) as error:
             raise DslBuildError(
-                f"{self.operator_type}.{self.alias} 调用存在歧义；"
-                "请使用完整名称，例如 binary_add 或 multiary_add"
-            )
+                f"{self.operator_type}.{self.operation} 参数无效：{error}"
+            ) from error
 
         operation_dependencies: list[OP] = []
         seen: set[int] = set()
@@ -167,33 +163,39 @@ class Operator:
                 if id(dependency) not in seen:
                     seen.add(id(dependency))
                     operation_dependencies.append(dependency)
-        return OP(name, matches[0], tuple(operation_dependencies))
+        return OP(name, derivative, tuple(operation_dependencies))
 
 
-class OperatorNamespace(type):
+@dataclass(frozen=True, slots=True)
+class OperatorCategory:
+    operator_type: OperatorType
+    category: str
+
+    def __getattr__(self, member: str) -> Operator:
+        if not member or member.startswith("_"):
+            raise AttributeError(member)
+        operation = f"{self.category}.{normalize_member(member)}"
+        if operator_model(self.operator_type, operation) is None:
+            raise AttributeError(member)
+        return Operator(self.operator_type, operation)
+
+
+@dataclass(frozen=True, slots=True)
+class Operators:
     operator_type: OperatorType
 
-    def __getattr__(cls, alias: str) -> Operator:
-        if not alias or alias.startswith("_"):
-            raise AttributeError(alias)
-        return Operator(cls.operator_type, alias)
+    def __getattr__(self, member: str) -> OperatorCategory:
+        if not member or member.startswith("_"):
+            raise AttributeError(member)
+        category = normalize_member(member)
+        if category not in operator_categories(self.operator_type):
+            raise AttributeError(member)
+        return OperatorCategory(self.operator_type, category)
 
 
-class DirectOperators(metaclass=OperatorNamespace):
-    operator_type: OperatorType = "DIRECT"
-
-
-class TimeSeriesOperators(metaclass=OperatorNamespace):
-    operator_type: OperatorType = "TS"
-
-
-class CrossSectionOperators(metaclass=OperatorNamespace):
-    operator_type: OperatorType = "CS"
-
-
-DIRECT = DirectOperators
-TS = TimeSeriesOperators
-CS = CrossSectionOperators
+DIRECT = Operators("DIRECT")
+TS = Operators("TS")
+CS = Operators("CS")
 
 
 __all__ = [

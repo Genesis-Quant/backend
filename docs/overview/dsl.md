@@ -45,6 +45,30 @@ DERIVATIVES = []   # list[OP]
 FILTERS = []       # list[OP]
 ```
 
+Python 算符必须使用 `计算上下文.算子类别.算子名称` 三级路径。前两段来自 Catalog 的 `type`，后两段
+来自 `op`：JSON 节点 `{"type": "DIRECT", "op": "binary.div"}` 对应
+`DIRECT.binary.div(...)`，`{"type": "TS", "op": "unary.rolling_mean"}` 对应
+`TS.unary.rolling_mean(...)`。不支持 `DIRECT.binary_div`、`DIRECT.div` 等扁平或省略类别的写法。
+若算子名称是 Python 关键字，只在 Python 源码中追加下划线，例如 JSON `multiary.and` 对应
+`DIRECT.multiary.and_(...)`；编译后的 JSON `op` 仍是 `multiary.and`。
+
+第一个可选位置参数是输出名称。需要写入 `DERIVATIVES`、被其它节点按名称复用或加入 `FILTERS` 的
+顶层 OP 应传入非空名称；只在父节点内部使用的匿名 OP 直接省略名称，不需要传 `None`：
+
+```python
+valid = DIRECT.multiary.and_(
+    "valid",
+    cols=[
+        DIRECT.binary.gt(left="close", right=0),
+        DIRECT.binary.gt(left="vol", right=0),
+    ],
+)
+
+FACTORS = []
+DERIVATIVES = [valid]
+FILTERS = [valid]
+```
+
 使用 `DIRECT`、`TS`、`CS` 创建有名称的 OP 后，将需要输出的算符放入 `DERIVATIVES`，将最终 BOOL
 过滤算符放入 `FILTERS`。允许用受限辅助函数、`range`、`zip` 和列表推导减少重复声明；执行结果仍会
 转换为同一套 JSON DSL 并通过 `FactorQuery` 校验。精确请求外形以对应 `arena://schemas/*` 为准。

@@ -12,6 +12,7 @@ from core.utils.dsl_source import (
     compile_application_payload,
     compile_dsl_source,
     compile_factor_dsl_source,
+    dsl_document_to_python,
     factor_dsl_source,
     upgrade_factor_dsl_sources,
     upgrade_dsl_sources,
@@ -20,7 +21,7 @@ from core.utils.dsl_source import (
 
 
 PYTHON_DSL = """
-momentum = TS.unary_pct_change(
+momentum = TS.unary.pct_change(
     "momentum",
     col="close",
     periods=20,
@@ -146,7 +147,7 @@ def test_factor_compiler_accepts_managed_stock_pool_references() -> None:
         language="python",
         json_source="inactive JSON draft",
         python_source='''
-rank = CS.rank_pct(
+rank = CS.unary.rank_pct(
     "pool_rank",
     col="turnover_rate_f",
     on="stock_pool_member",
@@ -596,7 +597,7 @@ def test_factor_saved_sources_remove_legacy_managed_pool_nodes() -> None:
   "filters": ["stock_pool_member"]
 }"""
     python_source = """
-member = DIRECT.binary_gt(
+member = DIRECT.binary.gt(
     "stock_pool_member",
     left="weight_000300SH",
     right=0,
@@ -775,6 +776,47 @@ def test_missing_source_generates_both_editable_versions() -> None:
         "dsl_source": {**source, "language": "python"},
     }).runtime_payload()
     assert compiled_python["dataset_query"]["factors"] == ["vol"]
+
+
+def test_json_to_python_uses_hierarchical_paths_and_omits_anonymous_name() -> None:
+    document = {
+        "factors": [],
+        "derivatives": {
+            "valid": {
+                "type": "DIRECT",
+                "op": "multiary.and",
+                "fields": {
+                    "cols": [
+                        {
+                            "type": "DIRECT",
+                            "op": "binary.gt",
+                            "fields": {"left": "close", "right": 0},
+                            "params": {},
+                        },
+                        {
+                            "type": "DIRECT",
+                            "op": "binary.gt",
+                            "fields": {"left": "vol", "right": 0},
+                            "params": {},
+                        },
+                    ],
+                },
+                "params": {},
+            },
+        },
+        "filters": ["valid"],
+    }
+
+    python_source = dsl_document_to_python(document)
+
+    assert 'DIRECT.multiary.and_("valid"' in python_source
+    assert 'DIRECT.binary.gt(left="close", right=0)' in python_source
+    assert "None" not in python_source
+    assert compile_dsl_source(DslSource(
+        language="python",
+        json_source="inactive JSON draft",
+        python_source=python_source,
+    )) == document
 
 
 def test_legacy_single_source_is_upgraded_without_changing_active_text() -> None:

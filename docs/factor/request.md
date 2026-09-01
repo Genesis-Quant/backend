@@ -126,7 +126,7 @@ JSON DSL 示例：
 等价的 Python DSL 核心写法：
 
 ```python
-pool_turnover_rank = CS.unary_rank_pct(
+pool_turnover_rank = CS.unary.rank_pct(
     "pool_turnover_rank",
     col="turnover_rate_f",
     ascending=True,

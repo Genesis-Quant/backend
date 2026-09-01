@@ -11,14 +11,14 @@ from core.utils.dsl import PythonDslCompileError, compile_python_dsl
 def test_compile_python_dsl_builds_named_dependencies() -> None:
     result = compile_python_dsl(
         '''
-spread = DIRECT.sub("price_spread", left="close", right="open")
-spread_mean = TS.rolling_mean(
+spread = DIRECT.binary.sub("price_spread", left="close", right="open")
+spread_mean = TS.unary.rolling_mean(
     "price_spread_mean_20d",
     col=spread,
     window=20,
 )
-spread_rank = CS.rank_pct("price_spread_rank", col=spread_mean)
-selected = DIRECT.gt("selected", left=spread_rank, right=0.8)
+spread_rank = CS.unary.rank_pct("price_spread_rank", col=spread_mean)
+selected = DIRECT.binary.gt("selected", left=spread_rank, right=0.8)
 
 FACTORS: list[str] = ["open", "close"]
 DERIVATIVES: list = [spread_rank]
@@ -43,13 +43,13 @@ FILTERS: list = [selected]
     json.dumps(result, ensure_ascii=False)
 
 
-def test_compile_python_dsl_resolves_overloaded_aliases() -> None:
+def test_compile_python_dsl_uses_exact_hierarchical_operators() -> None:
     result = compile_python_dsl(
         '''
-binary = DIRECT.add("binary", left="open", right="close")
-multiary = DIRECT.add("multiary", cols=["open", "high", "low", "close"])
-market_mean = CS.mean("market_mean", col="close")
-industry_mean = CS.mean("industry_mean", col="close", by="industry")
+binary = DIRECT.binary.add("binary", left="open", right="close")
+multiary = DIRECT.multiary.add("multiary", cols=["open", "high", "low", "close"])
+market_mean = CS.unary.mean("market_mean", col="close")
+industry_mean = CS.grouped.mean("industry_mean", col="close", by="industry")
 FACTORS = ["close"]
 DERIVATIVES = [binary, multiary, market_mean, industry_mean]
 FILTERS = []
@@ -65,11 +65,11 @@ FILTERS = []
 def test_compile_python_dsl_keeps_unnamed_operations_nested() -> None:
     result = compile_python_dsl(
         '''
-valid = DIRECT.and_(
+valid = DIRECT.multiary.and_(
     "valid",
     cols=[
-        DIRECT.gt(left="close", right=0),
-        DIRECT.gt(left="open", right=0),
+        DIRECT.binary.gt(left="close", right=0),
+        DIRECT.binary.gt(left="open", right=0),
     ],
 )
 FACTORS = []
@@ -89,12 +89,12 @@ def test_compile_python_dsl_supports_bounded_python_composition() -> None:
         '''
 periods = [1, 2, 3]
 lags = [
-    TS.shift(f"close_lag_{period:02d}", col="close", periods=period)
+    TS.unary.shift(f"close_lag_{period:02d}", col="close", periods=period)
     for period in periods
 ]
 
 def positive(name, col):
-    return DIRECT.gt(name, left=col, right=0)
+    return DIRECT.binary.gt(name, left=col, right=0)
 
 selected = positive("selected", lags[0])
 FACTORS = ["close"]
@@ -119,7 +119,7 @@ def test_compile_python_dsl_bounds_range_comprehensions() -> None:
         compile_python_dsl(
             '''
 lags = [
-    TS.shift(f"lag_{period}", col="close", periods=period)
+    TS.unary.shift(f"lag_{period}", col="close", periods=period)
     for period in range(10001)
 ]
 FACTORS = []
@@ -205,7 +205,7 @@ def test_compile_python_dsl_rejects_non_boolean_filter() -> None:
     with pytest.raises(PythonDslCompileError, match="必须返回 BOOL"):
         compile_python_dsl(
             '''
-mean = TS.rolling_mean("mean", col="close", window=20)
+mean = TS.unary.rolling_mean("mean", col="close", window=20)
 FACTORS = ["close"]
 DERIVATIVES = []
 FILTERS = [mean]
@@ -217,8 +217,8 @@ def test_compile_python_dsl_rejects_duplicate_operation_names() -> None:
     with pytest.raises(PythonDslCompileError, match="算符名称重复"):
         compile_python_dsl(
             '''
-left = DIRECT.sub("duplicate", left="close", right="open")
-right = DIRECT.add("duplicate", left="close", right="open")
+left = DIRECT.binary.sub("duplicate", left="close", right="open")
+right = DIRECT.binary.add("duplicate", left="close", right="open")
 FACTORS = ["close"]
 DERIVATIVES = [left, right]
 FILTERS = []
@@ -257,7 +257,7 @@ def test_compile_python_dsl_rejects_nested_comprehensions() -> None:
         compile_python_dsl(
             '''
 lags = [
-    [TS.shift(f"lag_{left}_{right}", col="close", periods=right) for right in range(2)]
+    [TS.unary.shift(f"lag_{left}_{right}", col="close", periods=right) for right in range(2)]
     for left in range(2)
 ]
 FACTORS = []
@@ -274,6 +274,18 @@ def test_compile_python_dsl_bounds_format_width() -> None:
 name = f"factor_{1:1000000000d}"
 FACTORS = [name]
 DERIVATIVES = []
+FILTERS = []
+'''
+        )
+
+
+def test_compile_python_dsl_rejects_flat_operator_names() -> None:
+    with pytest.raises(PythonDslCompileError, match="分层 DSL 算符"):
+        compile_python_dsl(
+            '''
+value = DIRECT.binary_add("value", left="close", right="open")
+FACTORS = ["close", "open"]
+DERIVATIVES = [value]
 FILTERS = []
 '''
         )

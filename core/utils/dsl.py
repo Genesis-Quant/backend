@@ -2,13 +2,20 @@
 
 import ast
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ValidationError
 
 from runtime.apps.query.schema import Derivative, FactorQuery
 
-from core.utils.dsl_builder import CS, DIRECT, OP, TS
+from core.utils.dsl_builder import (
+    CS,
+    DIRECT,
+    OP,
+    TS,
+    normalize_member,
+    operator_model,
+)
 
 
 OperatorType = Literal["DIRECT", "TS", "CS"]
@@ -148,12 +155,26 @@ class _DslSyntaxValidator:
             self._validate_expression(keyword.value)
 
     def _validate_operator_attribute(self, expression: ast.Attribute) -> None:
+        category = expression.value
         if (
-            not isinstance(expression.value, ast.Name)
-            or expression.value.id not in self.namespaces
+            not isinstance(category, ast.Attribute)
+            or not isinstance(category.value, ast.Name)
+            or category.value.id not in self.namespaces
+            or category.attr.startswith("_")
             or expression.attr.startswith("_")
         ):
-            self._fail(expression, "只能引用 DIRECT、TS 或 CS 算符")
+            self._fail(
+                expression,
+                "只能引用分层 DSL 算符，例如 DIRECT.binary.div",
+            )
+        namespace = cast(OperatorType, category.value.id)
+        operation = f"{category.attr}.{normalize_member(expression.attr)}"
+        if operator_model(namespace, operation) is None:
+            self._fail(
+                expression,
+                f"不存在 DSL 算符 {namespace}.{category.attr}."
+                f"{expression.attr}",
+            )
 
     def _validate_function(self, statement: ast.FunctionDef) -> None:
         self._validate_target(ast.Name(id=statement.name, ctx=ast.Store()))

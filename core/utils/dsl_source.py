@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from datetime import timedelta
 from typing import Any, ClassVar, Literal
@@ -235,8 +236,10 @@ def dsl_document_to_python(
 
 
 def _render_operation(node: dict[str, Any], name: str | None) -> str:
-    operator = f"{node['type']}.{node['op'].replace('.', '_')}"
-    arguments = [_python_literal(name)]
+    category, member = node["op"].split(".", 1)
+    python_member = f"{member}_" if keyword.iskeyword(member) else member
+    operator = f"{node['type']}.{category}.{python_member}"
+    arguments = [] if name is None else [_python_literal(name)]
     arguments.extend(
         f"{field}={_render_value(value)}"
         for field, value in node["fields"].items()
