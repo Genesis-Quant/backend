@@ -52,7 +52,11 @@ from core.utils.dsl_source import (
 )
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
-PROJECT_OUTPUTS = ["information_coefficient", "group_returns"]
+PROJECT_OUTPUTS = [
+    "information_coefficient",
+    "group_returns",
+    "group_turnover",
+]
 
 
 def factor_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
@@ -286,7 +290,19 @@ def save_factor_version(session: Session, project: FactorProject, version: Facto
     parameters = validated.model_dump(mode="json")
     information = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "information_coefficient", OUTPUT_FILES)
     groups = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "group_returns", OUTPUT_FILES)
-    metrics = factor_metrics(validated, information, groups)
+    turnover = (
+        result_dataframe(
+            session,
+            run.user_id,
+            workflow.workflow_instance_id,
+            "factor",
+            "group_turnover",
+            OUTPUT_FILES,
+        )
+        if "group_turnover" in attempt.requested_outputs
+        else None
+    )
+    metrics = factor_metrics(validated, information, groups, turnover)
     validate_metric_dimensions(parameters, metrics)
     if version.version is None:
         assign_auto_saved_version_number(session, version)
@@ -580,7 +596,12 @@ def finalize_factor_auto_save_workspace(session: Session, run: WorkflowWorkspace
         raise
 
 
-def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], information: pd.DataFrame, groups: pd.DataFrame) -> dict[str, Any]:
+def factor_metrics(
+    parameters: FactorAnalysisParameters | dict[str, Any],
+    information: pd.DataFrame,
+    groups: pd.DataFrame,
+    turnover: pd.DataFrame | None,
+) -> dict[str, Any]:
     if "time" not in groups:
         raise ValueError("因子分组收益结果缺少列: time")
     validated = validate_historical_factor_analysis_parameters(parameters)
@@ -605,6 +626,12 @@ def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], inform
             return_spec = validated.return_specs[return_column]
             return_kind = return_spec.kind
             return_periods = return_spec.periods
+            average_turnover = factor_average_turnover(
+                turnover,
+                factor,
+                return_periods,
+                count_groups,
+            )
             observations = int(ic.count())
             ic_std = clean_number(ic.std(ddof=1))
             rank_std = clean_number(rank_ic.std(ddof=1))
@@ -649,8 +676,40 @@ def factor_metrics(parameters: FactorAnalysisParameters | dict[str, Any], inform
                 "long_short_annual_volatility": annual_volatility,
                 "long_short_sharpe": ratio(annual_return, annual_volatility),
                 "long_short_max_drawdown": maximum_drawdown,
+                "average_turnover": average_turnover,
             }
     return result
+
+
+def factor_average_turnover(
+    turnover: pd.DataFrame | None,
+    factor: str,
+    periods: int,
+    count_groups: int,
+) -> float | None:
+    """Return the equally weighted mean of the available portfolio turnovers."""
+    if turnover is None:
+        return None
+    required = {"factor", "periods"}
+    missing = required.difference(turnover.columns)
+    if missing:
+        raise ValueError(f"因子换手率结果缺少列: {', '.join(sorted(missing))}")
+    group_columns = [f"group{group_id}" for group_id in range(count_groups)]
+    portfolio_columns = [
+        column
+        for column in ["bottom", *group_columns, "top"]
+        if column in turnover.columns
+    ]
+    if not portfolio_columns:
+        raise ValueError("因子换手率结果缺少组合列")
+    period_values = pd.to_numeric(turnover["periods"], errors="coerce")
+    selected = turnover.loc[
+        (turnover["factor"].astype(str) == factor) & (period_values == periods),
+        portfolio_columns,
+    ].apply(pd.to_numeric, errors="coerce")
+    if selected.empty:
+        return None
+    return clean_number(selected.mean(axis=0, skipna=True).mean(skipna=True))
 
 
 def numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:

@@ -274,6 +274,7 @@ def test_factor_draft_reuses_workspace_until_version_is_saved(
     versions = list(session.scalars(select(FactorVersion).where(FactorVersion.project_id == project.id).order_by(FactorVersion.version)))
     assert [(version.version, version.saved, version.is_current) for version in versions] == [(1, True, False), (2, False, True)]
     assert versions[0].workflow_workspace_id == first.id
+    assert versions[0].metrics["factor"]["return"]["average_turnover"] == pytest.approx(2 / 7)
     assert versions[1].workflow_workspace_id == third.id
     assert len(submissions) == 3
 
@@ -543,6 +544,20 @@ def write_requested_outputs(
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_ic": [0.1, 0.2], "factor_return_rank_ic": [0.2, 0.3]}).to_parquet(path)
         elif name == "group_returns":
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_group0": [0.01, 0.02], "factor_return_group4": [0.02, 0.04]}).to_parquet(path)
+        elif name == "group_turnover":
+            pd.DataFrame({
+                "time": ["2020-01-01", "2020-01-02"],
+                "factor": ["factor", "factor"],
+                "periods": [1, 1],
+                "rank_autocorrelation": [None, 0.8],
+                "bottom": [None, 0.4],
+                "group0": [None, 0.3],
+                "group1": [None, 0.2],
+                "group2": [None, 0.1],
+                "group3": [None, 0.2],
+                "group4": [None, 0.3],
+                "top": [None, 0.5],
+            }).to_parquet(path)
         elif name == "daily_portfolios":
             pd.DataFrame({"tradeDate": ["2020-01-01", "2020-01-02"], "ratio": [0.0, 0.01]}).to_parquet(path)
         else:

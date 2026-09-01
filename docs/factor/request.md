@@ -251,6 +251,28 @@ time
 `top - bottom`。旧任务没有这两列时，读取端继续使用原来的首尾分组。读取结果时必须由实际
 `factor_columns` 和 `return_columns` 构造列名，不能硬编码 `ret0`。
 
+逻辑输出 `group_turnover` 对应 `factor_group_turnover.parquet`：
+
+```text
+time
+factor
+periods
+rank_autocorrelation
+bottom
+group0
+...
+group{n_groups-1}
+top
+```
+
+Runtime 从全部 `return_specs` 提取并去重正整数 `periods`，相同持有期只计算一次。`bottom`、`top`
+分别对应因子值最小和最大的 `n_select` 支证券，与分组收益的两个极端组合严格使用同一选股规则。
+对每个极端组合和等数量分组，换手率遵循 Alphalens 的集合定义：当前组合中不在 `periods` 个交易期前
+同一组合的证券数，除以当前组合证券数。前 `periods` 个观测没有比较基准，结果为 `NULL`。`rank_autocorrelation`
+是当前截面因子排名与 `periods` 个交易期前排名在共同证券上的 Pearson 相关系数。收益的 `kind`
+不影响换手率。普通前端生成的多个相邻单期收益若 `periods` 均为 `1`，只产生一套 1 日换手结果，
+不会按收益列名称推断出 1 至 N 日。
+
 ## 批量执行
 
 `run_factor_batch` 对应网页研究队列。每项包含唯一 `client_id`、版本 `remark` 和完整

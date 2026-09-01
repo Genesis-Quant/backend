@@ -20,11 +20,14 @@ delete_project("factor", project_id)
 ```
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
-`latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`long_short_cumulative_return`、`long_short_annual_return`、
-`long_short_sharpe`、`updated_at`。
+`latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`rank_ic_ir`、`long_short_cumulative_return`、
+`long_short_annual_return`、`long_short_sharpe`、`average_turnover`、`updated_at`。
 
-列表项中的 `latest_metric.ic_ir` 是 `IC 均值 / IC 样本标准差`。网页直接展示该值，按 `ic_ir`
-排序时服务端也直接使用该值；ICIR 不进行年化处理。
+`latest_metric` 是最新已保存版本中首个 `factor_columns` × 首个 `return_columns` 对应的持久化摘要。
+网页项目表展示 `rank_ic_mean`、`rank_ic_ir`、`long_short_annual_return`、`long_short_sharpe` 和
+`average_turnover`，服务端排序直接使用同一摘要字段。`ic_ir` 与 `rank_ic_ir` 分别是 IC、Rank IC
+均值除以其样本标准差，均不进行年化处理。`average_turnover` 使用该收益列 `return_specs.periods`
+对应的持有期，先分别计算极端组合和各等数量分组的时序平均换手率，再对可用组合等权平均。
 
 `get_project` 返回当前 `draft`、最新保存版本和当前工作流信息。`update_project` 只改标题，不改参数、
 版本、Workspace 或结果。
@@ -95,6 +98,7 @@ list_workflow_outputs("factor", workflow_instance_id)
 | --- | --- | --- |
 | `information_coefficient` | `factor_information_coefficients.parquet` | 各 factor × return 的 IC 与 Rank IC 时序列 |
 | `group_returns` | `factor_group_returns.parquet` | 各 factor × return 的极端 N 支及等数量分组收益时序列 |
+| `group_turnover` | `factor_group_turnover.parquet` | 各 factor × 持有期的极端 N 支、等数量分组换手率与因子秩自相关时序列 |
 
 实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。以运行请求
 和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。
@@ -119,7 +123,7 @@ ICIR 与 Rank ICIR 均按 `IC 均值 / IC 样本标准差` 计算，并以该原
 3. create_project("factor", title)
 4. run_factor_analysis(project_id, parameters)
 5. 按 Workspace 轮询；失败时读完整日志
-6. SUCCESS 后列出并检查 IC 与 group outputs
+6. SUCCESS 后列出并检查 IC、group returns 与 group turnover outputs
 7. 需要固化时 save_version("factor", ...)
 ```
 
