@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.apps.schemas import DraftVersionSummary
+from core.utils.dsl_source import FactorAnalysisApplicationRequest
 from core.utils.validation import (
     normalize_text,
     strip_text,
@@ -38,11 +39,15 @@ class FactorProjectCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     title: str = Field(min_length=1, max_length=128)
+    parameters: FactorAnalysisApplicationRequest
     validate_title = field_validator("title")(normalize_text)
 
 
-class FactorProjectUpdate(FactorProjectCreate):
-    pass
+class FactorProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(min_length=1, max_length=128)
+    validate_title = field_validator("title")(normalize_text)
 
 
 class FactorProjectItem(BaseModel):

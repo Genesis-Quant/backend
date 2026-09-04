@@ -6,9 +6,10 @@ from math import isfinite
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from runtime import OptimizationAlgorithm, OptimizationParameters, OptimizationSettings, SensitivityParameters
+from runtime import OptimizationAlgorithm, OptimizationSettings
 from core.apps.schemas import DraftVersionSummary
 from core.utils.dsl import DslCatalog
+from core.utils.dsl_source import BacktestApplicationRequest
 from core.utils.validation import (
     normalize_text,
     strip_text,
@@ -44,11 +45,15 @@ class BacktestProjectCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     title: str = Field(min_length=1, max_length=128)
+    parameters: BacktestApplicationRequest
     validate_title = field_validator("title")(normalize_text)
 
 
-class BacktestProjectUpdate(BacktestProjectCreate):
-    pass
+class BacktestProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(min_length=1, max_length=128)
+    validate_title = field_validator("title")(normalize_text)
 
 
 class BacktestProjectItem(BaseModel):
@@ -121,7 +126,7 @@ class BacktestOptimizationResponse(BaseModel):
     workflow_instance_id: int | None
     state: str
     error: str | None
-    parameters: OptimizationParameters
+    parameters: dict[str, Any]
     created_at: datetime
     updated_at: datetime
 
@@ -161,13 +166,12 @@ class FeeAnalysisCreate(BaseModel):
 
     @field_validator("rates")
     @classmethod
-    def normalize_rates(cls, value: list[float]) -> list[float]:
+    def validate_rates(cls, value: list[float]) -> list[float]:
         if any(not isfinite(rate) or rate < 0 or rate > 1 for rate in value):
             raise ValueError("手续费率必须位于 0 到 1 之间")
-        rates = sorted(set(value))
-        if not rates:
-            raise ValueError("至少提供一个手续费率")
-        return rates
+        if len(set(value)) != len(value):
+            raise ValueError("手续费率不能重复")
+        return value
 
 
 class BatchResearchListItem(BaseModel):
@@ -184,7 +188,7 @@ class BatchResearchListItem(BaseModel):
     completed_count: int
     failed_count: int
     error: str | None
-    parameters: SensitivityParameters
+    parameters: dict[str, Any]
     created_at: datetime
     updated_at: datetime
 

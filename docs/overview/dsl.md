@@ -8,7 +8,7 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 
 ## JSON 与 Python 双源码
 
-MCP 的 Query、Factor 和 Backtest 请求都接受带 `dsl_source` 的 `FactorQuery`：
+MCP 的 Query、Factor 和 Backtest 请求都要求每个 `FactorQuery` 带完整 `dsl_source`：
 
 ```json
 {
@@ -22,7 +22,7 @@ MCP 的 Query、Factor 和 Backtest 请求都接受带 `dsl_source` 的 `FactorQ
   "dsl_source": {
     "language": "json",
     "json_source": "{\n  \"factors\": [\"close\"],\n  \"derivatives\": {},\n  \"filters\": []\n}",
-    "python_source": "FACTORS = [\"close\"]\nDERIVATIVES = []\nFILTERS = []"
+    "python_source": "FACTORS = [\"close\"]\nFILTERS = []"
   }
 }
 ```
@@ -33,17 +33,20 @@ MCP 的 Query、Factor 和 Backtest 请求都接受带 `dsl_source` 的 `FactorQ
   草稿，不会参与本次计算；
 - 只修改源码字符串但不修改 `language`，不会改变另一份源码，也不会让另一份源码参与本次执行；
 - 活动源码编译结果才是 `factors`、`derivatives`、`filters` 的执行依据，不能依赖与其冲突的旧快照；
-- 省略 `dsl_source` 时继续接受原始 `factors`、`derivatives`、`filters`，保存时 Backend 会生成两份
-  可编辑源码；新调用优先显式传入双源码以保留编辑意图。
+- `dsl_source`、`language`、`json_source`、`python_source` 均不可省略。缺少任一字段直接校验失败；
+  Backend 不从结构化字段生成源码，也不迁移、推断或补齐旧格式。
 
 JSON 源码必须是且只能是包含 `factors`、`derivatives`、`filters` 的对象。Python 源码在受限环境中
 运行，不允许 import、文件、网络或任意内置函数，并且最终必须定义：
 
 ```python
 FACTORS = []       # list[str]
-DERIVATIVES = []   # list[OP]
 FILTERS = []       # list[OP]
 ```
+
+每个传入非空名称的 OP 都会按创建顺序自动加入编译结果的 `derivatives`，不需要也不读取单独的
+`DERIVATIVES` 列表。`FACTORS` 只声明需要直接输出的原始字段，`FILTERS` 只声明最终用于删行的命名
+BOOL OP。
 
 Python 算符必须使用 `计算上下文.算子类别.算子名称` 三级路径。前两段来自 Catalog 的 `type`，后两段
 来自 `op`：JSON 节点 `{"type": "DIRECT", "op": "binary.div"}` 对应
@@ -52,8 +55,8 @@ Python 算符必须使用 `计算上下文.算子类别.算子名称` 三级路�
 若算子名称是 Python 关键字，只在 Python 源码中追加下划线，例如 JSON `multiary.and` 对应
 `DIRECT.multiary.and_(...)`；编译后的 JSON `op` 仍是 `multiary.and`。
 
-第一个可选位置参数是输出名称。需要写入 `DERIVATIVES`、被其它节点按名称复用或加入 `FILTERS` 的
-顶层 OP 应传入非空名称；只在父节点内部使用的匿名 OP 直接省略名称，不需要传 `None`：
+第一个可选位置参数是输出名称。传入非空名称的 OP 会成为顶层派生列，也可以被其它节点按名称复用
+或加入 `FILTERS`；只在父节点内部使用的匿名 OP 直接省略名称，不需要传 `None`：
 
 ```python
 valid = DIRECT.multiary.and_(
@@ -65,13 +68,26 @@ valid = DIRECT.multiary.and_(
 )
 
 FACTORS = []
-DERIVATIVES = [valid]
 FILTERS = [valid]
 ```
 
-使用 `DIRECT`、`TS`、`CS` 创建有名称的 OP 后，将需要输出的算符放入 `DERIVATIVES`，将最终 BOOL
-过滤算符放入 `FILTERS`。允许用受限辅助函数、`range`、`zip` 和列表推导减少重复声明；执行结果仍会
-转换为同一套 JSON DSL 并通过 `FactorQuery` 校验。精确请求外形以对应 `arena://schemas/*` 为准。
+使用 `DIRECT`、`TS`、`CS` 创建有名称的 OP 后，编译器会自动收集它们；将最终 BOOL 过滤算符放入
+`FILTERS`。允许用受限辅助函数、`range`、`zip` 和列表推导减少重复声明；执行结果仍会转换为同一套
+JSON DSL 并通过 `FactorQuery` 校验。若中间结果不需要成为输出列，应省略名称并直接嵌套，而不是先
+创建有名称的 OP。精确请求外形以对应 `arena://schemas/*` 为准。
+
+Python DSL 中，字符串字段操作数只表示数据库原始字段；引用本源码中已经声明的派生节点时必须传
+OP 变量，不能再次写同名字符串。下例只有第一种写法会建立派生依赖：
+
+```python
+base_universe = DIRECT.binary.gt("base_universe", left="close", right=0)
+rank = CS.unary.rank_pct("rank", col=base_universe)  # 正确：引用 OP
+```
+
+`col="base_universe"` 会被解释为查找同名数据库原始字段并校验失败，不是上述变量的另一种写法。
+
+JSON DSL 没有变量对象，因此在 JSON 的 `fields` 中使用派生节点名称字符串建立引用。两种语言的源码
+表示不同，但编译后的 Runtime JSON 相同。
 
 Factor 分析还会把收益标签和股票池作为托管状态合并到活动源码结果中，不能简单把保存的
 `dataset_query` 快照当成纯编辑源码；具体边界见 `arena://docs/factor/request`。
@@ -81,13 +97,13 @@ Factor 分析还会把收益标签和股票池作为托管状态合并到活动�
 源码保存格式和 Runtime 执行格式是两个不同层次。一次 MCP 运行按以下顺序生成最终请求：
 
 1. `run_query` 直接接收一份完整 Query 请求；`run_factor_analysis` 和 `run_backtest` 接收完整应用
-   参数，其中每个 `codes_query` / `dataset_query` 都可以带自己的 `dsl_source`；
-2. Backend 用对应的 Application Request Schema 校验请求。存在 `dsl_source` 时，只取 `language`
+   参数，其中每个非空 `codes_query` 和每个 `dataset_query` 都必须带自己的 `dsl_source`；
+2. Backend 用对应的 Application Request Schema 校验请求，并只取 `language`
    指定的活动源码：JSON 源码解析为对象，Python 源码在受限环境中执行声明，两者都生成相同结构的
    `factors`、`derivatives`、`filters`，再通过 Runtime `FactorQuery` 校验；
-3. Backend 的 `stored_payload` 将规范化后的业务请求写入 `WorkflowAttempt.input_json`。其中保留
-   `language`、`json_source` 和 `python_source`，也保留提交时活动源码对应的字段快照，用于回显和
-   历史追踪；它不是 Worker 最终读取的文件；
+3. Backend 的 `stored_payload` 将校验后的用户请求写入 `WorkflowAttempt.input_json`。其中
+   `language`、`json_source` 和 `python_source` 按提交文本原样保存；Backend 不格式化源码、不生成
+   另一种语言，也不把编译结果写回任一源码或数据库；它不是 Worker 最终读取的文件；
 4. 准备 Workspace 时，Backend 从该 Attempt 再次编译活动源码。Factor 会在此时合并保存请求中的
    收益标签、所选股票池对应的 `stock_pool_member`、股票池 filter 及分析必需列；
 5. Backend 生成不含任何 `dsl_source` 的 Runtime 参数，并写入共享目录
@@ -165,22 +181,24 @@ TS/CS 的 `on` 可为：
 使用 `on` 时，只有条件为 true 的行参与该算符计算；false/NULL 行的算符结果为 NULL。`on` 不会
 从最终结果删除行，删行必须使用 Query 顶层 `filters`。
 
-通常，字符串形式的 BOOL 名称必须在当前 `derivatives` 中定义。唯一的托管外部依赖是 Factor 的
-`dataset_query.stock_pool_member`：分析 DSL 可以直接用字符串 `"stock_pool_member"` 作为 `on` 或
-其它 BOOL 引用。全市场时 Backend 注入恒真定义但不加入 filter；指数动态池时注入所选指数的定义和
-filter。普通 Query 和 Backtest 不提供这个外部节点。完整契约见 `arena://docs/factor/request`。
+JSON DSL 中，字符串形式的 BOOL 名称必须在当前 `derivatives` 中定义。Python DSL 应直接传对应的
+BOOL OP 变量。唯一的托管外部依赖是 Factor 的 `dataset_query.stock_pool_member`：因为源码中没有
+可引用的本地 OP，分析 DSL 可以直接用字符串 `"stock_pool_member"` 作为 `on` 或其它 BOOL 引用。
+全市场时 Backend 注入恒真定义但不加入 filter；指数动态池时注入所选指数的定义和 filter。普通
+Query 和 Backtest 不提供这个外部节点。完整契约见 `arena://docs/factor/request`。
 
 ## 操作数
 
 具体算符的 `fields` 通常使用以下一种或多种操作数：
 
-- 字符串：基础 factor 或顶层命名 derivative 的列引用；
+- 字符串：JSON DSL 中可引用基础 factor 或顶层命名 derivative；Python DSL 中只引用基础 factor；
 - number / boolean：常量；
 - object：嵌套 DSL 节点；
 - array：多操作数算符的输入列表。
 
-字符串永远按列引用处理。需要字符串字面量时，应使用 Catalog 中明确支持字面量的算符和参数，
-不能把普通字符串直接放入数值操作数位置。
+Python DSL 引用本地派生节点时必须传 OP 变量；写成字符串会按数据库原始字段校验，不会按变量名
+猜测或自动改写。需要字符串字面量时，应使用 Catalog 中明确支持字面量的算符和参数，不能把普通
+字符串直接放入数值操作数位置。
 
 列引用与常量是否允许、各自位于哪个 `fields` key，必须以目标算符 definition 为准；本页不提供
 具体字段或阈值构造。

@@ -20,7 +20,7 @@ DolphinDB 插件原始定义可直接查阅
 ## 调用
 
 ```text
-create_project(application="backtest", title=...)
+create_project(application="backtest", title=..., parameters=<完整 Backtest 请求>)
 run_backtest(project_id=result.id, parameters=<完整 Backtest 请求>)
 get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="backtest", workflow_instance_id=...)
@@ -35,19 +35,22 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 ## 顶层字段
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| 字段 | 类型 | 必填 | 网页新建值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `config` | object | 否 | 见下文 | 插件资金、费用和可开放选项 |
-| `params` | object | 否 | `{}` | 用户回调参数，通过 `getParams()` 或 `getParam(key)` 读取 |
-| `codes_query` | FactorQuery 或 null | 否 | `null` | 第一阶段候选代码查询，支持双源码 |
+| `config` | object | 是 | 见下文 | 插件资金、费用和可开放选项；必须显式包含四项基础配置 |
+| `params` | object | 是 | 示例策略参数 | 用户回调参数，通过 `getParams()` 或 `getParam(key)` 读取；无参数时显式传 `{}` |
+| `codes_query` | FactorQuery 或 null | 是 | 指数动态池 | 字段必须存在；`null` 表示静态代码池，非空时为第一阶段候选代码查询 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段行情和策略数据查询，支持双源码 |
-| `adj` | `hfq`、`qfq` 或 null | 否 | `null` | 合成快照价格复权方式 |
-| `annual_trading_days` | integer | 否 | `250` | 年化指标使用的交易日数，至少 1 |
-| `risk_free_rate` | finite number | 否 | `0.04` | Sharpe 年化无风险收益率 |
-| `utils` | string | 否 | `""` | 回调注册前原样执行的 DolphinDB 脚本 |
+| `adj` | `hfq`、`qfq` 或 null | 是 | `hfq` | 字段必须存在；合成快照价格复权方式 |
+| `annual_trading_days` | integer | 是 | `250` | 年化指标使用的交易日数，至少 1 |
+| `risk_free_rate` | finite number | 是 | `0.04` | Sharpe 年化无风险收益率 |
+| `utils` | string | 是 | 示例工具函数 | 回调注册前原样执行的 DolphinDB 脚本；无工具函数时显式传空字符串 |
 | `callbacks` | object | 是 | — | 必须且只能包含八个固定回调 |
 
 模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
+
+`config` 必须显式包含 `cash`、`commission`、`tax` 和
+`enableMinimumPerTransactionFee`。Backend 不替缺失项补值；其它受支持的插件配置可按需增加。
 
 `codes_query` 与 `dataset_query` 均可通过 `dsl_source` 同时保存 JSON/Python 源码，`language` 决定
 本次编译版本。活动源码、未选中草稿和 Python 必需结果变量的规则见

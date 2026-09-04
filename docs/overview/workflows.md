@@ -71,8 +71,9 @@ Task 摘要时才设为 `true`。诊断某一次运行时应优先使用 `list_w
 
 读取以前提交参数时必须读 Attempt：当前项目或未保存版本的 parameters 会被下一次运行更新，历史
 Attempt 的 `payload.input_json` 不会。它是 Backend `stored_payload` 生成的不可变业务请求，可能包含
-自动生成的双源码和规范化字段，因此不是 MCP 原始请求的逐字副本。Query 的业务请求位于
-`payload.input_json.dataset_query`；Factor/Backtest 的 `input_json` 是完整应用参数。
+请求携带的双源码和结构化字段；Backend 不生成、格式化、迁移或互相转换源码，三项 `dsl_source`
+字段与提交内容逐字一致。Query 的业务请求位于 `payload.input_json.dataset_query`；Factor/Backtest
+的 `input_json` 是完整应用参数。
 
 不要把数据库字段 `WorkflowAttempt.input_json` 与共享目录文件 `input.json` 混为一谈：
 

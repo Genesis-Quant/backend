@@ -1,6 +1,7 @@
 """Build validated Python DSL expressions without extending Runtime's public API."""
 
 import keyword
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, get_args
@@ -23,6 +24,7 @@ class OP:
     name: str | None
     derivative: Derivative
     dependencies: tuple["OP", ...] = ()
+    raw_field_references: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.name is None:
@@ -80,6 +82,27 @@ def dependencies(value: Any) -> list[OP]:
     return []
 
 
+def _raw_field_references(value: Any) -> list[str]:
+    """Collect string field operands without confusing named OP references."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, OP):
+        return list(value.raw_field_references) if value.name is None else []
+    if isinstance(value, (list, tuple)):
+        return [
+            reference
+            for item in value
+            for reference in _raw_field_references(item)
+        ]
+    if isinstance(value, dict):
+        return [
+            reference
+            for item in value.values()
+            for reference in _raw_field_references(item)
+        ]
+    return []
+
+
 def operand(value: Any) -> Any:
     if isinstance(value, OP):
         return value.name if value.name is not None else value.derivative
@@ -132,6 +155,7 @@ def build_derivative(
 class Operator:
     operator_type: OperatorType
     operation: str
+    register_named: Callable[[OP], None] | None = None
 
     def __call__(
         self,
@@ -163,13 +187,37 @@ class Operator:
                 if id(dependency) not in seen:
                     seen.add(id(dependency))
                     operation_dependencies.append(dependency)
-        return OP(name, derivative, tuple(operation_dependencies))
+        fields_model = model.model_fields["fields"].annotation
+        field_values = list(operands)
+        field_values.extend(
+            value
+            for argument_name, value in arguments.items()
+            if argument_name in fields_model.model_fields
+        )
+        nested_on = arguments.get("on")
+        if isinstance(nested_on, OP):
+            field_values.append(nested_on)
+        literal_references = tuple(dict.fromkeys(
+            reference
+            for value in field_values
+            for reference in _raw_field_references(value)
+        ))
+        result = OP(
+            name,
+            derivative,
+            tuple(operation_dependencies),
+            literal_references,
+        )
+        if result.name is not None and self.register_named is not None:
+            self.register_named(result)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
 class OperatorCategory:
     operator_type: OperatorType
     category: str
+    register_named: Callable[[OP], None] | None = None
 
     def __getattr__(self, member: str) -> Operator:
         if not member or member.startswith("_"):
@@ -177,12 +225,13 @@ class OperatorCategory:
         operation = f"{self.category}.{normalize_member(member)}"
         if operator_model(self.operator_type, operation) is None:
             raise AttributeError(member)
-        return Operator(self.operator_type, operation)
+        return Operator(self.operator_type, operation, self.register_named)
 
 
 @dataclass(frozen=True, slots=True)
 class Operators:
     operator_type: OperatorType
+    register_named: Callable[[OP], None] | None = None
 
     def __getattr__(self, member: str) -> OperatorCategory:
         if not member or member.startswith("_"):
@@ -190,7 +239,11 @@ class Operators:
         category = normalize_member(member)
         if category not in operator_categories(self.operator_type):
             raise AttributeError(member)
-        return OperatorCategory(self.operator_type, category)
+        return OperatorCategory(
+            self.operator_type,
+            category,
+            self.register_named,
+        )
 
 
 DIRECT = Operators("DIRECT")

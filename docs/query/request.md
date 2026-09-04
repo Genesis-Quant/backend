@@ -22,12 +22,12 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 | --- | --- | --- | --- |
 | `start_date` | string | 是 | 闭区间开始，严格 `YYYY-MM-DD` |
 | `end_date` | string | 是 | 闭区间结束，严格 `YYYY-MM-DD`，不得早于开始日期 |
-| `lookback` | TimeDelta string | 否 | 默认 0，必须非负；用于开始日期之前的历史计算 |
+| `lookback` | TimeDelta string | 是 | 必须非负；用于开始日期之前的历史计算 |
 | `codes` | string[] | 是 | 非空为静态代码范围；空数组表示读取计算区间内存在 `close` 数据的全部代码 |
-| `factors` | string[] | 否 | 需要直接输出的基础因子名；仅作为 DSL 输入的字段不要列入 |
-| `derivatives` | object | 否 | `{输出列名: DSL节点}`；单次使用的中间节点应嵌套，不要提升为输出列 |
-| `filters` | string[] | 否 | 顶层 BOOL derivative 名称；所有过滤条件按 AND 合并 |
-| `dsl_source` | object | 否 | 同时保存 JSON/Python 源码；`language` 指定本次执行版本 |
+| `factors` | string[] | 是 | 需要直接输出的基础因子名；仅作为 DSL 输入的字段不要列入 |
+| `derivatives` | object | 是 | `{输出列名: DSL节点}`；单次使用的中间节点应嵌套，不要提升为输出列 |
+| `filters` | string[] | 是 | 顶层 BOOL derivative 名称；所有过滤条件按 AND 合并 |
+| `dsl_source` | object | 是 | 同时保存 JSON/Python 源码；`language` 指定本次执行版本 |
 
 `factors` 与 `derivatives` 至少有一项。列表不允许空字符串或重复项。`time`、`code` 是保留输出列，
 不能出现在 `factors` 或作为 derivative 名。`factors` 与 derivative 名不能重叠。
@@ -35,7 +35,7 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 `lookback` 使用 Pydantic TimeDelta 格式，例如 `P30D`、`P1Y`、`PT0S`。Runtime 会从
 `start_date - lookback` 开始加载数据，但最终输出只保留 `start_date..end_date`。
 
-传入 `dsl_source` 时，活动源码是 DSL 执行依据；双源码保存、Python 的三个必需结果变量和未选中
+`dsl_source` 的活动源码是唯一 DSL 执行依据；双源码保存、Python 的三个必需结果变量和未选中
 源码的处理规则见 `arena://docs/overview/dsl` 的“JSON 与 Python 双源码”。
 
 ## 执行顺序

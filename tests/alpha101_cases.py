@@ -873,7 +873,6 @@ def alpha101_python_source(number: int, *, negate: bool = False) -> str:
 alpha = {factor_definition}
 
 FACTORS = []
-DERIVATIVES = [alpha]
 FILTERS = [tradable]
 '''
 
@@ -938,6 +937,11 @@ def project_7_v2_payload(
         "fields": {"left": "weight_000300SH", "right": 0},
         "params": {},
     }
+    member_document = {
+        "factors": [],
+        "derivatives": {"stock_pool_member": member},
+        "filters": ["stock_pool_member"],
+    }
     return {
         "n_groups": 10,
         "n_select": 10,
@@ -950,6 +954,15 @@ def project_7_v2_payload(
             "factors": [],
             "derivatives": {"stock_pool_member": member},
             "filters": ["stock_pool_member"],
+            "dsl_source": {
+                "language": "json",
+                "json_source": json.dumps(
+                    member_document,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "python_source": "inactive",
+            },
         },
         "dataset_query": {
             "start_date": PROJECT_7_V2_START_DATE,

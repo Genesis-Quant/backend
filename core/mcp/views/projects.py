@@ -136,19 +136,50 @@ def register_project_tools(server: MCPServer) -> None:
     def create_project(
         application: Annotated[Literal["query", "factor", "backtest"], Field(description="项目类型。")],
         title: Annotated[str, Field(min_length=1, max_length=128, description="项目标题；会去除首尾空格。")],
+        parameters: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description=(
+                    "Factor 或 Backtest 项目的完整初始参数；Query 项目必须省略。"
+                    "参数遵循与执行接口相同的严格双源码契约。"
+                )
+            ),
+        ] = None,
     ) -> McpResult[ProjectResult]:
         """Create an Arena project and return its project ID."""
         with database_session_factory()() as session:
             user = current_user(session)
             if application == "query":
+                if parameters is not None:
+                    raise ValueError("创建 Query 项目时不能传入 parameters")
                 validated_title = QueryProjectCreate(title=title).title
                 result = QueryProjectItem.model_validate(create_query_project(session, user.id, validated_title))
             elif application == "factor":
-                validated_title = FactorProjectCreate(title=title).title
-                result = FactorProjectItem.model_validate(create_factor_project(session, user.id, validated_title))
+                validated = FactorProjectCreate.model_validate({
+                    "title": title,
+                    "parameters": parameters,
+                })
+                result = FactorProjectItem.model_validate(
+                    create_factor_project(
+                        session,
+                        user.id,
+                        validated.title,
+                        validated.parameters,
+                    )
+                )
             else:
-                validated_title = BacktestProjectCreate(title=title).title
-                result = BacktestProjectItem.model_validate(create_backtest_project(session, user.id, validated_title))
+                validated = BacktestProjectCreate.model_validate({
+                    "title": title,
+                    "parameters": parameters,
+                })
+                result = BacktestProjectItem.model_validate(
+                    create_backtest_project(
+                        session,
+                        user.id,
+                        validated.title,
+                        validated.parameters,
+                    )
+                )
             return McpResult(result=result)
 
     @server.tool(title="获取项目", annotations=READ_ONLY)
@@ -267,8 +298,8 @@ def register_project_tools(server: MCPServer) -> None:
                     "完整 Backtest 请求；codes_query/dataset_query 均支持双源码，"
                     "各自 language 指定活动版本。必填 dataset_query/callbacks，"
                     "Backend 会在调度前向 dataset_query 注入托管的 "
-                    "stock_pool_member，保存的编辑器源码不变；其它字段及默认值见 "
-                    "Backtest Schema。"
+                    "stock_pool_member，保存的编辑器源码不变。所有顶层字段均必填，"
+                    "字段类型和构造约束见 Backtest Schema。"
                 )
             ),
         ],

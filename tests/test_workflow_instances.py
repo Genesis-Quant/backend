@@ -828,6 +828,25 @@ def test_cloud_workflow_keeps_input_local_and_sends_cloud_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner = create_user(session, "cloud-owner")
+    document = {
+        "factors": ["close"],
+        "derivatives": {},
+        "filters": [],
+    }
+    stored_input = {
+        "dataset_query": {
+            "start_date": "2020-01-01",
+            "end_date": "2020-01-02",
+            "lookback": "P0D",
+            "codes": ["000001.SZ"],
+            **document,
+            "dsl_source": {
+                "language": "json",
+                "json_source": json.dumps(document),
+                "python_source": "inactive",
+            },
+        },
+    }
     run = WorkflowWorkspace(
         user_id=owner.id,
         application="query",
@@ -838,7 +857,7 @@ def test_cloud_workflow_keeps_input_local_and_sends_cloud_value(
         workflow_workspace_id=run.id,
         is_current=True,
         submission_state="CREATED",
-        input_json={"dataset_query": {}},
+        input_json=stored_input,
         start_parameters={},
         requested_outputs=["data"],
         events=[],
@@ -871,7 +890,10 @@ def test_cloud_workflow_keeps_input_local_and_sends_cloud_value(
 
     input_file = workspace_input_file("query", run.workspace_key)
     input_data = json.loads(input_file.read_text(encoding="utf-8"))
-    assert input_data == attempt.input_json
+    assert input_data["dataset_query"]["factors"] == ["close"]
+    assert input_data["dataset_query"]["codes"] == ["000001.SZ"]
+    assert "dsl_source" not in input_data["dataset_query"]
+    assert attempt.input_json == stored_input
     assert "output_dir" not in input_data
     output_argument = captured["start_params"]["output_dir"]
     assert output_argument.startswith("query/")

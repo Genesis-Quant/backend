@@ -126,7 +126,7 @@ def test_cloud_result_listing_and_download_redirect(
     assert all(storage.closed for storage in instances)
 
 
-def test_cloud_result_listing_only_skips_explicit_legacy_optional_output(
+def test_cloud_result_listing_rejects_every_missing_requested_output(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -143,11 +143,6 @@ def test_cloud_result_listing_only_skips_explicit_legacy_optional_output(
     monkeypatch.setattr(results.ObjectStorage, "from_env", staticmethod(create_storage))
     monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", True)
 
-    files = backtest_result_files(session, user.id, 101)
-
-    assert [file["name"] for file in files] == ["daily_portfolios"]
-
-    missing_filename = "daily_portfolios.parquet"
     with pytest.raises(OSError, match="无法读取对象存储结果"):
         backtest_result_files(session, user.id, 101)
 

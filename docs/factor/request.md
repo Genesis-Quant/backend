@@ -6,7 +6,7 @@ Factor 工作流研究一个或多个因子与一个或多个收益标签之间�
 ## 调用
 
 ```text
-create_project(application="factor", title=...)
+create_project(application="factor", title=..., parameters=<完整 Factor 请求>)
 run_factor_analysis(project_id=result.id, parameters=<完整 Factor 请求>)
 get_workspace_status(workspace_id) -> SUCCESS
 list_workflow_outputs(application="factor", workflow_instance_id=...)
@@ -21,22 +21,23 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 
 ## 顶层字段
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| 字段 | 类型 | 必填 | 网页新建值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `codes_query` | FactorQuery \| null | 否 | `null` | `null` 表示全市场；非空时为第一阶段候选池查询，支持双源码 |
+| `codes_query` | FactorQuery \| null | 是 | 指数动态池 | 字段必须存在；`null` 表示全市场，非空时为第一阶段候选池查询，支持双源码 |
 | `dataset_query` | FactorQuery | 是 | — | 第二阶段分析数据查询，支持双源码 |
 | `factor_columns` | string[] | 是 | — | 待分析因子，至少 1 个 |
 | `return_columns` | string[] | 是 | — | 收益标签，至少 1 个 |
 | `return_specs` | object | 是 | — | 每个收益标签的口径与覆盖期数，键必须与 `return_columns` 完全一致 |
-| `n_groups` | integer | 否 | `5` | 每日等数量分组数，至少 2 |
-| `n_select` | integer | 否 | `10` | 每日额外选择因子值最小和最大的 N 支股票，至少 1 |
-| `preprocess` | boolean | 否 | `true` | 是否执行 Runtime 内置预处理 |
-| `market_value_column` | string | 否 | `circ_mv` | 中性化控制变量和分组收益权重 |
-| `industry_column` | string | 否 | `industry` | 行业中性化分类列，可选 `industry`、`industry_l0`、`industry_l1`、`industry_l2`、`industry_l3` |
+| `n_groups` | integer | 是 | `5` | 每日等数量分组数，至少 2 |
+| `n_select` | integer | 是 | `10` | 每日额外选择因子值最小和最大的 N 支股票，至少 1 |
+| `preprocess` | boolean | 是 | `true` | 是否执行 Runtime 内置预处理 |
+| `market_value_column` | string | 是 | `circ_mv` | 中性化控制变量和分组收益权重 |
+| `industry_column` | string | 是 | `industry` | 行业中性化分类列，可选 `industry`、`industry_l0`、`industry_l1`、`industry_l2`、`industry_l3` |
 
 `factor_columns`、`return_columns`、`market_value_column` 不能互相承担冲突角色。启用内置预处理时，
-`industry_column` 也不能同时作为因子或收益率列。Runtime 会把这些必要列自动加入
-`dataset_query.factors`，但如果同名 derivative 已存在则使用 derivative 输出。
+`industry_column` 也不能同时作为因子或收益率列。Backend 会在提交工作流前把这些必要列加入
+仅用于本次执行的 Runtime 请求副本；如果同名 derivative 已存在则使用 derivative 输出。用户源码与
+持久化参数不会被改写。
 
 使用 `dataset_query.dsl_source` 时，活动源码只负责用户编写的因子和其它过滤逻辑。收益标签节点由
 `return_columns` 对应的 `dataset_query.derivatives` 保留并在提交时合并，市值列由请求字段管理，
@@ -137,14 +138,13 @@ pool_turnover_rank = CS.unary.rank_pct(
 )
 
 FACTORS = []
-DERIVATIVES = [pool_turnover_rank]
 FILTERS = []
 ```
 
-不要在 `dataset_query.derivatives`、JSON `derivatives` 或 Python `DERIVATIVES` 中自行声明
-`stock_pool_member`，也不要把它加入分析 DSL 的 `filters`；Backend 会根据 `codes_query` 自动完成。
-这个托管节点只适用于 Factor 分析的 `dataset_query`，不能据此假定 Query 或 Backtest DSL 也提供
-同名外部节点。
+不要在 `dataset_query.derivatives`、JSON `derivatives` 中自行声明 `stock_pool_member`，也不要在
+Python 源码中创建同名 OP，或把它加入分析 DSL 的 `filters`；Backend 会根据 `codes_query` 自动完成。
+这个托管节点适用于 Factor 分析和 Backtest 的 `dataset_query`，普通 Query 与两者的
+`codes_query` 均不提供同名外部节点。
 
 ## 内置预处理
 
@@ -198,11 +198,9 @@ FILTERS = []
 ICIR 与 Rank ICIR 始终保留原始观测口径，计算式为 `mean / sample_std`。它们的保存、展示、排序和
 比较均不使用 `return_specs.periods`，网页与 API 调用方都不应再做年化转换。
 
-服务端不会根据列名猜测简单收益、对数收益或覆盖期数。读取缺少 `return_specs` 的历史记录时，
-Backend 会沿 `dataset_query.derivatives` 中的命名引用解析 `unary.shift` 包装的 `unary.log_return`、
-`unary.pct_change`，以及明确的 `unary.log(binary.div(...))` 收益表达式。该兼容解析只作用于响应和
-再次执行时的内存副本，不更新数据库、不创建版本；无法从 DSL 精确确定时仍保留原参数，但网页只
-停用依赖收益口径的报告和执行操作。新请求必须显式提供，避免工作流成功但报告口径错误。
+服务端不会根据列名或 DSL 猜测简单收益、对数收益或覆盖期数。缺少 `return_specs`、键集合与
+`return_columns` 不一致，或 `kind` / `periods` 不合法时直接校验失败；读取旧记录时也不迁移、不推断、
+不补齐。
 
 因子分析允许使用未来收益作为标签，但这些列不能再作为回测交易信号。
 
@@ -271,7 +269,7 @@ time
 每个请求中的因子与收益列做笛卡尔组合。`group0` 是因子值最低组，最后一组是最高组。分组收益
 使用 `market_value_column` 加权。`bottom` 和 `top` 分别使用预处理后因子值最小、最大的
 `n_select` 支股票，同样按市值加权；它们作为分组曲线的新首尾端，多空指标使用
-`top - bottom`。旧任务没有这两列时，读取端继续使用原来的首尾分组。读取结果时必须由实际
+`top - bottom`。这两列属于必需结果，缺失时结果校验失败，不会退回首尾分组。读取结果时必须由实际
 `factor_columns` 和 `return_columns` 构造列名，不能硬编码 `ret0`。
 
 逻辑输出 `group_turnover` 对应 `factor_group_turnover.parquet`：

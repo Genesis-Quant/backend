@@ -1,4 +1,4 @@
-"""MCP 请求在 Runtime 基础 Schema 之上的网页兼容契约。"""
+"""MCP 与 Web 共用的 Factor 股票池请求契约。"""
 
 from runtime import FactorAnalysisParameters
 
@@ -11,7 +11,7 @@ from core.utils.dsl_source import (
 def validate_mcp_factor_parameters(
     parameters: FactorAnalysisParameters,
 ) -> FactorAnalysisParameters:
-    """要求 MCP 因子请求使用网页可无损还原的股票池结构。"""
+    """要求 MCP 因子请求满足 Web 共用的股票池结构。"""
     if parameters.codes_query is None:
         if parameters.dataset_query.codes:
             raise ValueError(
@@ -86,7 +86,7 @@ def validate_mcp_factor_parameters(
             ):
                 raise ValueError(
                     f"{location}.derivatives.{name} 重复定义了股票池成员条件；"
-                    "MCP/Web 兼容请求只能使用 stock_pool_member"
+                    "MCP/Web 请求只能使用 stock_pool_member"
                 )
         selected_factors[location] = left
 

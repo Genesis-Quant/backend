@@ -58,6 +58,10 @@ from core.apps.workflows.services import (
     record_event,
 )
 from core.database.base import Base
+from core.utils.dsl_source import (
+    BacktestApplicationRequest,
+    FactorAnalysisApplicationRequest,
+)
 from core.utils.results import OUTPUTS_VALIDATED_EVENT
 
 
@@ -157,6 +161,100 @@ def submissions(
     return started
 
 
+CALLBACKS = {
+    "initialize": "def initialize(mutable context) { return NULL }",
+    "beforeTrading": "def beforeTrading(mutable context) { return NULL }",
+    "onBar": "def onBar(mutable context, message, indicator) { return NULL }",
+    "onSnapshot": "def onSnapshot(mutable context, message, indicator) { return NULL }",
+    "onOrder": "def onOrder(mutable context, event) { return NULL }",
+    "onTrade": "def onTrade(mutable context, event) { return NULL }",
+    "afterTrading": "def afterTrading(mutable context) { return NULL }",
+    "finalize": "def finalize(mutable context) { return NULL }",
+}
+
+
+def source_query(
+    *,
+    factors: list[str] | None = None,
+    derivatives: dict | None = None,
+    codes: list[str] | None = None,
+) -> dict:
+    document = {
+        "factors": factors or [],
+        "derivatives": derivatives or {},
+        "filters": [],
+    }
+    return {
+        "start_date": "2020-01-01",
+        "end_date": "2020-01-02",
+        "lookback": "P30D",
+        "codes": ["000001.SZ"] if codes is None else codes,
+        **document,
+        "dsl_source": {
+            "language": "json",
+            "json_source": json.dumps(document),
+            "python_source": "inactive",
+        },
+    }
+
+
+def query_payload(name: str) -> dict:
+    return {"dataset_query": source_query(factors=[name])}
+
+
+def factor_parameters(
+    market_value_column: str = "circ_mv",
+) -> FactorAnalysisApplicationRequest:
+    factor = {
+        "type": "TS",
+        "op": "unary.pct_change",
+        "fields": {"col": "close_hfq"},
+        "params": {"periods": 20},
+    }
+    return_node = {
+        "type": "TS",
+        "op": "unary.pct_change",
+        "fields": {"col": "close_hfq"},
+        "params": {"periods": 1},
+    }
+    dataset = source_query(
+        derivatives={"factor": factor},
+        codes=[],
+    )
+    dataset["derivatives"] = {"factor": factor, "return": return_node}
+    return FactorAnalysisApplicationRequest.model_validate({
+        "codes_query": None,
+        "dataset_query": dataset,
+        "factor_columns": ["factor"],
+        "return_columns": ["return"],
+        "return_specs": {"return": {"kind": "simple", "periods": 1}},
+        "n_groups": 5,
+        "n_select": 10,
+        "preprocess": True,
+        "market_value_column": market_value_column,
+        "industry_column": "industry",
+    })
+
+
+def backtest_parameters(cash: float = 1_000_000) -> BacktestApplicationRequest:
+    return BacktestApplicationRequest.model_validate({
+        "config": {
+            "cash": cash,
+            "commission": 0.0003,
+            "tax": 0.001,
+            "enableMinimumPerTransactionFee": True,
+        },
+        "params": {},
+        "codes_query": None,
+        "dataset_query": source_query(factors=["close"]),
+        "adj": None,
+        "annual_trading_days": 252,
+        "risk_free_rate": 0.0,
+        "utils": "",
+        "callbacks": CALLBACKS,
+    })
+
+
 def test_query_project_reuses_one_workspace(
     session: Session,
     user: User,
@@ -169,13 +267,14 @@ def test_query_project_reuses_one_workspace(
     session.add(project)
     session.commit()
 
-    first = submit_project_query(session, user.id, project.id, {"value": 1})
+    payloads = [query_payload(name) for name in ("open", "high", "low")]
+    first = submit_project_query(session, user.id, project.id, payloads[0])
     workspace_key = first.workspace_key
     stale_output = workspace_output_directory("query", workspace_key) / "query.parquet"
     stale_output.write_bytes(b"stale")
 
-    second = submit_project_query(session, user.id, project.id, {"value": 2})
-    third = submit_project_query(session, user.id, project.id, {"value": 3})
+    second = submit_project_query(session, user.id, project.id, payloads[1])
+    third = submit_project_query(session, user.id, project.id, payloads[2])
 
     assert second.id == first.id == third.id
     assert second.workspace_key == workspace_key == third.workspace_key
@@ -184,7 +283,7 @@ def test_query_project_reuses_one_workspace(
     assert not stale_output.exists()
     assert json.loads(
         workspace_input_file("query", workspace_key).read_text(encoding="utf-8")
-    ) == {"value": 3}
+    )["dataset_query"]["factors"] == ["low"]
 
     workflows = list(
         session.scalars(
@@ -197,9 +296,9 @@ def test_query_project_reuses_one_workspace(
     attempts = list(session.scalars(select(WorkflowAttempt).order_by(WorkflowAttempt.id)))
     assert [attempt.is_current for attempt in attempts] == [False, False, True]
     assert [
-        attempt.input_json["value"]
+        attempt.input_json
         for attempt in attempts
-    ] == [1, 2, 3]
+    ] == payloads
 
 
 def test_factor_draft_reuses_workspace_until_version_is_saved(
@@ -207,44 +306,20 @@ def test_factor_draft_reuses_workspace_until_version_is_saved(
     user: User,
     submissions: list[dict[str, object]],
 ) -> None:
-    created = create_factor_project(session, user.id, "factor")
+    initial_parameters = factor_parameters()
+    created = create_factor_project(
+        session,
+        user.id,
+        "factor",
+        initial_parameters,
+    )
     project = session.get(FactorProject, created["id"])
     assert project is not None
     assert created["draft"]["version"] == 1
     assert created["draft"]["saved"] is False
     assert created["draft"]["state"] == "DRAFT"
-    first_payload = {
-        "codes_query": None,
-        "dataset_query": {
-            "start_date": "2020-01-01",
-            "end_date": "2020-01-02",
-            "lookback": "P30D",
-            "codes": ["000001.SZ"],
-            "factors": [],
-            "derivatives": {
-                "factor": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close_hfq"},
-                    "params": {"periods": 20},
-                },
-                "return": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close_hfq"},
-                    "params": {"periods": 1},
-                },
-            },
-            "filters": [],
-        },
-        "factor_columns": ["factor"],
-        "return_columns": ["return"],
-        "return_specs": {"return": {"kind": "simple", "periods": 1}},
-        "n_groups": 5,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    }
-    second_payload = {**first_payload, "market_value_column": "total_mv"}
+    first_payload = initial_parameters.stored_payload()
+    second_payload = factor_parameters("total_mv").stored_payload()
 
     first = submit_project_analysis(session, user.id, project.id, first_payload)
     original_workspace_key = first.workspace_key
@@ -284,16 +359,32 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
     user: User,
     submissions: list[dict[str, object]],
 ) -> None:
-    created = create_backtest_project(session, user.id, "backtest")
+    initial_parameters = backtest_parameters()
+    created = create_backtest_project(
+        session,
+        user.id,
+        "backtest",
+        initial_parameters,
+    )
     project = session.get(BacktestProject, created["id"])
     assert project is not None
     assert created["draft"]["version"] == 1
     assert created["draft"]["saved"] is False
     assert created["draft"]["state"] == "DRAFT"
 
-    first = submit_project_backtest(session, user.id, project.id, {"cash": 1, "annual_trading_days": 252, "risk_free_rate": 0})
+    first = submit_project_backtest(
+        session,
+        user.id,
+        project.id,
+        backtest_parameters(1).stored_payload(),
+    )
     original_workspace_key = first.workspace_key
-    second = submit_project_backtest(session, user.id, project.id, {"cash": 2, "annual_trading_days": 252, "risk_free_rate": 0})
+    second = submit_project_backtest(
+        session,
+        user.id,
+        project.id,
+        backtest_parameters(2).stored_payload(),
+    )
 
     assert second.id == first.id
     assert second.workspace_key == original_workspace_key
@@ -312,7 +403,12 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
         "v1",
     )
 
-    third = submit_project_backtest(session, user.id, project.id, {"cash": 3, "annual_trading_days": 252, "risk_free_rate": 0})
+    third = submit_project_backtest(
+        session,
+        user.id,
+        project.id,
+        backtest_parameters(3).stored_payload(),
+    )
 
     assert third.id != first.id
     assert third.workspace_key != original_workspace_key
@@ -338,7 +434,17 @@ def test_failed_batch_runs_and_deleted_versions_do_not_consume_or_reuse_numbers(
     version_model,
     create_project,
 ) -> None:
-    created = create_project(session, user.id, application)
+    initial_parameters = (
+        factor_parameters()
+        if application == "factor"
+        else backtest_parameters()
+    )
+    created = create_project(
+        session,
+        user.id,
+        application,
+        initial_parameters,
+    )
     project = session.get(project_model, created["id"])
     assert project is not None
     pending = []
@@ -402,7 +508,12 @@ def test_batch_client_id_recovers_failed_submission_with_original_input(
     session: Session,
     user: User,
 ) -> None:
-    created = create_factor_project(session, user.id, "factor")
+    created = create_factor_project(
+        session,
+        user.id,
+        "factor",
+        factor_parameters(),
+    )
     project = session.get(FactorProject, created["id"])
     assert project is not None
     version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == project.id))
@@ -443,7 +554,12 @@ def test_batch_client_id_retries_failed_auto_save_without_new_attempt(
     session: Session,
     user: User,
 ) -> None:
-    created = create_factor_project(session, user.id, "factor")
+    created = create_factor_project(
+        session,
+        user.id,
+        "factor",
+        factor_parameters(),
+    )
     project = session.get(FactorProject, created["id"])
     assert project is not None
     version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == project.id))
@@ -500,14 +616,14 @@ def test_reusing_cloud_workspace_clears_existing_output_prefix(
         workflow_workspace_id=run.id,
         is_current=True,
         submission_state="CREATED",
-        input_json={"value": 2},
+        input_json=query_payload("high"),
         start_parameters={},
         requested_outputs=["data"],
         events=[],
     )
     workspace_input_file("query", workspace_key).parent.mkdir(parents=True)
     workspace_input_file("query", workspace_key).write_text(
-        json.dumps({"value": 1}),
+        json.dumps(query_payload("open")),
         encoding="utf-8",
     )
 
@@ -516,7 +632,7 @@ def test_reusing_cloud_workspace_clears_existing_output_prefix(
     assert deleted == [("query", workspace_key)]
     assert json.loads(
         workspace_input_file("query", workspace_key).read_text(encoding="utf-8")
-    ) == {"value": 2}
+    )["dataset_query"]["factors"] == ["high"]
     assert not workspace_output_directory("query", workspace_key).exists()
 
 
@@ -552,7 +668,16 @@ def write_requested_outputs(
                 "retention_rate": [280 / 300, 275 / 300],
             }).to_parquet(path)
         elif name == "group_returns":
-            pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_group0": [0.01, 0.02], "factor_return_group4": [0.02, 0.04]}).to_parquet(path)
+            pd.DataFrame({
+                "time": ["2020-01-01", "2020-01-02"],
+                "factor_return_bottom": [0.01, 0.02],
+                "factor_return_group0": [0.011, 0.021],
+                "factor_return_group1": [0.012, 0.022],
+                "factor_return_group2": [0.013, 0.023],
+                "factor_return_group3": [0.014, 0.024],
+                "factor_return_group4": [0.015, 0.025],
+                "factor_return_top": [0.02, 0.04],
+            }).to_parquet(path)
         elif name == "group_turnover":
             pd.DataFrame({
                 "time": ["2020-01-01", "2020-01-02"],

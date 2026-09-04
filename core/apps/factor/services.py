@@ -7,10 +7,7 @@ from typing import Any
 from fastapi import Response
 import numpy as np
 import pandas as pd
-from runtime.apps.factor.schema import (
-    FactorAnalysisParameters,
-    validate_historical_factor_analysis_parameters,
-)
+from runtime.apps.factor.schema import FactorAnalysisParameters
 from sqlalchemy import Float, and_, delete, func, literal, or_, select
 from sqlalchemy.orm import Session
 
@@ -48,7 +45,6 @@ from core.utils.time import utc_now
 from core.utils.dsl_source import (
     FactorAnalysisApplicationRequest,
     compile_application_payload,
-    upgrade_factor_dsl_sources,
 )
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
@@ -166,11 +162,21 @@ def factor_project_sort_value(
     )
 
 
-def create_factor_project(session: Session, user_id: int, title: str) -> dict[str, Any]:
+def create_factor_project(
+    session: Session,
+    user_id: int,
+    title: str,
+    parameters: FactorAnalysisApplicationRequest,
+) -> dict[str, Any]:
     project = FactorProject(user_id=user_id, title=title)
     session.add(project)
     session.flush()
-    create_factor_draft(session, project, user_id, {})
+    create_factor_draft(
+        session,
+        project,
+        user_id,
+        parameters.stored_payload(),
+    )
     session.commit()
     return serialize_project(session, project)
 
@@ -285,23 +291,19 @@ def create_factor_version(session: Session, user_id: int, project_id: int, workf
 def save_factor_version(session: Session, project: FactorProject, version: FactorVersion, run: WorkflowWorkspace, attempt: WorkflowAttempt, workflow: WorkflowInstance, remark: str) -> FactorVersion:
     if version.saved:
         return version
-    validated = validate_historical_factor_analysis_parameters(
+    validated = FactorAnalysisParameters.model_validate(
         compile_application_payload("factor", attempt.input_json)
     )
     parameters = validated.model_dump(mode="json")
     information = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "information_coefficient", OUTPUT_FILES)
     groups = result_dataframe(session, run.user_id, workflow.workflow_instance_id, "factor", "group_returns", OUTPUT_FILES)
-    turnover = (
-        result_dataframe(
-            session,
-            run.user_id,
-            workflow.workflow_instance_id,
-            "factor",
-            "group_turnover",
-            OUTPUT_FILES,
-        )
-        if "group_turnover" in attempt.requested_outputs
-        else None
+    turnover = result_dataframe(
+        session,
+        run.user_id,
+        workflow.workflow_instance_id,
+        "factor",
+        "group_turnover",
+        OUTPUT_FILES,
     )
     metrics = factor_metrics(validated, information, groups, turnover)
     validate_metric_dimensions(parameters, metrics)
@@ -475,7 +477,7 @@ def project_information(
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": workflow_attempt_state(attempt, workflow) if attempt is not None else "DRAFT",
         "error": (workflow.error if workflow is not None else None) or (attempt.error if attempt is not None else None),
-        "parameters": upgrade_factor_dsl_sources(version.parameters),
+        "parameters": version.parameters,
         "updated_at": max(attempt.updated_at, workflow.updated_at) if attempt is not None and workflow is not None else attempt.updated_at if attempt is not None else version.updated_at,
     }
     return {"id": project.id, "title": project.title, "latest_version": latest_version, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
@@ -487,7 +489,7 @@ def serialize_version(session: Session, version: FactorVersion) -> dict[str, Any
         attempt = current_workflow_attempt(session, version.workflow_workspace_id)
         workflow = None if attempt is None else session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_attempt_id == attempt.id))
         workflow_instance_id = workflow.workflow_instance_id if workflow is not None else None
-    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": upgrade_factor_dsl_sources(version.parameters), "metrics": version.metrics, "created_at": version.created_at, "updated_at": version.updated_at}
+    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": version.parameters, "metrics": version.metrics, "created_at": version.created_at, "updated_at": version.updated_at}
 
 
 def create_factor_draft(session: Session, project: FactorProject, user_id: int, parameters: dict[str, Any]) -> FactorVersion:
@@ -511,7 +513,12 @@ def validate_metric_dimensions(parameters: dict[str, Any], metrics: dict[str, An
             raise ValueError(f"metrics[{factor!r}] 收益列必须与 return_columns 一致: {sorted(returns)}")
 
 
-def submit_factor_batch(session: Session, user_id: int, project_id: int, items: Sequence[BatchRunItem[Any]]) -> list[dict[str, Any]]:
+def submit_factor_batch(
+    session: Session,
+    user_id: int,
+    project_id: int,
+    items: Sequence[BatchRunItem[FactorAnalysisApplicationRequest]],
+) -> list[dict[str, Any]]:
     project = session.scalar(select(FactorProject).where(FactorProject.id == project_id, FactorProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"因子项目不存在: {project_id}")
@@ -529,14 +536,7 @@ def submit_factor_batch(session: Session, user_id: int, project_id: int, items: 
         run = WorkflowWorkspace(user_id=user_id, application="factor")
         session.add(run)
         session.flush()
-        prepared = (
-            item.parameters
-            if isinstance(item.parameters, FactorAnalysisApplicationRequest)
-            else FactorAnalysisApplicationRequest.model_validate(
-                item.parameters.model_dump(mode="json")
-            )
-        )
-        stored_payload = prepared.stored_payload()
+        stored_payload = item.parameters.stored_payload()
         version = FactorVersion(
             project_id=project.id,
             workflow_workspace_id=run.id,
@@ -601,11 +601,11 @@ def factor_metrics(
     parameters: FactorAnalysisParameters | dict[str, Any],
     information: pd.DataFrame,
     groups: pd.DataFrame,
-    turnover: pd.DataFrame | None,
+    turnover: pd.DataFrame,
 ) -> dict[str, Any]:
     if "time" not in groups:
         raise ValueError("因子分组收益结果缺少列: time")
-    validated = validate_historical_factor_analysis_parameters(parameters)
+    validated = FactorAnalysisParameters.model_validate(parameters)
     result: dict[str, Any] = {}
     count_groups = validated.n_groups
     for factor in validated.factor_columns:
@@ -615,14 +615,8 @@ def factor_metrics(
             rank_ic = numeric_series(information, f"{factor}_{return_column}_rank_ic")
             extreme_low = f"{factor}_{return_column}_bottom"
             extreme_high = f"{factor}_{return_column}_top"
-            if extreme_low in groups and extreme_high in groups:
-                low_column = extreme_low
-                high_column = extreme_high
-            else:
-                low_column = f"{factor}_{return_column}_group0"
-                high_column = f"{factor}_{return_column}_group{count_groups - 1}"
-            low = numeric_series(groups, low_column)
-            high = numeric_series(groups, high_column)
+            low = numeric_series(groups, extreme_low)
+            high = numeric_series(groups, extreme_high)
             returns = pd.DataFrame({"time": groups["time"], "value": high - low}).dropna().sort_values("time")["value"]
             return_spec = validated.return_specs[return_column]
             return_kind = return_spec.kind
@@ -683,26 +677,24 @@ def factor_metrics(
 
 
 def factor_average_turnover(
-    turnover: pd.DataFrame | None,
+    turnover: pd.DataFrame,
     factor: str,
     periods: int,
     count_groups: int,
 ) -> float | None:
     """Return the equally weighted mean of the available portfolio turnovers."""
-    if turnover is None:
-        return None
     required = {"factor", "periods"}
     missing = required.difference(turnover.columns)
     if missing:
         raise ValueError(f"因子换手率结果缺少列: {', '.join(sorted(missing))}")
     group_columns = [f"group{group_id}" for group_id in range(count_groups)]
-    portfolio_columns = [
-        column
-        for column in ["bottom", *group_columns, "top"]
-        if column in turnover.columns
-    ]
-    if not portfolio_columns:
-        raise ValueError("因子换手率结果缺少组合列")
+    portfolio_columns = ["bottom", *group_columns, "top"]
+    missing_portfolios = set(portfolio_columns).difference(turnover.columns)
+    if missing_portfolios:
+        raise ValueError(
+            "因子换手率结果缺少组合列: "
+            f"{', '.join(sorted(missing_portfolios))}"
+        )
     period_values = pd.to_numeric(turnover["periods"], errors="coerce")
     selected = turnover.loc[
         (turnover["factor"].astype(str) == factor) & (period_values == periods),

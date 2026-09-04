@@ -21,7 +21,6 @@ spread_rank = CS.unary.rank_pct("price_spread_rank", col=spread_mean)
 selected = DIRECT.binary.gt("selected", left=spread_rank, right=0.8)
 
 FACTORS: list[str] = ["open", "close"]
-DERIVATIVES: list = [spread_rank]
 FILTERS: list = [selected]
 '''
     )
@@ -51,7 +50,6 @@ multiary = DIRECT.multiary.add("multiary", cols=["open", "high", "low", "close"]
 market_mean = CS.unary.mean("market_mean", col="close")
 industry_mean = CS.grouped.mean("industry_mean", col="close", by="industry")
 FACTORS = ["close"]
-DERIVATIVES = [binary, multiary, market_mean, industry_mean]
 FILTERS = []
 '''
     )
@@ -73,7 +71,6 @@ valid = DIRECT.multiary.and_(
     ],
 )
 FACTORS = []
-DERIVATIVES = [valid]
 FILTERS = [valid]
 '''
     )
@@ -98,7 +95,6 @@ def positive(name, col):
 
 selected = positive("selected", lags[0])
 FACTORS = ["close"]
-DERIVATIVES = [*lags]
 FILTERS = [selected]
 '''
     )
@@ -123,7 +119,6 @@ lags = [
     for period in range(10001)
 ]
 FACTORS = []
-DERIVATIVES = lags
 FILTERS = []
 '''
         )
@@ -136,7 +131,6 @@ def test_compile_python_dsl_bounds_total_comprehension_work() -> None:
             for batch in range(4)
         ],
         "FACTORS = ['close']",
-        "DERIVATIVES = []",
         "FILTERS = []",
     ])
 
@@ -151,7 +145,6 @@ def test_compile_python_dsl_bounds_starred_expansion() -> None:
 base = [value for value in range(10000)]
 expanded = [*base, *base, *base]
 FACTORS = ["close"]
-DERIVATIVES = []
 FILTERS = []
 '''
         )
@@ -161,7 +154,6 @@ def test_compile_python_dsl_accepts_large_generated_programs() -> None:
     source = "\n".join([
         "generated_columns = [" + ", ".join(["'close'"] * 6_000) + "]",
         "FACTORS = ['close']",
-        "DERIVATIVES = []",
         "FILTERS = []",
     ])
 
@@ -173,11 +165,10 @@ def test_compile_python_dsl_accepts_large_generated_programs() -> None:
     }
 
 
-@pytest.mark.parametrize("missing", ["FACTORS", "DERIVATIVES", "FILTERS"])
+@pytest.mark.parametrize("missing", ["FACTORS", "FILTERS"])
 def test_compile_python_dsl_requires_all_result_variables(missing: str) -> None:
     declarations = {
         "FACTORS": "FACTORS = ['close']",
-        "DERIVATIVES": "DERIVATIVES = []",
         "FILTERS": "FILTERS = []",
     }
     source = "\n".join(
@@ -190,15 +181,47 @@ def test_compile_python_dsl_requires_all_result_variables(missing: str) -> None:
         compile_python_dsl(source)
 
 
-def test_compile_python_dsl_rejects_non_operation_results() -> None:
-    with pytest.raises(PythonDslCompileError, match=r"DERIVATIVES\[0\]"):
-        compile_python_dsl(
-            '''
+def test_compile_python_dsl_outputs_unreferenced_named_operations() -> None:
+    result = compile_python_dsl(
+        '''
+unused = DIRECT.binary.add("still_output", left="close", right=1)
 FACTORS = ["close"]
-DERIVATIVES = ["not-an-operation"]
 FILTERS = []
 '''
-        )
+    )
+
+    assert list(result["derivatives"]) == ["still_output"]
+
+
+def test_compile_python_dsl_outputs_standalone_named_operations() -> None:
+    result = compile_python_dsl(
+        '''
+DIRECT.binary.add("standalone", left="close", right=1)
+FACTORS = []
+FILTERS = []
+'''
+    )
+
+    assert list(result["derivatives"]) == ["standalone"]
+
+
+def test_compile_python_dsl_does_not_share_named_operations_between_calls() -> None:
+    compile_python_dsl(
+        '''
+value = DIRECT.binary.add("first_request", left="close", right=1)
+FACTORS = []
+FILTERS = []
+'''
+    )
+
+    result = compile_python_dsl(
+        '''
+FACTORS = ["close"]
+FILTERS = []
+'''
+    )
+
+    assert result["derivatives"] == {}
 
 
 def test_compile_python_dsl_rejects_non_boolean_filter() -> None:
@@ -207,7 +230,6 @@ def test_compile_python_dsl_rejects_non_boolean_filter() -> None:
             '''
 mean = TS.unary.rolling_mean("mean", col="close", window=20)
 FACTORS = ["close"]
-DERIVATIVES = []
 FILTERS = [mean]
 '''
         )
@@ -220,7 +242,6 @@ def test_compile_python_dsl_rejects_duplicate_operation_names() -> None:
 left = DIRECT.binary.sub("duplicate", left="close", right="open")
 right = DIRECT.binary.add("duplicate", left="close", right="open")
 FACTORS = ["close"]
-DERIVATIVES = [left, right]
 FILTERS = []
 '''
         )
@@ -232,7 +253,6 @@ def test_compile_python_dsl_rejects_arbitrary_python_statements() -> None:
             '''
 import os
 FACTORS = ["close"]
-DERIVATIVES = []
 FILTERS = []
 '''
         )
@@ -245,8 +265,8 @@ def test_compile_python_dsl_rejects_indirect_callable_parameters() -> None:
 def invoke(operation):
     return operation(operation)
 
+invalid = invoke(invoke)
 FACTORS = []
-DERIVATIVES = [invoke(invoke)]
 FILTERS = []
 '''
         )
@@ -261,7 +281,6 @@ lags = [
     for left in range(2)
 ]
 FACTORS = []
-DERIVATIVES = []
 FILTERS = []
 '''
         )
@@ -273,7 +292,6 @@ def test_compile_python_dsl_bounds_format_width() -> None:
             '''
 name = f"factor_{1:1000000000d}"
 FACTORS = [name]
-DERIVATIVES = []
 FILTERS = []
 '''
         )
@@ -285,7 +303,6 @@ def test_compile_python_dsl_rejects_flat_operator_names() -> None:
             '''
 value = DIRECT.binary_add("value", left="close", right="open")
 FACTORS = ["close", "open"]
-DERIVATIVES = [value]
 FILTERS = []
 '''
         )

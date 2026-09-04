@@ -12,9 +12,7 @@ import pandas as pd
 from runtime import (
     BacktestParameters,
     OptimizationAlgorithm,
-    OptimizationParameters,
     OptimizationSettings,
-    SensitivityParameters,
 )
 from sqlalchemy import and_, delete, func, or_, select, union_all
 from sqlalchemy.orm import Session
@@ -67,8 +65,9 @@ from core.utils.results import (
 from core.utils.time import utc_now
 from core.utils.dsl_source import (
     BacktestApplicationRequest,
+    OptimizationApplicationRequest,
+    SensitivityApplicationRequest,
     compile_application_payload,
-    upgrade_dsl_sources,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -87,18 +86,10 @@ PROJECT_SUMMARY_FIELDS = ("totalReturn", "annualReturn", "sharpeRatio", "annualV
 BATCH_ANALYSIS_LABELS = {"fee_analysis": "手续费分析", "sensitivity": "参数敏感性"}
 BATCH_SUCCESS_STATES = frozenset({"SUCCESS"})
 BATCH_OUTPUTS = ["results"]
-LEGACY_OPTIONAL_BACKTEST_OUTPUTS = frozenset({"daily_trading_statistics"})
 
 
 def backtest_result_files(session: Session, user_id: int, workflow_instance_id: int) -> list[dict[str, Any]]:
-    return result_files(
-        session,
-        user_id,
-        workflow_instance_id,
-        "backtest",
-        OUTPUT_FILES,
-        legacy_optional_outputs=LEGACY_OPTIONAL_BACKTEST_OUTPUTS,
-    )
+    return result_files(session, user_id, workflow_instance_id, "backtest", OUTPUT_FILES)
 
 
 def backtest_result_response(session: Session, user_id: int, workflow_instance_id: int, name: str) -> Response:
@@ -203,11 +194,21 @@ def backtest_project_sort_value(
     )
 
 
-def create_backtest_project(session: Session, user_id: int, title: str) -> dict[str, Any]:
+def create_backtest_project(
+    session: Session,
+    user_id: int,
+    title: str,
+    parameters: BacktestApplicationRequest,
+) -> dict[str, Any]:
     project = BacktestProject(user_id=user_id, title=title)
     session.add(project)
     session.flush()
-    create_backtest_draft(session, project, user_id, {})
+    create_backtest_draft(
+        session,
+        project,
+        user_id,
+        parameters.stored_payload(),
+    )
     session.commit()
     return serialize_project(session, project)
 
@@ -509,7 +510,7 @@ def project_information(
         "workflow_instance_id": workflow.workflow_instance_id if workflow is not None else None,
         "state": workflow_attempt_state(attempt, workflow) if attempt is not None else "DRAFT",
         "error": (workflow.error if workflow is not None else None) or (attempt.error if attempt is not None else None),
-        "parameters": upgrade_dsl_sources(version.parameters),
+        "parameters": version.parameters,
         "updated_at": max(attempt.updated_at, workflow.updated_at) if attempt is not None and workflow is not None else attempt.updated_at if attempt is not None else version.updated_at,
     }
     return {"id": project.id, "title": project.title, "latest_version": latest_version, "draft": draft_data, "created_at": project.created_at, "updated_at": project.updated_at}
@@ -521,7 +522,7 @@ def serialize_version(session: Session, version: BacktestVersion) -> dict[str, A
         attempt = current_workflow_attempt(session, version.workflow_workspace_id)
         workflow = None if attempt is None else session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_attempt_id == attempt.id))
         workflow_instance_id = workflow.workflow_instance_id if workflow is not None else None
-    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": upgrade_dsl_sources(version.parameters), "summary": version.summary, "created_at": version.created_at, "updated_at": version.updated_at}
+    return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": version.parameters, "summary": version.summary, "created_at": version.created_at, "updated_at": version.updated_at}
 
 
 def create_backtest_draft(session: Session, project: BacktestProject, user_id: int, parameters: dict[str, Any]) -> BacktestVersion:
@@ -535,7 +536,12 @@ def create_backtest_draft(session: Session, project: BacktestProject, user_id: i
     return version
 
 
-def submit_backtest_batch(session: Session, user_id: int, project_id: int, items: Sequence[BatchRunItem[Any]]) -> list[dict[str, Any]]:
+def submit_backtest_batch(
+    session: Session,
+    user_id: int,
+    project_id: int,
+    items: Sequence[BatchRunItem[BacktestApplicationRequest]],
+) -> list[dict[str, Any]]:
     project = session.scalar(select(BacktestProject).where(BacktestProject.id == project_id, BacktestProject.user_id == user_id).with_for_update())
     if project is None:
         raise FileNotFoundError(f"回测项目不存在: {project_id}")
@@ -553,14 +559,7 @@ def submit_backtest_batch(session: Session, user_id: int, project_id: int, items
         run = WorkflowWorkspace(user_id=user_id, application="backtest")
         session.add(run)
         session.flush()
-        prepared = (
-            item.parameters
-            if isinstance(item.parameters, BacktestApplicationRequest)
-            else BacktestApplicationRequest.model_validate(
-                item.parameters.model_dump(mode="json")
-            )
-        )
-        stored_payload = prepared.stored_payload()
+        stored_payload = item.parameters.stored_payload()
         version = BacktestVersion(
             project_id=project.id,
             workflow_workspace_id=run.id,
@@ -684,11 +683,8 @@ def create_backtest_optimization(
 ) -> dict[str, Any]:
     """基于一个已保存版本提交一次滚动参数调优工作流。"""
     version = owned_batch_version(session, user, project_id, version_number)
-    base_parameters = BacktestApplicationRequest.model_validate(
-        version.parameters
-    ).runtime_payload()
-    parameters = OptimizationParameters.model_validate({
-        **base_parameters,
+    parameters = OptimizationApplicationRequest.model_validate({
+        **version.parameters,
         **settings.model_dump(mode="json"),
     })
     workspace = WorkflowWorkspace(user_id=user.id, application="optimization")
@@ -703,7 +699,7 @@ def create_backtest_optimization(
     create_workflow_attempt(
         session,
         workspace,
-        parameters.model_dump(mode="json"),
+        parameters.stored_payload(),
         [algorithm.value for algorithm in parameters.algorithms],
     )
     session.commit()
@@ -882,8 +878,8 @@ def create_batch_research(session: Session, user: User, request: BatchResearchCr
             "params": candidate.params,
             "commission": float(candidate.config["commission"]),
         })
-    parameters = SensitivityParameters.model_validate({
-        **base.model_dump(mode="json"),
+    parameters = SensitivityApplicationRequest.model_validate({
+        **version.parameters,
         "analysis_type": request.analysis_type,
         "cases": cases,
     })
@@ -901,7 +897,7 @@ def create_batch_research(session: Session, user: User, request: BatchResearchCr
     attempt = create_workflow_attempt(
         session,
         workspace,
-        parameters.model_dump(mode="json"),
+        parameters.stored_payload(),
         BATCH_OUTPUTS,
     )
     record_event(attempt, "BACKTEST_RESEARCH", research_id=research.id)
@@ -919,7 +915,7 @@ def create_fee_analysis(session: Session, user: User, project_id: int, version: 
     source = owned_batch_version(session, user, project_id, version)
     base = BacktestApplicationRequest.model_validate(
         source.parameters
-    ).runtime_payload()
+    ).stored_payload()
     return create_batch_research(
         session,
         user,

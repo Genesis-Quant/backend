@@ -1,11 +1,10 @@
 """Query workflow and project API schemas."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from core.apps.schemas import WorkflowReference, WorkflowSummary
-from core.utils.dsl_source import FactorQueryRequest
 from core.utils.validation import normalize_text
 
 type QueryOutput = Literal["source_data", "computed_data", "filtered_data", "data"]
@@ -28,7 +27,7 @@ class QueryProjectCreate(BaseModel):
 class QueryProjectItem(BaseModel):
     id: int
     title: str
-    current: WorkflowSummary[FactorQueryRequest] | None
+    current: WorkflowSummary[dict[str, Any]] | None
     created_at: datetime
     updated_at: datetime
 

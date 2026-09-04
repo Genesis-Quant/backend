@@ -1,9 +1,12 @@
 import json
 
+import pytest
+from pydantic import ValidationError
+
+from config import ArenaSettings
 from core.apps.workflows.artifacts import workspace_input_file
 from core.apps.workflows.models import WorkflowAttempt, WorkflowWorkspace
 from core.apps.workflows.services import prepare_workspace
-from config import ArenaSettings
 from core.utils.dsl_source import (
     BacktestApplicationRequest,
     DslSource,
@@ -12,11 +15,6 @@ from core.utils.dsl_source import (
     compile_application_payload,
     compile_dsl_source,
     compile_factor_dsl_source,
-    dsl_document_to_python,
-    factor_dsl_source,
-    upgrade_factor_dsl_sources,
-    upgrade_dsl_sources,
-    with_historical_factor_return_specs,
 )
 
 
@@ -28,7 +26,6 @@ momentum = TS.unary.pct_change(
 )
 
 FACTORS = ["close"]
-DERIVATIVES = [momentum]
 FILTERS = []
 """.strip()
 
@@ -44,108 +41,145 @@ CALLBACKS = {
 }
 
 
-def query_request() -> dict:
-    json_source = """{
-  "factors": ["vol"],
-  "derivatives": {},
-  "filters": []
-}"""
+def query_request(*, codes: list[str] | None = None) -> dict:
     return {
         "start_date": "2020-01-01",
         "end_date": "2020-12-31",
         "lookback": "P30D",
-        "codes": ["000001.SZ"],
-        # The preview is deliberately stale. Backend must compile source.
-        "factors": ["vol"],
+        "codes": ["000001.SZ"] if codes is None else codes,
+        "factors": ["stale_preview"],
         "derivatives": {},
         "filters": [],
         "dsl_source": {
             "language": "python",
-            "json_source": json_source,
+            "json_source": """{
+  "factors": ["open"],
+  "derivatives": {},
+  "filters": []
+}""",
             "python_source": PYTHON_DSL,
         },
     }
 
 
-def test_query_source_is_stored_and_python_is_replaced_for_runtime() -> None:
-    request = QueryApplicationRequest.model_validate(query_request())
-    stored = request.stored_payload()
-    runtime = compile_application_payload("query", stored)
-
-    assert stored["dataset_query"]["dsl_source"] == {
-        "language": "python",
-        "json_source": """{
-  "factors": ["vol"],
-  "derivatives": {},
-  "filters": []
-}""",
-        "python_source": PYTHON_DSL,
+def factor_request(*, codes_query: dict | None = None) -> dict:
+    dataset = query_request(codes=[])
+    dataset["derivatives"] = {
+        "ret0": {
+            "type": "TS",
+            "op": "unary.pct_change",
+            "fields": {"col": "close"},
+            "params": {"periods": 1},
+        },
     }
+    return {
+        "codes_query": codes_query,
+        "dataset_query": dataset,
+        "factor_columns": ["momentum"],
+        "return_columns": ["ret0"],
+        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
+        "n_groups": 5,
+        "n_select": 10,
+        "preprocess": True,
+        "market_value_column": "circ_mv",
+        "industry_column": "industry",
+    }
+
+
+def index_query(*, right: int = 0) -> dict:
+    document = {
+        "factors": [],
+        "derivatives": {
+            "stock_pool_member": {
+                "type": "DIRECT",
+                "op": "binary.gt",
+                "fields": {"left": "weight_000300SH", "right": right},
+                "params": {},
+            },
+        },
+        "filters": ["stock_pool_member"],
+    }
+    return {
+        "start_date": "2020-01-01",
+        "end_date": "2020-12-31",
+        "lookback": "P0D",
+        "codes": [],
+        **document,
+        "dsl_source": {
+            "language": "json",
+            "json_source": json.dumps(document, ensure_ascii=False),
+            "python_source": "inactive source may be invalid",
+        },
+    }
+
+
+def backtest_request() -> dict:
+    return {
+        "config": {
+            "cash": 1_000_000,
+            "commission": 0.0003,
+            "tax": 0.001,
+            "enableMinimumPerTransactionFee": True,
+        },
+        "params": {},
+        "codes_query": None,
+        "dataset_query": query_request(),
+        "adj": None,
+        "annual_trading_days": 250,
+        "risk_free_rate": 0.04,
+        "utils": "",
+        "callbacks": CALLBACKS,
+    }
+
+
+def test_query_sources_are_stored_verbatim_and_only_active_source_is_compiled() -> None:
+    raw = query_request()
+    request = QueryApplicationRequest.model_validate(raw)
+
+    stored = request.stored_payload()
+    runtime = request.runtime_payload()
+
+    assert stored == {"dataset_query": raw}
     assert runtime["dataset_query"]["factors"] == ["close"]
     assert set(runtime["dataset_query"]["derivatives"]) == {"momentum"}
     assert "dsl_source" not in runtime["dataset_query"]
 
 
-def test_json_source_uses_the_same_submission_path() -> None:
-    request = QueryApplicationRequest.model_validate({
-        **query_request(),
-        "dsl_source": {
-            "language": "json",
-            "json_source": """{
-              "factors": ["open"],
-              "derivatives": {},
-              "filters": []
-            }""",
-            # An inactive source is stored verbatim and is not compiled.
-            "python_source": "not valid Python DSL",
-        },
-    })
-    stored = request.stored_payload()
-    runtime = compile_application_payload("query", stored)
+def test_inactive_source_is_never_parsed() -> None:
+    raw = query_request()
+    raw["dsl_source"] = {
+        "language": "json",
+        "json_source": raw["dsl_source"]["json_source"],
+        "python_source": "this is deliberately invalid",
+    }
 
-    assert stored["dataset_query"]["dsl_source"]["language"] == "json"
-    assert stored["dataset_query"]["dsl_source"]["python_source"] == (
-        "not valid Python DSL"
-    )
-    assert runtime["dataset_query"]["factors"] == ["open"]
+    request = QueryApplicationRequest.model_validate(raw)
+
+    assert request.runtime_payload()["dataset_query"]["factors"] == ["open"]
+    assert request.stored_payload()["dataset_query"]["dsl_source"]["python_source"] == "this is deliberately invalid"
 
 
-def test_python_source_does_not_validate_inactive_json() -> None:
-    request_data = query_request()
-    request_data["dsl_source"]["json_source"] = "not valid JSON DSL"
+@pytest.mark.parametrize("missing", ["language", "json_source", "python_source"])
+def test_every_source_field_is_required(missing: str) -> None:
+    raw = query_request()
+    del raw["dsl_source"][missing]
 
-    request = QueryApplicationRequest.model_validate(request_data)
-    stored = request.stored_payload()
-    runtime = request.runtime_payload()
-
-    assert stored["dataset_query"]["dsl_source"]["json_source"] == (
-        "not valid JSON DSL"
-    )
-    assert runtime["dataset_query"]["factors"] == ["close"]
+    with pytest.raises(ValidationError):
+        QueryApplicationRequest.model_validate(raw)
 
 
-def test_json_source_accepts_large_generated_factor_documents() -> None:
-    factors = [f"generated_factor_{index}" for index in range(12_000)]
-    json_source = json.dumps({
-        "factors": factors,
-        "derivatives": {},
-        "filters": [],
-    })
+def test_query_payload_without_source_is_rejected_instead_of_upgraded() -> None:
+    raw = query_request()
+    del raw["dsl_source"]
 
-    assert len(json_source) > 100_000
-    source = DslSource(
-        language="json",
-        json_source=json_source,
-        python_source=PYTHON_DSL,
-    )
-
-    assert compile_dsl_source(source)["factors"] == factors
+    with pytest.raises(ValidationError):
+        compile_application_payload("query", {"dataset_query": raw})
 
 
-def test_factor_compiler_accepts_managed_stock_pool_references() -> None:
+def test_factor_compiler_accepts_reference_to_managed_stock_pool() -> None:
     source = DslSource(
         language="python",
-        json_source="inactive JSON draft",
+        json_source="inactive JSON",
         python_source='''
 rank = CS.unary.rank_pct(
     "pool_rank",
@@ -153,407 +187,21 @@ rank = CS.unary.rank_pct(
     on="stock_pool_member",
 )
 FACTORS = []
-DERIVATIVES = [rank]
 FILTERS = []
 '''.strip(),
     )
 
-    document = compile_factor_dsl_source(source)
-
-    assert document["derivatives"]["pool_rank"]["on"] == (
-        "stock_pool_member"
-    )
+    assert compile_factor_dsl_source(source)["derivatives"]["pool_rank"]["on"] == "stock_pool_member"
 
 
-def test_factor_python_source_keeps_backend_generated_return_nodes() -> None:
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": None,
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-        "n_groups": 5,
-        "n_select": 10,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    })
-    stored = request.stored_payload()
-    runtime = compile_application_payload("factor", stored)
-
-    assert stored["dataset_query"]["dsl_source"]["python_source"] == PYTHON_DSL
-    assert set(runtime["dataset_query"]["derivatives"]) == {
-        "stock_pool_member",
-        "momentum",
-        "ret0",
-    }
-    assert "circ_mv" in runtime["dataset_query"]["factors"]
-
-
-def test_factor_dynamic_industry_is_managed_outside_editor_dsl() -> None:
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": None,
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-        "industry_column": "industry_l2",
-    })
-
-    stored = request.stored_payload()
-    runtime = compile_application_payload("factor", stored)
-
-    assert stored["industry_column"] == "industry_l2"
-    assert runtime["industry_column"] == "industry_l2"
-    assert "industry_l2" in runtime["dataset_query"]["factors"]
-    assert "industry_l2" not in json.loads(
-        stored["dataset_query"]["dsl_source"]["json_source"]
-    )["factors"]
-
-
-def historical_factor_parameters() -> dict:
-    return {
-        "codes_query": None,
-        "dataset_query": {
-            "start_date": "2020-01-01",
-            "end_date": "2020-12-31",
-            "lookback": "P30D",
-            "codes": [],
-            "factors": [],
-            "derivatives": {
-                "momentum": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close_hfq"},
-                    "params": {"periods": 20},
-                },
-                "daily_log_return": {
-                    "type": "TS",
-                    "op": "unary.log_return",
-                    "fields": {"col": "close_hfq"},
-                    "params": {"periods": 1},
-                },
-                "five_day_log_return": {
-                    "type": "TS",
-                    "op": "unary.log_return",
-                    "fields": {"col": "close_hfq"},
-                    "params": {"periods": 5},
-                },
-                "future_1d_log_return": {
-                    "type": "TS",
-                    "op": "unary.shift",
-                    "fields": {"col": "daily_log_return"},
-                    "params": {"periods": -1},
-                },
-                "future_5d_log_return": {
-                    "type": "TS",
-                    "op": "unary.shift",
-                    "fields": {"col": "five_day_log_return"},
-                    "params": {"periods": -5},
-                },
-            },
-            "filters": [],
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": [
-            "future_1d_log_return",
-            "future_5d_log_return",
-        ],
-        "n_groups": 5,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    }
-
-
-def test_historical_factor_return_specs_follow_named_derivatives() -> None:
-    stored = historical_factor_parameters()
-    original = json.loads(json.dumps(stored))
-
-    prepared = with_historical_factor_return_specs(stored)
-
-    assert prepared["return_specs"] == {
-        "future_1d_log_return": {"kind": "log", "periods": 1},
-        "future_5d_log_return": {"kind": "log", "periods": 5},
-    }
-    assert stored == original
-
-
-def test_historical_factor_project_serialization_adds_return_contracts() -> None:
-    prepared = upgrade_factor_dsl_sources(historical_factor_parameters())
-
-    assert prepared["return_specs"] == {
-        "future_1d_log_return": {"kind": "log", "periods": 1},
-        "future_5d_log_return": {"kind": "log", "periods": 5},
-    }
-
-
-def test_historical_factor_payload_compiles_without_runtime_inference() -> None:
-    runtime = compile_application_payload(
-        "factor",
-        historical_factor_parameters(),
-    )
-
-    assert runtime["return_specs"] == {
-        "future_1d_log_return": {"kind": "log", "periods": 1},
-        "future_5d_log_return": {"kind": "log", "periods": 5},
-    }
-
-
-def test_unknown_historical_return_expression_is_not_guessed() -> None:
-    stored = historical_factor_parameters()
-    stored["dataset_query"]["derivatives"]["future_1d_log_return"] = {
-        "type": "DIRECT",
-        "op": "binary.add",
-        "fields": {"left": "close", "right": 1},
-        "params": {},
-    }
-
-    assert with_historical_factor_return_specs(stored) is stored
-
-
-def test_factor_index_pool_is_injected_only_into_runtime_dataset() -> None:
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": {
-            "start_date": "2020-01-01",
-            "end_date": "2020-12-31",
-            "lookback": "P0D",
-            "codes": [],
-            "factors": [],
-            "derivatives": {
-                "stock_pool_member": {
-                    "type": "DIRECT",
-                    "op": "binary.gt",
-                    "fields": {"left": "weight_000300SH", "right": 0},
-                    "params": {},
-                },
-            },
-            "filters": ["stock_pool_member"],
-        },
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-        "n_groups": 5,
-        "n_select": 10,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    })
-
-    stored = request.stored_payload()
-    runtime = compile_application_payload("factor", stored)
-
-    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
-    assert "stock_pool_member" not in stored["dataset_query"]["filters"]
-    assert "stock_pool_member" not in stored["dataset_query"]["dsl_source"]["json_source"]
-    assert "stock_pool_member" not in stored["dataset_query"]["dsl_source"]["python_source"]
-    member = runtime["dataset_query"]["derivatives"]["stock_pool_member"]
-    assert member["fields"]["left"] == "weight_000300SH"
-    assert runtime["dataset_query"]["filters"][0] == "stock_pool_member"
-    assert "momentum" in runtime["dataset_query"]["derivatives"]
-    assert "ret0" in runtime["dataset_query"]["derivatives"]
-
-
-def test_factor_index_pool_allows_additional_first_stage_filters() -> None:
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": {
-            "start_date": "2020-01-01",
-            "end_date": "2020-12-31",
-            "lookback": "P5D",
-            "codes": [],
-            "factors": [],
-            "derivatives": {
-                "stock_pool_member": {
-                    "type": "DIRECT",
-                    "op": "binary.gt",
-                    "fields": {
-                        "left": "weight_000300SH",
-                        "right": 0,
-                    },
-                    "params": {},
-                },
-                "liquid": {
-                    "type": "DIRECT",
-                    "op": "binary.gt",
-                    "fields": {"left": "amount", "right": 1_000_000},
-                    "params": {},
-                },
-            },
-            "filters": ["stock_pool_member", "liquid"],
-        },
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-        "n_groups": 5,
-        "n_select": 10,
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    })
-
-    runtime = request.runtime_payload()
-
-    assert runtime["codes_query"]["filters"] == [
-        "stock_pool_member",
-        "liquid",
-    ]
-    assert runtime["dataset_query"]["filters"][0] == "stock_pool_member"
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"][
-        "fields"
-    ]["left"] == "weight_000300SH"
-
-
-def test_factor_dsl_may_reference_the_runtime_stock_pool_node() -> None:
-    json_source = json.dumps({
-        "factors": [],
-        "derivatives": {
-            "pool_rank": {
-                "type": "CS",
-                "op": "unary.rank_pct",
-                "fields": {"col": "turnover_rate_f"},
-                "params": {
-                    "ascending": True,
-                    "ties_method": "average",
-                },
-                "on": "stock_pool_member",
-            },
-        },
-        "filters": [],
-    })
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": {
-            "start_date": "2020-01-01",
-            "end_date": "2020-12-31",
-            "lookback": "P0D",
-            "codes": [],
-            "factors": [],
-            "derivatives": {
-                "stock_pool_member": {
-                    "type": "DIRECT",
-                    "op": "binary.gt",
-                    "fields": {"left": "weight_000300SH", "right": 0},
-                    "params": {},
-                },
-            },
-            "filters": ["stock_pool_member"],
-        },
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-            "dsl_source": {
-                "language": "json",
-                "json_source": json_source,
-                "python_source": "inactive Python draft",
-            },
-        },
-        "factor_columns": ["pool_rank"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-        "preprocess": True,
-        "market_value_column": "circ_mv",
-    })
+def test_full_market_factor_injection_changes_only_runtime_copy() -> None:
+    raw = factor_request()
+    request = FactorAnalysisApplicationRequest.model_validate(raw)
 
     stored = request.stored_payload()
     runtime = request.runtime_payload()
-    stored_document = json.loads(
-        stored["dataset_query"]["dsl_source"]["json_source"]
-    )
 
-    assert "stock_pool_member" not in stored_document["derivatives"]
-    assert stored_document["derivatives"]["pool_rank"]["on"] == (
-        "stock_pool_member"
-    )
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"][
-        "fields"
-    ]["left"] == "weight_000300SH"
-    assert runtime["dataset_query"]["derivatives"]["pool_rank"]["on"] == (
-        "stock_pool_member"
-    )
-
-    raw_parameters = json.loads(json.dumps(stored))
-    raw_parameters["dataset_query"].pop("dsl_source")
-    raw_runtime = FactorAnalysisApplicationRequest.model_validate(
-        raw_parameters
-    ).runtime_payload()
-    assert raw_runtime["dataset_query"]["derivatives"]["pool_rank"]["on"] == (
-        "stock_pool_member"
-    )
-
-
-def test_factor_full_market_injects_true_stock_pool_without_filtering() -> None:
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": None,
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-        },
-        "factor_columns": ["momentum"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-    })
-
-    runtime = request.runtime_payload()
-
+    assert stored == raw
     assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == {
         "type": "DIRECT",
         "op": "nullary.true",
@@ -561,196 +209,163 @@ def test_factor_full_market_injects_true_stock_pool_without_filtering() -> None:
         "params": {},
     }
     assert "stock_pool_member" not in runtime["dataset_query"]["filters"]
-
-
-def test_factor_full_market_dsl_may_reference_true_stock_pool() -> None:
-    json_source = json.dumps({
-        "factors": [],
-        "derivatives": {
-            "pool_rank": {
-                "type": "CS",
-                "op": "unary.rank_pct",
-                "fields": {"col": "turnover_rate_f"},
-                "params": {
-                    "ascending": True,
-                    "ties_method": "average",
-                },
-                "on": "stock_pool_member",
-            },
-        },
-        "filters": [],
-    })
-    request = FactorAnalysisApplicationRequest.model_validate({
-        "codes_query": None,
-        "dataset_query": {
-            **query_request(),
-            "codes": [],
-            "derivatives": {
-                "ret0": {
-                    "type": "TS",
-                    "op": "unary.pct_change",
-                    "fields": {"col": "close"},
-                    "params": {"periods": 1},
-                },
-            },
-            "dsl_source": {
-                "language": "json",
-                "json_source": json_source,
-                "python_source": "inactive Python draft",
-            },
-        },
-        "factor_columns": ["pool_rank"],
-        "return_columns": ["ret0"],
-        "return_specs": {"ret0": {"kind": "simple", "periods": 1}},
-    })
-
-    stored = request.stored_payload()
-    runtime = request.runtime_payload()
-
-    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"][
-        "op"
-    ] == "nullary.true"
-    assert runtime["dataset_query"]["derivatives"]["pool_rank"]["on"] == (
-        "stock_pool_member"
-    )
-    assert "stock_pool_member" not in runtime["dataset_query"]["filters"]
-
-
-def test_factor_saved_sources_remove_legacy_managed_pool_nodes() -> None:
-    json_source = """{
-  "factors": ["close"],
-  "derivatives": {
-    "stock_pool_member": {
-      "type": "DIRECT",
-      "op": "binary.gt",
-      "fields": {"left": "weight_000300SH", "right": 0},
-      "params": {}
-    }
-  },
-  "filters": ["stock_pool_member"]
-}"""
-    python_source = """
-member = DIRECT.binary.gt(
-    "stock_pool_member",
-    left="weight_000300SH",
-    right=0,
-)
-FACTORS = ["close"]
-DERIVATIVES = [member]
-FILTERS = [member]
-""".strip()
-
-    sanitized = factor_dsl_source(
-        DslSource.model_validate({
-            "language": "python",
-            "json_source": json_source,
-            "python_source": python_source,
-        }),
-        [],
-    )
-
-    assert sanitized.language == "python"
-    assert "stock_pool_member" not in sanitized.json_source
-    assert "stock_pool_member" not in sanitized.python_source
-    assert compile_dsl_source(sanitized) == {
-        "factors": ["close"],
-        "derivatives": {},
-        "filters": [],
-    }
-
-
-def test_backtest_python_dataset_is_compiled_before_submission() -> None:
-    request = BacktestApplicationRequest.model_validate({
-        "codes_query": None,
-        "dataset_query": query_request(),
-        "callbacks": CALLBACKS,
-    })
-    stored = request.stored_payload()
-    runtime = compile_application_payload("backtest", stored)
-
-    assert stored["dataset_query"]["dsl_source"]["language"] == "python"
-    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
-    assert runtime["dataset_query"]["factors"] == ["close"]
-    assert set(runtime["dataset_query"]["derivatives"]) == {
-        "momentum",
-        "stock_pool_member",
-    }
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == {
-        "type": "DIRECT",
-        "op": "nullary.true",
-        "fields": {},
-        "params": {},
-    }
+    assert set(runtime["dataset_query"]["derivatives"]) >= {"momentum", "ret0", "stock_pool_member"}
     assert "dsl_source" not in runtime["dataset_query"]
 
 
-def test_backtest_dynamic_stock_pool_is_injected_by_backend() -> None:
-    codes_query = {
-        "start_date": "2020-01-01",
-        "end_date": "2020-12-31",
-        "lookback": "P0D",
-        "codes": [],
+def test_index_pool_is_compiled_and_injected_only_into_runtime_copy() -> None:
+    raw = factor_request(codes_query=index_query())
+    request = FactorAnalysisApplicationRequest.model_validate(raw)
+
+    stored = request.stored_payload()
+    runtime = request.runtime_payload()
+
+    assert stored == raw
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"]["fields"]["left"] == "weight_000300SH"
+    assert runtime["dataset_query"]["filters"][0] == "stock_pool_member"
+
+
+def test_malformed_dynamic_pool_is_rejected_instead_of_ignored() -> None:
+    with pytest.raises(ValidationError, match="binary.gt"):
+        FactorAnalysisApplicationRequest.model_validate(
+            factor_request(codes_query=index_query(right=1))
+        )
+
+
+def test_user_cannot_define_backend_managed_factor_nodes() -> None:
+    raw = factor_request()
+    document = {
+        "factors": [],
+        "derivatives": {
+            "momentum": {
+                "type": "TS",
+                "op": "unary.pct_change",
+                "fields": {"col": "close"},
+                "params": {"periods": 20},
+            },
+            "stock_pool_member": {
+                "type": "DIRECT",
+                "op": "nullary.true",
+                "fields": {},
+                "params": {},
+            },
+        },
+        "filters": [],
+    }
+    raw["dataset_query"]["dsl_source"] = {
+        "language": "json",
+        "json_source": json.dumps(document),
+        "python_source": "inactive",
+    }
+
+    with pytest.raises(ValidationError, match="保留列"):
+        FactorAnalysisApplicationRequest.model_validate(raw)
+
+
+def test_factor_requires_explicit_return_specs() -> None:
+    raw = factor_request()
+    del raw["return_specs"]
+
+    with pytest.raises(ValidationError):
+        FactorAnalysisApplicationRequest.model_validate(raw)
+
+
+def test_factor_requires_every_return_spec_field() -> None:
+    raw = factor_request()
+    raw["return_specs"]["ret0"] = {}
+
+    with pytest.raises(ValidationError):
+        FactorAnalysisApplicationRequest.model_validate(raw)
+
+
+def test_backtest_compiles_dataset_without_rewriting_stored_sources() -> None:
+    raw = backtest_request()
+    request = BacktestApplicationRequest.model_validate(raw)
+
+    stored = request.stored_payload()
+    runtime = request.runtime_payload()
+
+    assert stored == raw
+    assert runtime["dataset_query"]["factors"] == ["close"]
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"]["op"] == "nullary.true"
+    assert "dsl_source" not in runtime["dataset_query"]
+
+
+def test_backtest_dataset_can_reference_managed_stock_pool() -> None:
+    raw = backtest_request()
+    document = {
+        "factors": [],
+        "derivatives": {
+            "pool_rank": {
+                "type": "CS",
+                "op": "unary.rank_pct",
+                "fields": {"col": "turnover_rate_f"},
+                "params": {"ascending": True, "ties_method": "average"},
+                "on": "stock_pool_member",
+            },
+        },
+        "filters": [],
+    }
+    raw["dataset_query"]["dsl_source"] = {
+        "language": "json",
+        "json_source": json.dumps(document),
+        "python_source": "inactive",
+    }
+
+    runtime = BacktestApplicationRequest.model_validate(raw).runtime_payload()
+
+    assert runtime["dataset_query"]["derivatives"]["pool_rank"]["on"] == "stock_pool_member"
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"]["op"] == "nullary.true"
+
+
+def test_backtest_dataset_cannot_define_managed_stock_pool() -> None:
+    raw = backtest_request()
+    document = {
         "factors": [],
         "derivatives": {
             "stock_pool_member": {
                 "type": "DIRECT",
-                "op": "binary.gt",
-                "fields": {"left": "weight_000300SH", "right": 0},
+                "op": "nullary.true",
+                "fields": {},
                 "params": {},
             },
         },
-        "filters": ["stock_pool_member"],
+        "filters": [],
     }
-    request = BacktestApplicationRequest.model_validate({
-        "codes_query": codes_query,
-        "dataset_query": query_request(),
-        "callbacks": CALLBACKS,
-    })
-
-    stored = request.stored_payload()
-    runtime = compile_application_payload("backtest", stored)
-
-    assert "stock_pool_member" not in stored["dataset_query"]["derivatives"]
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == (
-        codes_query["derivatives"]["stock_pool_member"]
-    )
-    assert "stock_pool_member" not in runtime["dataset_query"]["filters"]
-
-
-def test_legacy_backtest_json_is_completed_before_runtime_submission() -> None:
-    dataset_query = query_request()
-    dataset_query.pop("dsl_source")
-    payload = {
-        "codes_query": None,
-        "dataset_query": dataset_query,
-        "callbacks": CALLBACKS,
+    raw["dataset_query"]["dsl_source"] = {
+        "language": "json",
+        "json_source": json.dumps(document),
+        "python_source": "inactive",
     }
 
-    runtime = compile_application_payload("backtest", payload)
-
-    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == {
-        "type": "DIRECT",
-        "op": "nullary.true",
-        "fields": {},
-        "params": {},
-    }
+    with pytest.raises(ValidationError, match="不能定义或过滤"):
+        BacktestApplicationRequest.model_validate(raw)
 
 
-def test_legacy_runtime_payload_is_not_rewritten() -> None:
-    payload = {"dataset_query": {"value": "legacy"}}
-    assert compile_application_payload("query", payload) is payload
+def test_backtest_requires_all_callbacks() -> None:
+    raw = backtest_request()
+    del raw["callbacks"]["onTrade"]
+
+    with pytest.raises(ValidationError):
+        BacktestApplicationRequest.model_validate(raw)
 
 
-def test_workspace_writes_compiled_input_without_replacing_saved_source(
+def test_backtest_requires_explicit_base_config() -> None:
+    raw = backtest_request()
+    del raw["config"]["cash"]
+
+    with pytest.raises(ValidationError, match="config 缺少必填基础配置"):
+        BacktestApplicationRequest.model_validate(raw)
+
+
+def test_workspace_writes_runtime_copy_without_mutating_attempt(
     tmp_path,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(ArenaSettings, "SHARED_DIR", tmp_path)
     monkeypatch.setattr(ArenaSettings, "SHARED_CLOUD", False)
-    stored = QueryApplicationRequest.model_validate(
-        query_request()
-    ).stored_payload()
+    raw = query_request()
+    stored = QueryApplicationRequest.model_validate(raw).stored_payload()
     workspace = WorkflowWorkspace(
         id=1,
         user_id=1,
@@ -773,136 +388,22 @@ def test_workspace_writes_compiled_input_without_replacing_saved_source(
     )
     assert written["dataset_query"]["factors"] == ["close"]
     assert "dsl_source" not in written["dataset_query"]
-    assert attempt.input_json["dataset_query"]["dsl_source"]["python_source"] == PYTHON_DSL
+    assert attempt.input_json == stored
 
 
-def test_language_selects_between_two_independent_sources() -> None:
-    python_request = query_request()
-    json_request = {
-        **python_request,
-        "dsl_source": {
-            **python_request["dsl_source"],
-            "language": "json",
-        },
-    }
-
-    python_runtime = QueryApplicationRequest.model_validate(
-        python_request
-    ).runtime_payload()
-    json_runtime = QueryApplicationRequest.model_validate(
-        json_request
-    ).runtime_payload()
-
-    assert python_runtime["dataset_query"]["factors"] == ["close"]
-    assert json_runtime["dataset_query"]["factors"] == ["vol"]
+def test_compile_application_payload_rejects_unknown_or_unwrapped_input() -> None:
+    with pytest.raises(ValueError, match="必须且只能包含"):
+        compile_application_payload("query", query_request())
+    with pytest.raises(ValueError, match="不支持"):
+        compile_application_payload("unknown", {})
 
 
-def test_missing_source_generates_both_editable_versions() -> None:
-    request = query_request()
-    request.pop("dsl_source")
-    stored = QueryApplicationRequest.model_validate(request).stored_payload()
-    source = stored["dataset_query"]["dsl_source"]
+def test_json_dsl_requires_complete_document() -> None:
+    source = DslSource(
+        language="json",
+        json_source='{"factors": []}',
+        python_source="inactive",
+    )
 
-    assert source["language"] == "json"
-    assert json.loads(source["json_source"])["factors"] == ["vol"]
-    compiled_python = QueryApplicationRequest.model_validate({
-        **stored["dataset_query"],
-        "dsl_source": {**source, "language": "python"},
-    }).runtime_payload()
-    assert compiled_python["dataset_query"]["factors"] == ["vol"]
-
-
-def test_json_to_python_uses_hierarchical_paths_and_omits_anonymous_name() -> None:
-    document = {
-        "factors": [],
-        "derivatives": {
-            "valid": {
-                "type": "DIRECT",
-                "op": "multiary.and",
-                "fields": {
-                    "cols": [
-                        {
-                            "type": "DIRECT",
-                            "op": "binary.gt",
-                            "fields": {"left": "close", "right": 0},
-                            "params": {},
-                        },
-                        {
-                            "type": "DIRECT",
-                            "op": "binary.gt",
-                            "fields": {"left": "vol", "right": 0},
-                            "params": {},
-                        },
-                    ],
-                },
-                "params": {},
-            },
-        },
-        "filters": ["valid"],
-    }
-
-    python_source = dsl_document_to_python(document)
-
-    assert 'DIRECT.multiary.and_("valid"' in python_source
-    assert 'DIRECT.binary.gt(left="close", right=0)' in python_source
-    assert "None" not in python_source
-    assert compile_dsl_source(DslSource(
-        language="python",
-        json_source="inactive JSON draft",
-        python_source=python_source,
-    )) == document
-
-
-def test_legacy_single_source_is_upgraded_without_changing_active_text() -> None:
-    request = query_request()
-    request["dsl_source"] = {
-        "language": "python",
-        "source": PYTHON_DSL,
-    }
-    stored = QueryApplicationRequest.model_validate(request).stored_payload()
-    source = stored["dataset_query"]["dsl_source"]
-
-    assert source["language"] == "python"
-    assert source["python_source"] == PYTHON_DSL
-    assert json.loads(source["json_source"])["factors"] == ["close"]
-
-
-def test_legacy_sources_are_upgraded_in_nested_response_payloads() -> None:
-    payload = {
-        "codes_query": None,
-        "dataset_query": {
-            "dsl_source": {
-                "language": "python",
-                "source": PYTHON_DSL,
-            },
-        },
-    }
-
-    upgraded = upgrade_dsl_sources(payload)
-    source = upgraded["dataset_query"]["dsl_source"]
-    assert source["language"] == "python"
-    assert source["python_source"] == PYTHON_DSL
-    assert json.loads(source["json_source"])["factors"] == ["close"]
-
-
-def test_source_upgrade_does_not_reinterpret_backtest_business_parameters() -> None:
-    payload = {
-        "params": {"dsl_source": "strategy-value"},
-        "config": {
-            "nested": {
-                "dsl_source": {"language": "custom", "source": "unchanged"},
-            },
-        },
-        "dataset_query": {
-            "dsl_source": {
-                "language": "python",
-                "source": PYTHON_DSL,
-            },
-        },
-    }
-
-    upgraded = upgrade_dsl_sources(payload)
-
-    assert upgraded["params"] == payload["params"]
-    assert upgraded["config"] == payload["config"]
-    assert upgraded["dataset_query"]["dsl_source"]["python_source"] == PYTHON_DSL
+    with pytest.raises(ValueError):
+        compile_dsl_source(source)

@@ -65,8 +65,13 @@ from core.apps.users.services import get_current_user
 from core.apps.workflows.services import current_workflow_instance
 from core.database.session import get_database_session
 from core.scheduler.errors import DolphinSchedulerError
-from core.utils.dsl import dsl_catalog
-from core.utils.dsl_source import BacktestApplicationRequest
+from core.utils.dsl import PythonDslCompileError, dsl_catalog
+from core.utils.dsl_source import (
+    BacktestApplicationRequest,
+    DslDocument,
+    DslSource,
+    compile_factor_dsl_source,
+)
 from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
 
@@ -114,7 +119,14 @@ def projects(
 
 @router.post("/projects", response_model=BacktestProjectItem, status_code=status.HTTP_201_CREATED)
 def create_project(request: BacktestProjectCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> BacktestProjectItem:
-    return BacktestProjectItem.model_validate(create_backtest_project(session, user.id, request.title))
+    return BacktestProjectItem.model_validate(
+        create_backtest_project(
+            session,
+            user.id,
+            request.title,
+            request.parameters,
+        )
+    )
 
 
 @router.get("/projects/{project_id}", response_model=BacktestProjectItem)
@@ -412,3 +424,16 @@ def catalog() -> BacktestCatalog:
         operators=shared.operators,
         benchmark_codes=list(INDEX_CODES),
     )
+
+
+@router.post(
+    "/dsl/compile",
+    response_model=DslDocument,
+    dependencies=[Depends(get_current_user)],
+)
+def compile_dataset_source(request: DslSource) -> DslDocument:
+    """Compile a Backtest dataset DSL with its managed stock-pool symbol."""
+    try:
+        return DslDocument.model_validate(compile_factor_dsl_source(request))
+    except PythonDslCompileError as error:
+        raise_api_http_error(error)

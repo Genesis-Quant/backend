@@ -47,7 +47,7 @@ def factor_parameters(
             "end_date": "2020-12-31",
             "lookback": "P30D",
             "codes": [],
-            "factors": ["close"],
+            "factors": ["close", "circ_mv"],
             "derivatives": dataset_derivatives,
             "filters": filters,
         },

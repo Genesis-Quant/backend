@@ -93,7 +93,14 @@ def projects(
 
 @router.post("/projects", response_model=FactorProjectItem, status_code=status.HTTP_201_CREATED)
 def create_project(request: FactorProjectCreate, user: Annotated[User, Depends(get_current_user)], session: Annotated[Session, Depends(get_database_session)]) -> FactorProjectItem:
-    return FactorProjectItem.model_validate(create_factor_project(session, user.id, request.title))
+    return FactorProjectItem.model_validate(
+        create_factor_project(
+            session,
+            user.id,
+            request.title,
+            request.parameters,
+        )
+    )
 
 
 @router.get("/projects/{project_id}", response_model=FactorProjectItem)

@@ -2,6 +2,7 @@
 
 import ast
 import re
+from collections.abc import Collection
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ValidationError
@@ -9,10 +10,8 @@ from pydantic import BaseModel, ValidationError
 from runtime.apps.query.schema import Derivative, FactorQuery
 
 from core.utils.dsl_builder import (
-    CS,
-    DIRECT,
     OP,
-    TS,
+    Operators,
     normalize_member,
     operator_model,
 )
@@ -21,6 +20,7 @@ from core.utils.dsl_builder import (
 OperatorType = Literal["DIRECT", "TS", "CS"]
 PYTHON_DSL_AST_MAX_NODES = 50_000
 PYTHON_DSL_EXECUTION_MAX_ITEMS = 30_000
+IMPLICIT_QUERY_FIELDS = frozenset({"time", "code"})
 
 
 class PythonDslCompileError(ValueError):
@@ -67,6 +67,11 @@ class _DslSyntaxValidator:
                 and isinstance(statement.value.value, str)
             ):
                 continue
+            elif isinstance(statement, ast.Expr) and isinstance(
+                statement.value,
+                ast.Call,
+            ):
+                self._validate_expression(statement.value)
             else:
                 self._fail(
                     statement,
@@ -348,7 +353,7 @@ class _PreparePythonDsl(ast.NodeTransformer):
         )
 
 
-def _execute_python_dsl(source: str) -> dict[str, Any]:
+def _execute_python_dsl(source: str) -> tuple[dict[str, Any], list[OP]]:
     try:
         module = ast.parse(source, filename="<python-dsl>", mode="exec")
     except SyntaxError as error:
@@ -364,14 +369,15 @@ def _execute_python_dsl(source: str) -> dict[str, Any]:
     executable = _PreparePythonDsl().visit(module)
     ast.fix_missing_locations(executable)
     budget = _DslExecutionBudget()
+    named_operations: list[OP] = []
     namespace: dict[str, Any] = {
         "__builtins__": {
             "range": range,
             "zip": zip,
         },
-        "DIRECT": DIRECT,
-        "TS": TS,
-        "CS": CS,
+        "DIRECT": Operators("DIRECT", named_operations.append),
+        "TS": Operators("TS", named_operations.append),
+        "CS": Operators("CS", named_operations.append),
         _PreparePythonDsl.budget_function: budget.iterate,
     }
     try:
@@ -380,7 +386,7 @@ def _execute_python_dsl(source: str) -> dict[str, Any]:
         raise
     except Exception as error:
         raise PythonDslCompileError(f"Python DSL 执行失败：{error}") from error
-    return namespace
+    return namespace, named_operations
 
 
 def _operation_list(namespace: dict[str, Any], name: str) -> list[OP]:
@@ -397,8 +403,12 @@ def _operation_list(namespace: dict[str, Any], name: str) -> list[OP]:
     return value
 
 
-def _definitions(derivatives: list[OP], filters: list[OP]) -> dict[str, Derivative]:
+def _definitions(
+    derivatives: list[OP],
+    filters: list[OP],
+) -> tuple[dict[str, Derivative], set[str]]:
     result: dict[str, Derivative] = {}
+    raw_field_references: set[str] = set()
     objects: dict[str, OP] = {}
     visited: set[int] = set()
 
@@ -406,24 +416,26 @@ def _definitions(derivatives: list[OP], filters: list[OP]) -> dict[str, Derivati
         if id(operation) in visited:
             return
         if operation.name is None:
-            raise PythonDslCompileError("DERIVATIVES 和 FILTERS 只能包含有名称的 OP")
+            raise PythonDslCompileError("FILTERS 只能包含有名称的 OP")
         if operation.name in objects and objects[operation.name] is not operation:
             raise PythonDslCompileError(f"算符名称重复：{operation.name!r}")
         objects[operation.name] = operation
         for dependency in operation.dependencies:
             visit(dependency)
         visited.add(id(operation))
+        raw_field_references.update(operation.raw_field_references)
         result[operation.name] = operation.derivative
 
     for operation in [*derivatives, *filters]:
         visit(operation)
-    return result
+    return result, raw_field_references
 
 
 def compile_python_dsl(
     source: str,
     *,
     external_derivatives: dict[str, Any] | None = None,
+    available_factors: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Execute declarations and return current FactorQuery DSL JSON fields."""
     if not isinstance(source, str):
@@ -431,8 +443,8 @@ def compile_python_dsl(
     if len(source) > 100_000:
         raise PythonDslCompileError("Python DSL 源代码不能超过 100000 个字符")
 
-    namespace = _execute_python_dsl(source)
-    required = ("FACTORS", "DERIVATIVES", "FILTERS")
+    namespace, named_operations = _execute_python_dsl(source)
+    required = ("FACTORS", "FILTERS")
     if missing := [name for name in required if name not in namespace]:
         raise PythonDslCompileError(
             "Python DSL 必须定义变量：" + ", ".join(missing)
@@ -443,10 +455,22 @@ def compile_python_dsl(
         not isinstance(item, str) for item in factors
     ):
         raise PythonDslCompileError("FACTORS 必须是 list[str]")
-    derivatives = _operation_list(namespace, "DERIVATIVES")
     filters = _operation_list(namespace, "FILTERS")
 
-    definitions = _definitions(derivatives, filters)
+    definitions, raw_field_references = _definitions(
+        named_operations,
+        filters,
+    )
+    if available_factors is not None:
+        allowed_fields = (
+            set(available_factors)
+            | set(external_derivatives or {})
+            | IMPLICIT_QUERY_FIELDS
+        )
+        if unknown := sorted(raw_field_references - allowed_fields):
+            raise PythonDslCompileError(
+                f"DSL 引用了不存在的数据字段：{unknown}"
+            )
     try:
         query = FactorQuery.model_validate({
             "start_date": "2000-01-01",

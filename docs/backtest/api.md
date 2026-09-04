@@ -19,11 +19,14 @@
 
 ```text
 list_projects("backtest", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
-create_project("backtest", title)
+create_project("backtest", title, parameters=<完整 Backtest 请求>)
 get_project("backtest", project_id)
 update_project("backtest", project_id, title)
 delete_project("backtest", project_id)
 ```
+
+Backtest 项目必须在创建时提交完整初始参数；创建接口和执行接口使用同一严格双源码契约，不会先
+保存空参数再由详情页补写。
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
 `latest_version`、`totalReturn`、`annualReturn`、`sharpeRatio`、`annualVolatility`、`maxDrawdown`、
@@ -232,7 +235,7 @@ list_workflow_outputs("backtest", workflow_instance_id)
 1. 读取 backtest/request、backtest/dolphindb、backtest/results、overview/dsl、schemas/backtest，及与
    当前任务对应的 dynamic-pool、optimization、callback-data 或 qa 契约
 2. 发现 DSL 算符和需要的 DolphinDB 内置函数签名
-3. create_project("backtest", title)
+3. create_project("backtest", title, parameters=complete_parameters)
 4. run_backtest(project_id, complete_parameters)
 5. 按 Workspace 轮询；失败时读 Attempt、Task 和完整日志
 6. SUCCESS 后列出四个输出并执行订单/成交/持仓/现金/费用 QA

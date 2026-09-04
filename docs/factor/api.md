@@ -13,11 +13,14 @@
 
 ```text
 list_projects("factor", page=1, page_size=20, search=null, sort_by="updated_at", sort_order="desc")
-create_project("factor", title)
+create_project("factor", title, parameters=<完整 Factor 请求>)
 get_project("factor", project_id)
 update_project("factor", project_id, title)
 delete_project("factor", project_id)
 ```
+
+Factor 项目必须在创建时提交完整初始参数；创建接口和执行接口使用同一严格双源码契约，不会先保存
+空参数再由详情页补写。
 
 `search` 按项目名称或 ID 片段过滤，`sort_order` 为 `asc` 或 `desc`。`sort_by` 可选 `id`、`title`、
 `latest_version`、`ic_mean`、`rank_ic_mean`、`ic_ir`、`rank_ic_ir`、`long_short_cumulative_return`、
@@ -129,7 +132,7 @@ ICIR 与 Rank ICIR 均按 `IC 均值 / IC 样本标准差` 计算，并以该原
 ```text
 1. 读取 factor/request、overview/dsl 和 schemas/factor
 2. 校验 codes_query、dataset_query、factor_columns、return_columns、return_specs 的依赖
-3. create_project("factor", title)
+3. create_project("factor", title, parameters=<完整 Factor 请求>)
 4. run_factor_analysis(project_id, parameters)
 5. 按 Workspace 轮询；失败时读完整日志
 6. SUCCESS 后列出并检查 IC、group returns 与 group turnover outputs
