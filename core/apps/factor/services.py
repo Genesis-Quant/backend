@@ -53,6 +53,7 @@ from core.utils.dsl_source import (
 
 OUTPUT_FILES = FACTOR_OUTPUT_FILES
 PROJECT_OUTPUTS = [
+    "execution_statistics",
     "information_coefficient",
     "group_returns",
     "group_turnover",

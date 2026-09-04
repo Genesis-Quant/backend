@@ -96,12 +96,21 @@ list_workflow_outputs("factor", workflow_instance_id)
 
 | 名称 | 文件 | 主要内容 |
 | --- | --- | --- |
+| `execution_statistics` | `factor_execution_statistics.parquet` | 每个交易日的原始股票数、逐个过滤条件生效后的剩余数和最终保留比例 |
 | `information_coefficient` | `factor_information_coefficients.parquet` | 各 factor × return 的 IC 与 Rank IC 时序列 |
 | `group_returns` | `factor_group_returns.parquet` | 各 factor × return 的极端 N 支及等数量分组收益时序列 |
 | `group_turnover` | `factor_group_turnover.parquet` | 各 factor × 持有期的极端 N 支、等数量分组换手率与因子秩自相关时序列 |
 
-实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。以运行请求
-和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。
+`execution_statistics` 中每个阶段由 `filter{i}_name` 和 `filter{i}_count` 配对描述；名称来自 Backend 注入
+完成后实际交给 Runtime 的过滤列表，因此调用方不能只按项目保存的编辑态 DSL 猜测阶段名称。每个 count
+都是从第一项到当前项全部为真的累计剩余股票数，不是单个条件独立命中的数量。`source_count` 是过滤前
+的当日去重股票数，`filtered_count` 是所有过滤条件
+生效后的当日去重股票数，`retention_rate = filtered_count / source_count`。派生列计算本身不会删除行，
+因此不额外输出与 `source_count` 恒等的“计算后股票数”。网页将这些累计值换算为各条件的边际剔除数量，
+以堆叠区域折线图展示；区域总上沿始终等于 `source_count`。
+
+其余结果的实际列名由 `factor_columns` 与 `return_columns` 拼接生成，不能假定固定的 `ret0` 等名称。
+以运行请求和 Parquet schema 为准。下载方法见 `arena://docs/overview/workflows`。
 
 保存版本时，Backend 根据 `return_specs` 计算并持久化因子摘要指标。每个 factor × return 指标同时
 显式返回 `return_kind`、`return_periods` 和 `compoundable`，避免把重叠收益的空复利指标误判为计算

@@ -13,6 +13,7 @@ from core.utils.validation import (
 
 type FactorOutput = Literal[
     "processed_data",
+    "execution_statistics",
     "information_coefficient",
     "group_returns",
     "group_turnover",

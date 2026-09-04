@@ -542,6 +542,15 @@ def write_requested_outputs(
         path = output_directory / filenames[name]
         if name == "information_coefficient":
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_ic": [0.1, 0.2], "factor_return_rank_ic": [0.2, 0.3]}).to_parquet(path)
+        elif name == "execution_statistics":
+            pd.DataFrame({
+                "time": ["2020-01-01", "2020-01-02"],
+                "source_count": [300, 300],
+                "filter0_count": [280, 275],
+                "filter0_name": ["stock_pool_member", "stock_pool_member"],
+                "filtered_count": [280, 275],
+                "retention_rate": [280 / 300, 275 / 300],
+            }).to_parquet(path)
         elif name == "group_returns":
             pd.DataFrame({"time": ["2020-01-01", "2020-01-02"], "factor_return_group0": [0.01, 0.02], "factor_return_group4": [0.02, 0.04]}).to_parquet(path)
         elif name == "group_turnover":

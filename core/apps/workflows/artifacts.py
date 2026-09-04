@@ -21,6 +21,7 @@ QUERY_OUTPUT_FILES = {
 }
 FACTOR_OUTPUT_FILES = {
     "processed_data": "factor_processed.parquet",
+    "execution_statistics": "factor_execution_statistics.parquet",
     "information_coefficient": "factor_information_coefficients.parquet",
     "group_returns": "factor_group_returns.parquet",
     "group_turnover": "factor_group_turnover.parquet",

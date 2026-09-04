@@ -226,6 +226,29 @@ Backend 会沿 `dataset_query.derivatives` 中的命名引用解析 `unary.shift
 
 ## 输出列
 
+逻辑输出 `execution_statistics` 对应 `factor_execution_statistics.parquet`，用于检查第二阶段 DSL 的股票域
+是否在某个交易日或某个过滤条件处异常收缩：
+
+```text
+time
+source_count
+filter0_count
+filter0_name
+...
+filter{len(dataset_query.filters)-1}_count
+filter{len(dataset_query.filters)-1}_name
+filtered_count
+retention_rate
+```
+
+`time` 每个交易日一行。`source_count` 是正式分析日期区间内、执行 filters 前的去重股票数；
+`filter{i}_name` 是 Runtime 实际执行的第 i 个条件，`filter{i}_count` 是累计应用第 0 项至第 i 项后的
+剩余股票数。动态股票池的托管条件可能由 Backend 注入，读取端必须使用 name 列，不能只按保存的编辑态
+`dataset_query.filters` 推断。`filtered_count` 是全部 filters 生效后的最终股票数；`retention_rate` 是
+最终保留比例。条件之间可能重叠，
+因此不能把各列直接相减后解释为各条件独立命中数；网页仅将相邻阶段的差值解释为该执行顺序下的
+边际剔除数。派生计算阶段保持输入行，不生成一个与 `source_count` 重复的计数列。
+
 逻辑输出 `information_coefficient` 对应 `factor_information_coefficients.parquet`：
 
 ```text

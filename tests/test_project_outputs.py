@@ -6,6 +6,7 @@ from core.apps.query.services import PROJECT_OUTPUTS as QUERY_PROJECT_OUTPUTS
 def test_project_workflows_only_request_consumed_outputs() -> None:
     assert QUERY_PROJECT_OUTPUTS == ["data"]
     assert FACTOR_PROJECT_OUTPUTS == [
+        "execution_statistics",
         "information_coefficient",
         "group_returns",
         "group_turnover",
