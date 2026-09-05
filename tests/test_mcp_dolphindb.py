@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from core.mcp.views.dolphindb import serialize_dolphindb_result
 
@@ -62,3 +63,32 @@ def test_dolphindb_scalar_result_has_character_budget() -> None:
 
     assert result.truncated is True
     assert len(result.value) == 1_000_000
+
+
+@pytest.mark.parametrize("size", [223, 224, 250, 300, 320])
+@pytest.mark.parametrize("with_labels", [False, True])
+def test_matrix_budget_exhaustion_preserves_result_envelope(size, with_labels) -> None:
+    labels = np.arange(size) if with_labels else None
+    result = serialize_dolphindb_result([np.ones((size, size)), labels, labels], 2000)
+
+    assert result.kind == "matrix"
+    assert (result.row_count, result.column_count) == (size, size)
+    assert set(result.value) == {"data", "row_labels", "column_labels"}
+    assert result.truncated is (size >= 224 or with_labels)
+    result.model_dump_json()
+
+
+def test_matrix_labels_and_data_share_character_budget() -> None:
+    labels = np.array(["x" * 600_000, "y" * 600_000])
+    result = serialize_dolphindb_result([np.ones((2, 2)), labels, labels], 2000)
+
+    assert result.truncated
+    assert result.kind == "matrix"
+    assert set(result.value) == {"data", "row_labels", "column_labels"}
+    assert result.columns == []
+
+
+def test_matrix_single_row_preview_keeps_both_label_keys() -> None:
+    result = serialize_dolphindb_result([np.ones((2, 2)), np.arange(2), np.arange(2)], 1)
+
+    assert result.value == {"data": [[1.0]], "row_labels": [0], "column_labels": [0]}

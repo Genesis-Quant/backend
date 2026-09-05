@@ -1222,6 +1222,17 @@ class WorkflowGatewayService:
             }
         with DolphinSchedulerClient() as client:
             retry_baseline_task_id = 0
+            if action is WorkflowAction.PAUSE:
+                current = client.process_instance(int(attempt.project_code or 0), workflow_instance_id)
+                tasks = client.process_instance_tasks(
+                    project_code=int(attempt.project_code or 0),
+                    process_instance_id=workflow_instance_id,
+                )
+                if current.get("state") != "RUNNING_EXECUTION" or not any(
+                    task.get("state") == "RUNNING_EXECUTION" and task.get("host")
+                    for task in tasks
+                ):
+                    raise RuntimeError("任务尚未在 Worker 执行或已结束，当前不能暂停；取消等待请使用停止")
             if action is WorkflowAction.RETRY_FAILED:
                 if attempt.submission_state == WORKFLOW_RETRY_PENDING_STATE:
                     raise RuntimeError("失败节点正在续跑，请勿重复提交")
@@ -1849,7 +1860,7 @@ def apply_workflow_state(workflow: WorkflowInstance, instance: dict[str, Any]) -
 def validate_workflow_action(workflow: WorkflowInstance, action: WorkflowAction) -> None:
     if action is WorkflowAction.STOP and workflow.state in TERMINAL_STATES:
         raise RuntimeError(f"{workflow.state} 状态的工作流不能停止")
-    if action is WorkflowAction.PAUSE and workflow.state in TERMINAL_STATES:
+    if action is WorkflowAction.PAUSE and workflow.state != "RUNNING_EXECUTION":
         raise RuntimeError(f"{workflow.state} 状态的工作流不能暂停")
     if action is WorkflowAction.RESUME and workflow.state != "PAUSE":
         raise RuntimeError(f"{workflow.state} 状态的工作流不能恢复")
@@ -1907,7 +1918,7 @@ def auto_save_workspaces(
     version_model: type[FactorVersion] | type[BacktestVersion],
     user_id: int,
     project_id: int,
-    client_ids: set[str],
+    requests_by_client: dict[str, tuple[dict[str, Any], str]],
 ) -> tuple[dict[str, int], list[int], list[int]]:
     workspaces = session.scalars(
         select(WorkflowWorkspace)
@@ -1917,71 +1928,85 @@ def auto_save_workspaces(
     workspace_ids_by_client: dict[str, int] = {}
     submission_retry_ids: list[int] = []
     auto_save_retry_ids: list[int] = []
+    matches: list[tuple[WorkflowWorkspace, WorkflowAttempt, str]] = []
     for workspace in workspaces:
         attempt = current_workflow_attempt(session, workspace.id)
         metadata = auto_save_metadata(attempt) if attempt is not None else None
         client_id = metadata.get("client_id") if metadata is not None else None
-        if isinstance(client_id, str) and client_id in client_ids:
-            workflow = current_workflow_instance(session, workspace.id)
-            submission_failed = attempt.submission_state == "SUBMIT_FAILED"
-            submission_unreconciled = (
-                workflow is None
-                and attempt.submission_state == "SUBMITTED"
+        if isinstance(client_id, str) and client_id in requests_by_client:
+            parameters, remark = requests_by_client[client_id]
+            if (
+                json.dumps(attempt.input_json, sort_keys=True, ensure_ascii=False)
+                != json.dumps(parameters, sort_keys=True, ensure_ascii=False)
+                or metadata.get("remark") != remark
+            ):
+                raise ValueError(
+                    f"client_id {client_id!r} 已绑定不同的参数或备注；"
+                    "修改内容后请使用新的 client_id"
+                )
+            matches.append((workspace, attempt, client_id))
+    # Validate the whole batch before creating retries or changing save state.
+    for workspace, attempt, client_id in matches:
+        workflow = current_workflow_instance(session, workspace.id)
+        submission_failed = attempt.submission_state == "SUBMIT_FAILED"
+        submission_unreconciled = (
+            workflow is None
+            and attempt.submission_state == "SUBMITTED"
+        )
+        execution_failed = (
+            workflow is not None
+            and workflow.state in FAILURE_STATES
+            and attempt.submission_state not in SUBMISSION_ACTIVE_STATES
+        )
+        if submission_failed or submission_unreconciled or execution_failed:
+            recover_ambiguous_submission = (
+                submission_failed or submission_unreconciled
             )
-            execution_failed = (
-                workflow is not None
-                and workflow.state in FAILURE_STATES
-                and attempt.submission_state not in SUBMISSION_ACTIVE_STATES
+            retry = create_workflow_attempt(
+                session,
+                workspace,
+                attempt.input_json,
+                attempt.requested_outputs,
+                start_parameters=(
+                    attempt.start_parameters
+                    if recover_ambiguous_submission
+                    else None
+                ),
+                project_code=(
+                    attempt.project_code
+                    if recover_ambiguous_submission
+                    else None
+                ),
+                workflow_definition_code=(
+                    attempt.workflow_definition_code
+                    if recover_ambiguous_submission
+                    else None
+                ),
+                workflow_name=(
+                    attempt.workflow_name
+                    if recover_ambiguous_submission
+                    else None
+                ),
+                submission_state=BATCH_PENDING_STATE,
+                events=attempt_context_events(attempt),
             )
-            if submission_failed or submission_unreconciled or execution_failed:
-                recover_ambiguous_submission = (
-                    submission_failed or submission_unreconciled
-                )
-                retry = create_workflow_attempt(
-                    session,
-                    workspace,
-                    attempt.input_json,
-                    attempt.requested_outputs,
-                    start_parameters=(
-                        attempt.start_parameters
-                        if recover_ambiguous_submission
-                        else None
-                    ),
-                    project_code=(
-                        attempt.project_code
-                        if recover_ambiguous_submission
-                        else None
-                    ),
-                    workflow_definition_code=(
-                        attempt.workflow_definition_code
-                        if recover_ambiguous_submission
-                        else None
-                    ),
-                    workflow_name=(
-                        attempt.workflow_name
-                        if recover_ambiguous_submission
-                        else None
-                    ),
-                    submission_state=BATCH_PENDING_STATE,
-                    events=attempt_context_events(attempt),
-                )
-                record_event(
-                    retry,
-                    "WORKFLOW_RETRY_QUEUED",
-                    previous_attempt_id=attempt.id,
-                    previous_workflow_instance_id=(
-                        workflow.workflow_instance_id
-                        if workflow is not None
-                        else None
-                    ),
-                )
-                submission_retry_ids.append(workspace.id)
-            elif attempt.submission_state == "AUTO_SAVE_FAILED":
-                attempt.submission_state = AUTO_SAVE_PENDING_STATE
-                attempt.error = None
-                record_event(attempt, "AUTO_VERSION_SAVE_RETRY_QUEUED")
-                auto_save_retry_ids.append(workspace.id)
-            workspace_ids_by_client[client_id] = workspace.id
+            record_event(
+                retry,
+                "WORKFLOW_RETRY_QUEUED",
+                previous_attempt_id=attempt.id,
+                previous_workflow_instance_id=(
+                    workflow.workflow_instance_id
+                    if workflow is not None
+                    else None
+                ),
+            )
+            submission_retry_ids.append(workspace.id)
+        elif attempt.submission_state == "AUTO_SAVE_FAILED":
+            attempt.submission_state = AUTO_SAVE_PENDING_STATE
+            attempt.error = None
+            record_event(attempt, "AUTO_VERSION_SAVE_RETRY_QUEUED")
+            auto_save_retry_ids.append(workspace.id)
+        workspace_ids_by_client[client_id] = workspace.id
     return workspace_ids_by_client, submission_retry_ids, auto_save_retry_ids
 
 

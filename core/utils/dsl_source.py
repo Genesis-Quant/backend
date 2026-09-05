@@ -296,6 +296,8 @@ class FactorAnalysisApplicationRequest(BaseModel):
         self,
         codes_query: FactorQuery | None,
     ) -> FactorQuery:
+        if self.dataset_query.codes:
+            raise ValueError("Factor 托管股票池要求 dataset_query.codes=[]；不能传入会被候选池覆盖的静态代码")
         compiled = self.dataset_query.compiled_document()
         validate_factor_editor_document(
             compiled,
@@ -619,15 +621,15 @@ class OptimizationApplicationRequest(
 ):
     """Source-preserving Backtest request plus optimization settings."""
 
-    def runtime_payload(self) -> dict[str, Any]:
+    def runtime_parameters(self) -> OptimizationParameters:
         settings = {
             name: getattr(self, name)
             for name in OptimizationSettings.model_fields
         }
         return OptimizationParameters.model_validate({
-            **self.runtime_parameters().model_dump(mode="json"),
+            **super().runtime_parameters().model_dump(mode="json"),
             **settings,
-        }).model_dump(mode="json")
+        })
 
 
 class SensitivityApplicationRequest(
@@ -636,15 +638,15 @@ class SensitivityApplicationRequest(
 ):
     """Source-preserving Backtest request plus sensitivity cases."""
 
-    def runtime_payload(self) -> dict[str, Any]:
+    def runtime_parameters(self) -> SensitivityParameters:
         settings = {
             name: getattr(self, name)
             for name in SensitivitySettings.model_fields
         }
         return SensitivityParameters.model_validate({
-            **self.runtime_parameters().model_dump(mode="json"),
+            **super().runtime_parameters().model_dump(mode="json"),
             **settings,
-        }).model_dump(mode="json")
+        })
 
 
 __all__ = [

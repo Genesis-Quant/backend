@@ -4,11 +4,14 @@ import json
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
+from runtime import OptimizationSettings
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from config import ArenaSettings
 from core.apps.backtest.models import (
+    BacktestOptimization,
     BacktestProject,
     BacktestResearch,
     BacktestVersion,
@@ -22,6 +25,7 @@ from core.apps.backtest.services import (
 from core.apps.backtest.services import (
     create_backtest_version,
     create_backtest_project,
+    create_backtest_optimization,
     submit_project_backtest,
 )
 from core.apps.factor.models import FactorProject, FactorVersion
@@ -81,6 +85,7 @@ def session() -> Session:
             FactorVersion.__table__,
             BacktestVersion.__table__,
             BacktestResearch.__table__,
+            BacktestOptimization.__table__,
         ],
     )
     with Session(engine, expire_on_commit=False) as active_session:
@@ -535,7 +540,7 @@ def test_batch_client_id_recovers_failed_submission_with_original_input(
     record_event(failed, "AUTO_SAVE_VERSION", client_id="queue-1", project_id=project.id, remark="first")
     session.commit()
 
-    matched, submission_retry_ids, auto_save_retry_ids = auto_save_workspaces(session, FactorVersion, user.id, project.id, {"queue-1"})
+    matched, submission_retry_ids, auto_save_retry_ids = auto_save_workspaces(session, FactorVersion, user.id, project.id, {"queue-1": ({"value": "original"}, "first")})
     current = current_workflow_attempt(session, workspace.id)
 
     assert matched == {"queue-1": workspace.id}
@@ -573,7 +578,7 @@ def test_batch_client_id_retries_failed_auto_save_without_new_attempt(
     record_event(failed, "AUTO_SAVE_VERSION", client_id="queue-2", project_id=project.id, remark="first")
     session.commit()
 
-    matched, submission_retry_ids, auto_save_retry_ids = auto_save_workspaces(session, FactorVersion, user.id, project.id, {"queue-2"})
+    matched, submission_retry_ids, auto_save_retry_ids = auto_save_workspaces(session, FactorVersion, user.id, project.id, {"queue-2": ({"value": "original"}, "first")})
     current = current_workflow_attempt(session, workspace.id)
 
     assert matched == {"queue-2": workspace.id}
@@ -591,6 +596,94 @@ def test_factor_maximum_drawdown_includes_initial_wealth() -> None:
 
     assert growth == pytest.approx(0.55)
     assert maximum_drawdown == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("version_model,create,parameters", [
+    (FactorVersion, create_factor_project, factor_parameters),
+    (BacktestVersion, create_backtest_project, backtest_parameters),
+])
+@pytest.mark.parametrize("state", ["SUBMIT_FAILED", "AUTO_SAVE_FAILED", "AUTO_SAVE_COMPLETE", "SUBMITTED"])
+@pytest.mark.parametrize("changed", ["parameters", "remark"])
+def test_batch_client_id_rejects_changed_request_before_retry(
+    session, user, version_model, create, parameters, state, changed,
+):
+    created = create(session, user.id, "batch", parameters())
+    version = session.scalar(select(version_model).where(version_model.project_id == created["id"]))
+    workspace = session.get(WorkflowWorkspace, version.workflow_workspace_id)
+    attempt = create_workflow_attempt(session, workspace, {"value": 1}, [], submission_state=state)
+    record_event(attempt, "AUTO_SAVE_VERSION", client_id="same-id", project_id=created["id"], remark="original")
+    session.commit()
+    before = session.scalar(select(func.count()).select_from(WorkflowAttempt))
+    parameters = {"value": True} if changed == "parameters" else {"value": 1}
+    remark = "changed" if changed == "remark" else "original"
+
+    with pytest.raises(ValueError, match="client_id.*已绑定不同"):
+        auto_save_workspaces(session, version_model, user.id, created["id"], {"same-id": (parameters, remark)})
+
+    assert session.scalar(select(func.count()).select_from(WorkflowAttempt)) == before
+    assert current_workflow_attempt(session, workspace.id).id == attempt.id
+    assert attempt.submission_state == state
+
+
+def test_batch_client_id_reuses_identical_payload_with_reordered_keys(session, user):
+    created = create_factor_project(session, user.id, "batch", factor_parameters())
+    version = session.scalar(select(FactorVersion).where(FactorVersion.project_id == created["id"]))
+    workspace = session.get(WorkflowWorkspace, version.workflow_workspace_id)
+    attempt = create_workflow_attempt(session, workspace, {"a": 1, "b": 2}, [], submission_state="AUTO_SAVE_COMPLETE")
+    record_event(attempt, "AUTO_SAVE_VERSION", client_id="same", project_id=created["id"], remark="original")
+    session.commit()
+    before = session.scalar(select(func.count()).select_from(WorkflowAttempt))
+
+    matched, submissions, saves = auto_save_workspaces(
+        session, FactorVersion, user.id, created["id"], {"same": ({"b": 2, "a": 1}, "original")},
+    )
+
+    assert matched == {"same": workspace.id}
+    assert submissions == saves == []
+    assert session.scalar(select(func.count()).select_from(WorkflowAttempt)) == before
+
+
+def test_batch_conflict_does_not_mutate_other_retry_candidates(session, user):
+    created = create_factor_project(session, user.id, "batch", factor_parameters())
+    attempts = []
+    for number in range(2):
+        workspace = WorkflowWorkspace(user_id=user.id, application="factor")
+        session.add(workspace)
+        session.flush()
+        session.add(FactorVersion(project_id=created["id"], workflow_workspace_id=workspace.id,
+                                  version=None, saved=False, is_current=False, parameters={}))
+        attempt = create_workflow_attempt(session, workspace, {"value": number}, [], submission_state="AUTO_SAVE_FAILED")
+        record_event(attempt, "AUTO_SAVE_VERSION", client_id=f"item-{number}", project_id=created["id"], remark="")
+        attempts.append(attempt)
+    session.commit()
+
+    with pytest.raises(ValueError, match="client_id.*已绑定不同"):
+        auto_save_workspaces(session, FactorVersion, user.id, created["id"], {
+            "item-0": ({"value": 0}, ""),
+            "item-1": ({"value": 9}, ""),
+        })
+
+    assert all(attempt.submission_state == "AUTO_SAVE_FAILED" for attempt in attempts)
+
+
+def test_invalid_optimization_does_not_create_workspace_or_attempt(session, user, monkeypatch):
+    created = create_backtest_project(session, user.id, "optimization", backtest_parameters())
+    version = session.scalar(select(BacktestVersion).where(BacktestVersion.project_id == created["id"]))
+    monkeypatch.setattr("core.apps.backtest.services.owned_batch_version", lambda *args: version)
+    counts = {model: session.scalar(select(func.count()).select_from(model)) for model in (
+        WorkflowWorkspace, WorkflowAttempt, BacktestOptimization,
+    )}
+    settings = OptimizationSettings(
+        parameter_space={"missing": [1, 2]}, algorithms=["random_search"],
+        start_date="2025-01-01", end_date="2025-03-01",
+        lookback_period="1M", holding_period="2W",
+    )
+
+    with pytest.raises(ValidationError, match="parameter_space 只能选择 params 已定义"):
+        create_backtest_optimization(session, user, created["id"], 1, settings)
+
+    for model, count in counts.items():
+        assert session.scalar(select(func.count()).select_from(model)) == count
 
 
 def test_reusing_cloud_workspace_clears_existing_output_prefix(

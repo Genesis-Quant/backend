@@ -487,7 +487,7 @@ order_target_value(mutable context, msg, stockCode, targetValue, orderLabel="ord
 Runtime helper 无法表达订单时可调用：
 
 ```dos
-orderId = Backtest::submitOrder(
+orderIds = Backtest::submitOrder(
     context.engine,
     (stockCode, message.timestamp[0], 5, limitPrice, quantity, direction),
     "orderLabel"
@@ -497,6 +497,9 @@ orderId = Backtest::submitOrder(
 六项依次为：证券代码、时间、价格类型 5、限价、正整数股数、方向。股票多头普通订单使用方向
 `1` 买开、`3` 卖平。合成执行价差由 `syntheticSpread` 体现在盘口中，不是
 `order_target*` 的额外滑点参数。
+
+返回值是 LONG VECTOR；单单返回例如 `[1001l]`，多单返回多个订单号。它不是单个 LONG。
+撤单可以直接传 `orders=orderIds`，不要再用 `[orderIds]` 构造嵌套向量。
 
 ## 持仓、资金和挂单
 
@@ -570,6 +573,10 @@ Backtest::cancelOrder(context.engine, , orderIds)
 Backtest::cancelOrder(context.engine, , , "orderLabel")
 ```
 
+当前每日只有 09:30 和 15:00 两个事件，同刻撤单可能被拒绝，15:00 又处于收盘禁撤时段；日终未成交
+订单可以直接失效为 `-3`，不能假定会跨日保留。接口支持撤单不等于当前合成时间轴总有可成功撤单的
+时机；必须检查 `onOrder` / `getOpenOrders`，不能把调用成功等同于收到状态 `2`。
+
 ## `onOrder` 事件
 
 插件通用事件结构见
@@ -606,7 +613,7 @@ Backtest::cancelOrder(context.engine, , , "orderLabel")
 | `2` | 撤单成功 | 是 | 清除 pending 状态 |
 | `-1` | 审批/风控拒绝 | 是 | 记录拒单；原因只在可选输出实际提供时可读 |
 | `-2` | 撤单拒绝 | 否 | 原订单可能仍活动，重新查询 `getOpenOrders` |
-| `-3` | 回测结束仍未成交 | 是 | 计入期末未成交，不能当成已撤单 |
+| `-3` | 日终或回测结束时未成交失效 | 是 | 计入未成交失效，不能当成已撤单或仅发生于回测最后一天 |
 
 ```dos
 def onOrder(mutable context, orders) {

@@ -225,6 +225,15 @@ def test_index_pool_is_compiled_and_injected_only_into_runtime_copy() -> None:
     assert runtime["dataset_query"]["filters"][0] == "stock_pool_member"
 
 
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_factor_rejects_static_codes_instead_of_silently_overriding_them(dynamic) -> None:
+    raw = factor_request(codes_query=index_query() if dynamic else None)
+    raw["dataset_query"]["codes"] = ["000001.SZ"]
+    with pytest.raises(ValidationError, match=r"dataset_query.codes=\[\]"):
+        FactorAnalysisApplicationRequest.model_validate(raw)
+    assert raw["dataset_query"]["codes"] == ["000001.SZ"]
+
+
 def test_malformed_dynamic_pool_is_rejected_instead_of_ignored() -> None:
     with pytest.raises(ValidationError, match="binary.gt"):
         FactorAnalysisApplicationRequest.model_validate(

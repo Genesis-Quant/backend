@@ -30,7 +30,7 @@
 
 | 接口 | 当前签名 | 当前返回与用途 | 调用阶段和限制 |
 | --- | --- | --- | --- |
-| `submitOrder` | `(engine, msg, [label=""], [orderType=0], [accountType=""], [algoOrderParam])` | 订单号；提交普通单或插件支持的算法单 | 行情回调中使用当前 message 的证券和时间；返回不代表成交 |
+| `submitOrder` | `(engine, msg, [label=""], [orderType=0], [accountType=""], [algoOrderParam])` | LONG VECTOR 订单号向量，提交一单也返回向量；提交普通单或插件支持的算法单 | 行情回调中使用当前 message 的证券和时间；返回不代表成交 |
 | `cancelOrder` | `(engine, [symbol=""], [orders], [label=""], [accountType=""])` | 取消匹配条件的活动订单 | 可按证券、订单号、标签或全部撤单；撤单结果看 `onOrder` |
 | `getPosition` | `(engine, [symbol=""], [accountType=""])` | 不指定证券返回 TABLE；指定证券返回 DICTIONARY | 读取真实持仓；不得根据已提交订单推断持仓 |
 | `getOpenOrders` | `(engine, [symbol=""], [orders], [label=""], [outputQueuePosition=false], [accountType=""], [includeUnaccepted=true], [source=""])` | 当前股票模式非空结果实测为 TABLE | 空结果和其他插件模式先检查 form；字段见下文 |
@@ -39,7 +39,7 @@
 | `getTodayPnl` | `(engine, symbol, [accountType=""])` | 当前部署实测为一行 TABLE，至少包含证券、累计 PnL、当日 PnL | 仅股票；不得按官方其他版本的 DICTIONARY 形式硬编码 |
 | `getTodayTradingStatistics` | `(engine, [symbol=""], [accountType=""])` | 不指定证券返回当日统计 TABLE；指定证券的 form 使用前自省 | 只统计已经成交的方向、量、额和均价 |
 | `getLastPrice` | `(engine, [symbol=""], [accountType=""])` | 当前部署实测为 DICTIONARY | 公共调用名是 `getLastPrice`，不是导出符号 `getLastestPrices` |
-| `setPosition` | `(engine, symbol, qty, orderPrice, [lastPrice], [assetType])` | 设置占用初始资金的初始持仓 | 只能在第一批行情插入前调用，通常只在 `initialize` 使用；股票不支持负数卖开 |
+| `setPosition` | `(engine, symbol, qty, orderPrice, [lastPrice], [assetType])` | 设置占用初始资金的初始持仓 | 只能在第一批行情插入前调用；当前插件初始费用不完整进入费用/PnL 结果，见 results 的费用限制；股票不支持负数卖开 |
 | `setUniverse` | `(engine, symbolList)` | 设置引擎标的池 | 不生成 message，不替代两阶段查询或每日成员门控，也不能让缺价证券可交易 |
 | `subscribeIndicator` | `(engine, marketDataType, metrics, [contractType])` | 注册状态指标，结果传入行情回调的 `indicator` | Arena 只使用 `marketDataType="snapshot"`；必须在 `initialize` 注册 |
 | `getIndicatorSchema` | `(engine, [marketDataType])` | 返回订阅指标的空表 Schema | 只描述指标列，不描述 message、订单或成交对象 |

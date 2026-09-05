@@ -36,7 +36,9 @@ orderId, symbol, tradePrice, tradeQty, tradeValue, totalFee,
 totalVolume, totalValue, direction, tradeTime, orderPrice, label
 ```
 
-订单提交返回 `orderId` 只表示已创建订单。成交数量和费用以 `onTrade` 事件及结果表为准。
+`submitOrder` 返回 LONG VECTOR，即使只提交一单也不是标量。可将完整返回值直接传给
+`cancelOrder(..., orders=orderIds)`，不能再包成 `[orderIds]`；需要单个订单号时先确认向量非空再取
+`orderIds[0]`。返回值只表示提交，成交数量和费用以 `onTrade` 事件及结果表为准。
 
 ## 订单状态
 
@@ -48,7 +50,7 @@ totalVolume, totalValue, direction, tradeTime, orderPrice, label
 | `2` | 撤单成功 | 是 |
 | `-1` | 审批或风控拒绝 | 是 |
 | `-2` | 撤单拒绝；原订单可能仍活动 | 否 |
-| `-3` | 回测结束仍未成交 | 是 |
+| `-3` | 日终或回测结束时未成交失效 | 是 |
 
 收到 `-2` 后必须重新查询活动订单。任何目标调整都应基于真实持仓和活动订单，不能根据提交次数推断
 持仓变化。

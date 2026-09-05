@@ -449,10 +449,12 @@ Runtime 从所有 `fields`、嵌套节点和 `on` 收集依赖，按拓扑顺序
 - Query 顶层 `filters` 引用的 derivative；
 - TS/CS 的 `on`；
 - `and`、`or`、`not` 等逻辑算符的操作数；
-- 条件选择算符的 condition。
+- 条件选择算符的 condition；
+- TS `bars_since`、`consecutive_count`、`rolling_true_count`、`rolling_all`、`rolling_any` 的 `col`。
 
-Runtime 会拒绝静态可确定为数值的节点，但基础列本身的数据库类型仍应由调用方根据 Catalog 选择
-正确。
+基础数据值以数值列存储，不能直接把 `close`、`is_st` 等名称当成 BOOL 条件。需使用返回 BOOL 的比较
+或显式 `cast(dtype="bool")` 节点；也可直接传布尔常量或引用已定义的 BOOL derivative。编译时拒绝
+数值字面量、数值输出节点和基础数值字段；条件型 TS 内核也检查实际输入类型。
 
 ## `filters`
 
@@ -554,6 +556,16 @@ Runtime 也会把它加入内部读取集合，但不会把它作为最终基础
 z-score、robust z-score、L1/L2/sum normalization 等算符遇到零尺度或零分母时，会返回与输入等长的
 DOUBLE NULL 向量。它们不会返回标量 NULL，也不会用 0、原值或任意常量替代。下游 derivative、
 `on` 和 `filters` 必须按 NULL 语义处理；需要其它退化规则时应在 DSL 中显式定义。
+
+`DIRECT.binary.div` 的分母为标量 0/NULL 或向量中某行 0/NULL 时，该位置返回 DOUBLE NULL，不会
+使整张表失败。`CS.binary.alpha/beta/residual` 回归方向是 `right = alpha + beta * left`，left 为 x、
+right 为 y；只使用成对有效观测，自变量无方差时回归结果为空。`CS.unary.var(ddof=1)` 是当前截面
+样本方差，等于同口径 `std` 的平方；不是沿时间计算的移动方差。
+
+需要独立复算时还应注意：`cast(dtype="int"/"long")` 对浮点数四舍五入，半数远离 0，例如
+`1.5 -> 2`、`-1.5 -> -2`，并非 Python `int` 的截断；`rank_pct(ties_method="dense")` 按不同有效值
+的数量归一，例如升序 `[1,1,2,3] -> [1/3,1/3,2/3,1]`，不是除以四个观测。ATR 和 NATR 的
+`time_period` 至少为 2，与底层 Wilder 平滑的约束一致。
 
 ## 正确的发现流程
 

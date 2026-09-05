@@ -168,12 +168,10 @@ def serialize_dolphindb_result(value: Any, max_rows: int) -> DolphinScriptResult
         matrix = value[0]
         row_labels = None if value[1] is None else list(value[1])[:max_rows]
         column_labels = None if value[2] is None else list(value[2])[:max_rows]
+        # Keep envelope keys even when a later field exhausts the shared budget.
+        row_labels, rows_truncated = json_value(row_labels, max_rows, budget)
+        column_labels, columns_truncated = json_value(column_labels, max_rows, budget)
         converted, nested_truncated = json_value(matrix[:max_rows, :max_rows], max_rows, budget)
-        labels, labels_truncated = json_value(
-            {"row_labels": row_labels, "column_labels": column_labels},
-            max_rows,
-            budget,
-        )
         return DolphinScriptResult(
             kind="matrix",
             python_type=python_type,
@@ -184,9 +182,10 @@ def serialize_dolphindb_result(value: Any, max_rows: int) -> DolphinScriptResult
                 matrix.shape[0] > max_rows
                 or matrix.shape[1] > max_rows
                 or nested_truncated
-                or labels_truncated
+                or rows_truncated
+                or columns_truncated
             ),
-            value={"data": converted, **labels},
+            value={"data": converted, "row_labels": row_labels, "column_labels": column_labels},
         )
     if isinstance(value, np.ndarray):
         if value.ndim == 0:

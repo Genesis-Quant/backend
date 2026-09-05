@@ -550,7 +550,7 @@ def submit_backtest_batch(
         BacktestVersion,
         user_id,
         project.id,
-        {item.client_id for item in items},
+        {item.client_id: (item.parameters.stored_payload(), item.remark) for item in items},
     )
     new_workspace_ids: list[int] = []
     for item in items:

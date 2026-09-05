@@ -49,6 +49,10 @@ execute_dolphindb_script(script, max_rows=200)
 绕过 `max_rows`。`truncated=true` 表示至少一项受行列或总预算截断。`print(...)` 进入 Backend 日志，
 不进入 `value`；需要读取的对象必须放在脚本最后一个表达式。
 
+矩阵的 `value` 固定包含 `data`、`row_labels`、`column_labels`；原矩阵无标签时标签为 `null`。
+总预算可能在达到 `max_rows` 前耗尽，因此 `data` 的最后一行也可能不完整；应结合 `truncated` 和
+原始行列数判断，不能把截断预览当作完整矩阵进行计算。
+
 ## 基础诊断
 
 标量：

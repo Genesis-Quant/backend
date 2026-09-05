@@ -18,7 +18,8 @@
 
 关键规则：
 
-- `run_backtest` 返回成功只表示提交成功；`workflow_instance_id` 初期可以为 `null`；
+- `run_backtest` 返回成功表示 Instance 已创建，不表示执行完成；项目或 Workspace 的状态在提交完成前
+  可以含 `workflow_instance_id=null`，不同于普通运行工具的成功响应；
 - 重跑会在同一 Workspace 创建新 Attempt 和新 Workflow Instance，持续使用 `workspace_id` 找当前运行；
 - 失败时依次读取 Attempt、Workflow、Task 和完整 Task 日志；
 - 同一草稿再次运行可能覆盖当前结果绑定，QA 前后都要确认 Instance；
@@ -69,6 +70,8 @@ Workspace 前编译 `utils` 与 callbacks。
 
 首行前值分别使用初始资金、净值 1 和累计费用 0。费用已经反映在现金和权益中，不得从权益再次扣除。
 存在公司行为、冻结资金或其他现金事件时，应按相应账户定义扩展现金对账，不能把全部差额直接判错。
+使用 `setPosition` 时还必须检查 `arena://docs/backtest/results` 的初始费用限制：当前插件可从现金
+扣除初始费用却不计入 `totalFee` / `totalPnl`；不能用这两个字段宣称费用和盈亏已完整对账。
 
 成交审计还应检查：
 

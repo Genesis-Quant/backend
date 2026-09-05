@@ -383,7 +383,7 @@ def register_batch_tools(server: MCPServer) -> None:
         version: Annotated[int, Field(gt=0, description="作为基准的已保存版本号。")],
         rates: Annotated[
             list[float],
-            Field(min_length=1, max_length=100, description="手续费率列表，每项位于 0 到 1；服务端去重并排序。"),
+            Field(min_length=1, max_length=100, description="手续费率列表，每项位于 0 到 1（含边界）；拒绝重复值，保留输入顺序。"),
         ],
     ) -> McpResult[BatchResearchResponse]:
         """Create a commission-rate grid from one saved Backtest version."""

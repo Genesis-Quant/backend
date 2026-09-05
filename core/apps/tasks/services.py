@@ -214,10 +214,12 @@ def worker_task_log_page(
             limit=_WORKER_SCAN_PAGE_SIZE,
         )
         next_raw_cursor = int(page.get("next_line_num") or raw_cursor)
-        raw_lines = raw_log_lines(
-            str(page.get("message") or ""),
-            max(0, next_raw_cursor - raw_cursor),
-        )
+        # /log/detail prepends a display-only header on its first page. It is
+        # not included in lineNum/skipLineNum and must not shift raw cursors.
+        message = str(page.get("message") or "")
+        if raw_cursor == 0 and message.startswith("[LOG-PATH]:"):
+            message = message.partition("\n")[2]
+        raw_lines = raw_log_lines(message, max(0, next_raw_cursor - raw_cursor))
         for offset, line in enumerate(raw_lines):
             before_line = WorkerLogCursor(
                 task_instance_id,

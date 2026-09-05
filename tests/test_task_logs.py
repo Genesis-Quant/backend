@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.apps.tasks.schemas import TaskLogResponse, TaskLogScope
-from core.apps.tasks.services import append_worker_output_lines, worker_task_log_page
+from core.apps.tasks.services import append_worker_output_lines, raw_log_lines, worker_task_log_page
 from core.apps.tasks.views import router
 from core.apps.users.services import get_current_user
 from core.database.session import get_database_session
@@ -217,3 +217,44 @@ def test_task_log_http_api_passes_worker_scope_to_the_gateway(
         "/api/v1/tasks/2/logs",
         params={"workflow_instance_id": 1, "scope": "scheduler"},
     ).status_code == 422
+
+
+@pytest.mark.parametrize("limit", [1, 7, 10000])
+@pytest.mark.parametrize("use_cursor", [False, True])
+def test_worker_pagination_does_not_count_scheduler_path_header(limit, use_cursor) -> None:
+    worker_lines = ["first", "", *[f"line {index}" for index in range(20)], ""]
+    raw_lines = [
+        "[INFO] 2026-09-05 10:00:00 +0800 - preparing",
+        "[INFO] 2026-09-05 10:00:01 +0800 - ->",
+        *[f"\t{line}" for line in worker_lines[:9]],
+        "[INFO] 2026-09-05 10:00:02 +0800 - task running",
+        "[INFO] 2026-09-05 10:00:03 +0800 - ->",
+        *[f"\t{line}" for line in worker_lines[9:]],
+        "[INFO] 2026-09-05 10:00:04 +0800 - task ended",
+    ]
+
+    class Client:
+        def task_log(self, *, skip_line_num, limit, **kwargs):
+            lines = raw_lines[skip_line_num:skip_line_num + min(limit, 5)]
+            end = skip_line_num + len(lines)
+            prefix = "[LOG-PATH]: /logs/task.log, [HOST]: worker:1234\n" if skip_line_num == 0 else ""
+            return {
+                "message": prefix + "\r\n".join(lines) + ("\r\n" if lines else ""),
+                "next_line_num": end,
+                "has_more": end < len(raw_lines),
+            }
+
+    offset = 0
+    cursor = None
+    actual = []
+    for _ in range(len(raw_lines) + 1):
+        page = worker_task_log_page(Client(), task_instance_id=42, skip_line_num=offset, limit=limit, cursor=cursor)
+        actual.extend(raw_log_lines(page["message"], page["returned_lines"]))
+        offset = page["next_line_num"]
+        cursor = page["next_cursor"] if use_cursor else None
+        if not page["has_more"]:
+            break
+    else:
+        pytest.fail("日志游标未结束")
+    assert actual == worker_lines
+    assert offset == len(worker_lines)

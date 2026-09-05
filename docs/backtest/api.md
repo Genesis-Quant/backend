@@ -95,7 +95,9 @@ run_backtest_batch(project_id, items)
 DolphinDB 脚本编译，全部通过后才创建 Workspace；
 任一项编译失败时整批不提交。工具调用即提交，不存在 MCP 侧本地队列。
 
-同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
+同一项目内，`client_id` 与首次提交的完整参数和备注绑定。只有内容相同才能复用；参数或备注不同会明确
+报错，整批不创建新任务。源码文本也参与比较；修正代码或更改备注后必须使用新的 `client_id`。
+同一 `client_id`、同一内容已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
 先用原 job marker 对账调度器，确认未创建 Instance 后才重新提交；已有 Workflow Instance 明确失败
 时，新 Attempt 使用新的 job marker 完整重跑；仅自动保存失败时只重试结果收集和版本保存，不重复
 执行 Backtest 任务。
@@ -228,6 +230,11 @@ delete_backtest_optimization(optimization_id)
 随机种子为非负 32 位整数。Runtime 只查询一次覆盖最早训练窗口至最后持有窗口的完整数据；每个算法
 生成一个同名 Parquet。先轮询报告的 `workflow_workspace_id`，仅 `SUCCESS` 后读取输出。
 删除报告要求个人主页启用参数调优删除权限，活动状态报告不能删除。
+
+`lookback_period` / `holding_period` 接受正整数加 `D/W/M/Y`，可以带 `P` 前缀，大小写不敏感；
+例如 `P1D` 规范化为 `1D`、`p6m` 为 `6M`。不接受小数或复合周期。窗口按自然日历移动，不把 `1D`
+解释成一个交易日；各窗口只回放区间内已有的行情。持有窗口完全没有行情时会报错，不会把它移到下一
+交易日或伪造净值；训练窗口没有有效评价结果时也会失败。不存在的参数 key 在创建报告前即被拒绝。
 
 这里的“参数调优”是有限候选网格上的滚动样本内选择，与
 `arena://docs/backtest/optimization` 中策略自行调用 OSQP 计算组合权重不是同一功能。所有方法都从

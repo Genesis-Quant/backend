@@ -114,6 +114,56 @@ def test_workflow_instance_is_primary_authorization_boundary(session: Session) -
         WorkflowGatewayService.find_accessible_workflow(session, outsider, 321)
 
 
+@pytest.mark.parametrize("state,host", [
+    ("SUBMITTED_SUCCESS", None), ("DISPATCH", "worker:1234"),
+    ("SUCCESS", "worker:1234"), ("RUNNING_EXECUTION", None),
+])
+def test_pause_rejects_tasks_not_actually_running_on_worker(session, monkeypatch, state, host):
+    owner = create_user(session, "owner")
+    run, workflow = create_workflow(session, owner.id, 321)
+    session.commit()
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def process_instance(self, *args): return {"state": "RUNNING_EXECUTION"}
+        def process_instance_tasks(self, **kwargs): return [{"state": state, "host": host}]
+        def execute_process_instance(self, *args): pytest.fail("不能向等待分配 Worker 的任务发送暂停")
+
+    monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", Client)
+    with pytest.raises(RuntimeError, match="当前不能暂停"):
+        WorkflowGatewayService().control(session, owner, 321, WorkflowAction.PAUSE)
+    assert workflow.state == "RUNNING_EXECUTION"
+
+
+@pytest.mark.parametrize("current_state", ["RUNNING_EXECUTION", "SUCCESS"])
+def test_pause_checks_live_instance_and_accepts_running_worker(session, monkeypatch, current_state):
+    owner = create_user(session, "owner")
+    run, workflow = create_workflow(session, owner.id, 321)
+    session.commit()
+    calls = []
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def process_instance(self, *args): return {"state": current_state}
+        def process_instance_tasks(self, **kwargs):
+            return [{"state": "RUNNING_EXECUTION", "host": "worker:1234"}]
+        def execute_process_instance(self, *args): calls.append(args)
+
+    monkeypatch.setattr("core.apps.workflows.services.DolphinSchedulerClient", Client)
+    gateway = WorkflowGatewayService()
+    monkeypatch.setattr(gateway.executors[run.application], "synchronize", lambda *args, **kwargs: workflow)
+    if current_state == "SUCCESS":
+        with pytest.raises(RuntimeError, match="当前不能暂停"):
+            gateway.control(session, owner, 321, WorkflowAction.PAUSE)
+        assert not calls
+    else:
+        gateway.control(session, owner, 321, WorkflowAction.PAUSE)
+        assert len(calls) == 1
+        assert calls[0][:2] == (1, 321)
+
+
 def test_one_run_can_track_multiple_workflow_instances(session: Session) -> None:
     owner = create_user(session, "owner")
     run, first = create_workflow(session, owner.id, 100)

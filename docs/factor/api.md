@@ -84,7 +84,9 @@ run_factor_batch(project_id, items)
 `client_id` 用于同一次客户端提交的幂等识别，重试应复用原值；分别轮询返回的每个
 `workspace_id`。批量工具不是浏览器本地队列，调用后会立即提交。
 
-同一 `client_id` 已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
+同一项目内，`client_id` 与首次提交的完整参数和备注绑定。只有内容相同才能复用；参数或备注不同会明确
+报错，整批不创建新任务。源码文本也参与比较；修正代码或更改备注后必须使用新的 `client_id`。
+同一 `client_id`、同一内容已在排队或运行时只返回原 Workspace，不重复提交；提交结果不确定时，新 Attempt
 先用原 job marker 对账调度器，确认未创建 Instance 后才重新提交；已有 Workflow Instance 明确失败
 时，新 Attempt 使用新的 job marker 完整重跑；仅自动保存失败时只重试指标收集和版本保存，不重复
 执行 Factor 任务。
@@ -99,16 +101,19 @@ list_workflow_outputs("factor", workflow_instance_id)
 
 | 名称 | 文件 | 主要内容 |
 | --- | --- | --- |
-| `execution_statistics` | `factor_execution_statistics.parquet` | 每个交易日的原始股票数、逐个过滤条件生效后的剩余数和最终保留比例 |
+| `execution_statistics` | `factor_execution_statistics.parquet` | 每个交易日的原始股票数、逐个 DSL 过滤及因子空值过滤后的剩余数和最终保留比例 |
 | `information_coefficient` | `factor_information_coefficients.parquet` | 各 factor × return 的 IC 与 Rank IC 时序列 |
 | `group_returns` | `factor_group_returns.parquet` | 各 factor × return 的极端 N 支及等数量分组收益时序列 |
 | `group_turnover` | `factor_group_turnover.parquet` | 各 factor × 持有期的极端 N 支、等数量分组换手率与因子秩自相关时序列 |
 
 `execution_statistics` 中每个阶段由 `filter{i}_name` 和 `filter{i}_count` 配对描述；名称来自 Backend 注入
-完成后实际交给 Runtime 的过滤列表，因此调用方不能只按项目保存的编辑态 DSL 猜测阶段名称。每个 count
-都是从第一项到当前项全部为真的累计剩余股票数，不是单个条件独立命中的数量。`source_count` 是过滤前
-的当日去重股票数，`filtered_count` 是所有过滤条件
-生效后的当日去重股票数，`retention_rate = filtered_count / source_count`。派生列计算本身不会删除行，
+完成后实际交给 Runtime 的过滤列表，并在末尾追加“因子空值”阶段，因此调用方不能只按项目保存的编辑态
+DSL 猜测阶段名称。每个 count 都是累计应用至当前阶段后的剩余股票数，不是单个条件独立命中的数量。
+Runtime 在预处理前先保留 `factor_columns` 共同非空的行，预处理后再次剔除生成的空因子；
+两步合计为“因子空值”一层，不按未来收益列是否为空过滤。
+`source_count` 是过滤前的当日去重股票数，`filtered_count` 是包括因子空值过滤在内的最终有效股票数，
+`retention_rate = filtered_count / source_count`。某日有效股票为 0 时仍保留统计行。
+没有这层过滤的历史 Parquet 保持原样，不会补写或重新解释。派生列计算本身不会删除行，
 因此不额外输出与 `source_count` 恒等的“计算后股票数”。网页将这些累计值换算为各条件的边际剔除数量，
 以堆叠区域折线图展示；区域总上沿始终等于 `source_count`。
 
@@ -126,6 +131,9 @@ ICIR 与 Rank ICIR 均按 `IC 均值 / IC 样本标准差` 计算，并以该原
 `return_specs[return_column].periods` 不参与 ICIR 计算，网页与 API 调用方都不应对 ICIR 再做年化转换。
 只有 `periods=1` 的非重叠多空收益可以无歧义地生成累计收益、按 252 个交易日折算的年化收益、
 年化波动和 Sharpe。项目列表默认展示该年化收益，而不是把区间累计收益标成年度指标。
+
+具体口径见 `arena://docs/factor/request` 的收益标签说明：多空波动使用总体标准差 `ddof=0`，
+不同于 IC/Rank IC 的样本标准差 `ddof=1`。
 
 ## 完整调用顺序
 

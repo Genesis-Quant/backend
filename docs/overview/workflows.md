@@ -16,8 +16,10 @@
 }
 ```
 
-`workflow_instance_id` 在尚未提交到 DolphinScheduler 时可以是 `null`。始终保存并轮询
-`workspace_id`：
+普通 `run_query`、`run_factor_analysis`、`run_backtest` 只有确认创建 Instance 后才返回上述成功对象，
+其中 `workflow_instance_id` 是整数；尚未创建时会返回提交错误。批量提交返回的是每项 `client_id` 和
+`workspace_id`。项目、报告和 Workspace 状态中的 Instance 在尚未创建时可以是 `null`，不要混同这两种
+响应。始终保存并轮询 `workspace_id`：
 
 ```text
 get_workspace_status(workspace_id)
@@ -288,7 +290,9 @@ control_workflow(workflow_instance_id, action)
 `action` 可为：
 
 - `stop`：停止仍在运行的实例；
-- `pause`：请求暂停调度。DolphinScheduler 不会中断已经开始运行的 Task；状态可能先进入
+- `pause`：只接受正在执行且至少有一个 Task 已在 Worker 上运行的实例；尚在提交或等待分配 Worker
+  时明确拒绝，以免进入无法恢复的等待暂停状态。需要取消等待时使用 `stop`。
+  此操作请求暂停调度，DolphinScheduler 不会中断已经开始运行的 Task；状态可能先进入
   `READY_PAUSE`，等待当前 Task 结束后才进入 `PAUSE`。只有一个 Task 的工作流可能在等待期间直接
   完成并进入 `SUCCESS`；需要立即终止计算时应使用 `stop`；
 - `resume`：仅恢复已进入 `PAUSE` 的工作流。`READY_PAUSE` 是 DolphinScheduler

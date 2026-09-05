@@ -78,6 +78,8 @@ MCP 新建或修改两阶段查询时优先使用 Python DSL。`codes_query` 调
 | 全市场 | `null` | `[]` | 源码不定义；Backend 在运行参数中注入恒真节点但不加入 filter，源码可以引用 |
 | 指数动态池 | 定义并过滤固定节点的 FactorQuery | `[]`（运行时写入候选并集） | 源码不定义；Backend 在运行参数中注入并过滤，源码可以引用 |
 
+两种状态都拒绝非空的 `dataset_query.codes`，不接受后再静默覆盖用户指定的静态代码。
+
 选择指数动态池时，客户端只在 `codes_query` 中定义名为 `stock_pool_member` 的节点并把它加入
 `codes_query.filters`。该节点是股票池选择的唯一来源，结构固定为：
 
@@ -205,6 +207,13 @@ Python 源码中创建同名 OP，或把它加入分析 DSL 的 `filters`；Back
 ICIR 与 Rank ICIR 始终保留原始观测口径，计算式为 `mean / sample_std`。它们的保存、展示、排序和
 比较均不使用 `return_specs.periods`，网页与 API 调用方都不应再做年化转换。
 
+摘要多空收益取每日极端 `top - bottom`，丢弃缺失观测并按日期排序。设有效观测数为 `N`：
+`simple` 的日收益为该差值，`log` 则用 `expm1(差值)` 转为简单日收益；财富分别使用累乘或累计后取指数。
+年化收益为 `期末财富^(252/N)-1`，年化波动为全部有效日收益（包括首行）的总体标准差
+`std(ddof=0)*sqrt(252)`，Sharpe 为年化收益除以年化波动，不减无风险率。
+没有有效收益时这些指标为空；仅一条有效收益时总体波动为 0，Sharpe 为空。IC/Rank IC 不足两个有效
+观测时样本标准差和 ICIR 为空；标准差为 0 时 ICIR 也为空。以上年化收益口径只用于 `periods=1`。
+
 服务端不会根据列名或 DSL 猜测简单收益、对数收益或覆盖期数。缺少 `return_specs`、键集合与
 `return_columns` 不一致，或 `kind` / `periods` 不合法时直接校验失败；读取旧记录时也不迁移、不推断、
 不补齐。
@@ -231,6 +240,12 @@ ICIR 与 Rank ICIR 始终保留原始观测口径，计算式为 `mean / sample_
 
 ## 输出列
 
+完成 DSL 的 `filters` 后，Runtime 会删除任一 `factor_columns` 列为 `NULL` 的股票行，再执行可选内置
+预处理；预处理后再次剔除因子空值。多因子任务先取所有待分析因子共同非空的截面，再标准化、中性化和
+分组。未选作分析因子的中间列和未来收益列不参与这层过滤，
+因此不会因为未来收益尚不可得而提前删除股票。预处理产生的空因子（如截面无法标准化）也会被剔除。
+`processed_data`、IC、分组收益和换手率使用同一份有效因子表，用户 DSL 与保存参数不变。
+
 逻辑输出 `execution_statistics` 对应 `factor_execution_statistics.parquet`，用于检查第二阶段 DSL 的股票域
 是否在某个交易日或某个过滤条件处异常收缩：
 
@@ -242,6 +257,8 @@ filter0_name
 ...
 filter{len(dataset_query.filters)-1}_count
 filter{len(dataset_query.filters)-1}_name
+filter{len(dataset_query.filters)}_count
+filter{len(dataset_query.filters)}_name = "因子空值"
 filtered_count
 retention_rate
 ```
@@ -249,8 +266,11 @@ retention_rate
 `time` 每个交易日一行。`source_count` 是正式分析日期区间内、执行 filters 前的去重股票数；
 `filter{i}_name` 是 Runtime 实际执行的第 i 个条件，`filter{i}_count` 是累计应用第 0 项至第 i 项后的
 剩余股票数。动态股票池的托管条件可能由 Backend 注入，读取端必须使用 name 列，不能只按保存的编辑态
-`dataset_query.filters` 推断。`filtered_count` 是全部 filters 生效后的最终股票数；`retention_rate` 是
-最终保留比例。条件之间可能重叠，
+`dataset_query.filters` 推断。最后追加的“因子空值”阶段是预处理完成后所有分析因子共同非空的股票数，
+其与前一阶段的差值合计预处理前后剔除的股票数；没有 DSL filters 时，直接与 `source_count` 比较。
+`filtered_count` 是包括这层过滤在内的最终有效股票数；`retention_rate = filtered_count / source_count`。
+某日全部被剔除时，统计表仍保留该日，最终数量为 0。历史结果不重算；未包含该阶段的旧 Parquet
+仍按其原有过滤阶段展示。条件之间可能重叠，
 因此不能把各列直接相减后解释为各条件独立命中数；网页仅将相邻阶段的差值解释为该执行顺序下的
 边际剔除数。派生计算阶段保持输入行，不生成一个与 `source_count` 重复的计数列。
 
