@@ -6,7 +6,13 @@ DSL 用 JSON 节点在 DolphinDB 中计算派生列。顶层 `derivatives` 是�
 本页只定义组合规则。当前有哪些算符、每个算符的准确字段与参数，必须通过
 `list_dsl_operators` 和 `describe_dsl_operator` 获取。
 
-## JSON 与 Python 双源码
+## Python 与 JSON 双源码
+
+**新建或修改 DSL 时，MCP 必须优先使用 Python。** 除非用户明确要求 JSON，或正在编辑一条
+`dsl_source.language="json"` 的既有记录且需要保留其活动语言，否则应设置 `language="python"`，编写
+`python_source`，并在提交任何 `run_*` 工具前调用 `compile_python_dsl`。Python DSL 能直接复用 OP
+变量、辅助函数和推导式，也更容易避免手工维护 JSON 节点引用；JSON DSL 仍用于原样保存和执行用户
+明确选择的 JSON 源码，不能用编译结果覆盖它。
 
 MCP 的 Query、Factor 和 Backtest 请求都要求每个 `FactorQuery` 带完整 `dsl_source`：
 
@@ -20,13 +26,15 @@ MCP 的 Query、Factor 和 Backtest 请求都要求每个 `FactorQuery` 带完�
   "derivatives": {},
   "filters": [],
   "dsl_source": {
-    "language": "json",
+    "language": "python",
     "json_source": "{\n  \"factors\": [\"close\"],\n  \"derivatives\": {},\n  \"filters\": []\n}",
     "python_source": "FACTORS = [\"close\"]\nFILTERS = []"
   }
 }
 ```
 
+- 网页新建项目时默认选择 Python DSL；Python 编辑器支持对当前源码中的变量、命名 OP、辅助函数和
+  函数参数使用 `Ctrl+单击`（macOS 为 `Cmd+单击`）或 `F12` 跳转到定义；
 - `language` 只能是 `json` 或 `python`，指定本次提交实际编译的源码；
 - `json_source` 与 `python_source` 始终分别保存，切换语言不会用一种源码覆盖另一种；
 - 只有当前 `language` 对应源码的编译结果会生成本次 Runtime 参数；未选中的源码可以是尚未完成的
@@ -92,13 +100,142 @@ JSON DSL 没有变量对象，因此在 JSON 的 `fields` 中使用派生节点�
 Factor 分析还会把收益标签和股票池作为托管状态合并到活动源码结果中，不能简单把保存的
 `dataset_query` 快照当成纯编辑源码；具体边界见 `arena://docs/factor/request`。
 
+## 使用 MCP 编译 Python DSL
+
+`compile_python_dsl(python_source, application="query")` 使用与正式运行相同的 Backend 编译器，将
+Python 源码转换为严格的 JSON DSL 文档，但不会创建项目、Workspace、Attempt 或工作流，也不会写入
+数据库。每次新建或修改 Python DSL 后都应先调用它：
+
+- `application="query"`：用于 `run_query` 的请求，以及 Factor/Backtest 的所有 `codes_query`；
+- `application="factor"`：用于 Factor 的 `dataset_query`，编译时允许引用 Backend 托管的
+  `stock_pool_member`；
+- `application="backtest"`：用于 Backtest 的 `dataset_query`，托管节点语义与正式回测一致。
+
+成功时 `result.success=true`，`result.compiled_json` 是只包含用户活动源码所定义
+`factors`、`derivatives`、`filters` 的对象，`error_reason=null`。它是**编辑源码的编译结果**，不是
+Factor/Backtest 最终提交给 Runtime 的完整 Query。同步结构化字段时必须区分上下文：
+
+- Query 和所有 `codes_query`：三个结构化字段都使用 `compiled_json`；
+- Backtest `dataset_query`：三个结构化字段使用 `compiled_json`，Backend 之后只在 Runtime 副本中
+  注入托管 `stock_pool_member`；
+- Factor `dataset_query`：`factors`、`filters` 使用编译结果，`derivatives` 使用编译得到的用户派生节点
+  加上原请求中每个 `return_columns` 对应的收益节点。收益节点不属于编辑源码，不能因回填编译结果而
+  删除，也不能写进 `json_source` 或 `python_source`。Backend 随后再合并托管股票池和分析必需列。
+
+以上操作都必须保持用户的 `python_source` 和 `json_source` 原文不变。失败时工具不创建任何对象，而是返回
+`result.success=false`、`compiled_json=null` 和具体 `error_reason`；必须修正源码并重新编译，不能继续
+调用 `run_*`。编译成功只证明单份 DSL 源码有效，完整应用仍会校验日期、股票池、分析列、收益标签、
+回调等其它字段。
+
+### 示例一：直接读取原始字段
+
+```python
+FACTORS = ["open", "close", "vol"]
+FILTERS = []
+```
+
+使用 `application="query"` 编译后：
+
+```json
+{
+  "factors": ["open", "close", "vol"],
+  "derivatives": {},
+  "filters": []
+}
+```
+
+### 示例二：命名输出、OP 引用与匿名嵌套条件
+
+```python
+tradable = DIRECT.multiary.and_(
+    "tradable",
+    cols=[
+        DIRECT.binary.gt(left="close_hfq", right=0),
+        DIRECT.binary.gt(left="vol", right=0),
+    ],
+)
+
+momentum_20d = TS.unary.pct_change(
+    "momentum_20d",
+    col="close_hfq",
+    periods=20,
+    on=tradable,
+)
+
+momentum_rank = CS.unary.rank_pct(
+    "momentum_rank",
+    col=momentum_20d,
+    ascending=True,
+    ties_method="average",
+    on=tradable,
+)
+
+FACTORS = []
+FILTERS = [tradable]
+```
+
+`tradable`、`momentum_20d` 和 `momentum_rank` 都传入了名称，因此会进入 `derivatives`；两个
+`DIRECT.binary.gt(...)` 没有名称，只作为 `tradable` 内部的匿名节点。`col=momentum_20d` 和
+`on=tradable` 必须传 OP 变量，不能写成同名字符串。
+
+### 示例三：辅助函数与批量声明
+
+```python
+def moving_average(name, window):
+    return TS.unary.rolling_mean(
+        name,
+        col="close_hfq",
+        window=window,
+        min_periods=window,
+    )
+
+windows = [5, 20, 60]
+moving_averages = [
+    moving_average(f"close_mean_{window}", window)
+    for window in windows
+]
+
+valid_close = DIRECT.binary.gt(
+    "valid_close",
+    left="close_hfq",
+    right=0,
+)
+
+FACTORS = []
+FILTERS = [valid_close]
+```
+
+编译结果会按创建顺序包含 `close_mean_5`、`close_mean_20`、`close_mean_60` 和 `valid_close`。变量
+`moving_averages` 不需要加入结果列表；有名称的 OP 已自动收集。
+
+### 示例四：Factor/Backtest 的托管股票池引用
+
+```python
+pool_turnover_rank = CS.unary.rank_pct(
+    "pool_turnover_rank",
+    col="turnover_rate_f",
+    ascending=True,
+    ties_method="average",
+    on="stock_pool_member",
+)
+
+FACTORS = []
+FILTERS = []
+```
+
+Factor 的 `dataset_query` 使用 `application="factor"` 编译，Backtest 的 `dataset_query` 使用
+`application="backtest"` 编译。`stock_pool_member` 是这两个上下文中唯一允许以字符串引用的外部托管
+OP；源码不能自行创建同名 OP，也不能把它加入 `FILTERS`。同一应用的 `codes_query` 不具备该外部节点，
+仍使用 `application="query"` 编译。
+
 ## 从 MCP 源码到 Runtime JSON
 
 源码保存格式和 Runtime 执行格式是两个不同层次。一次 MCP 运行按以下顺序生成最终请求：
 
 1. `run_query` 直接接收一份完整 Query 请求；`run_factor_analysis` 和 `run_backtest` 接收完整应用
    参数，其中每个非空 `codes_query` 和每个 `dataset_query` 都必须带自己的 `dsl_source`；
-2. Backend 用对应的 Application Request Schema 校验请求，并只取 `language`
+2. MCP 调用方先用 `compile_python_dsl` 校验每份活动 Python 源码；Backend 随后仍会用对应的
+   Application Request Schema 重新校验请求，并只取 `language`
    指定的活动源码：JSON 源码解析为对象，Python 源码在受限环境中执行声明，两者都生成相同结构的
    `factors`、`derivatives`、`filters`，再通过 Runtime `FactorQuery` 校验；
 3. Backend 的 `stored_payload` 将校验后的用户请求写入 `WorkflowAttempt.input_json`。其中
@@ -182,10 +319,12 @@ TS/CS 的 `on` 可为：
 从最终结果删除行，删行必须使用 Query 顶层 `filters`。
 
 JSON DSL 中，字符串形式的 BOOL 名称必须在当前 `derivatives` 中定义。Python DSL 应直接传对应的
-BOOL OP 变量。唯一的托管外部依赖是 Factor 的 `dataset_query.stock_pool_member`：因为源码中没有
-可引用的本地 OP，分析 DSL 可以直接用字符串 `"stock_pool_member"` 作为 `on` 或其它 BOOL 引用。
-全市场时 Backend 注入恒真定义但不加入 filter；指数动态池时注入所选指数的定义和 filter。普通
-Query 和 Backtest 不提供这个外部节点。完整契约见 `arena://docs/factor/request`。
+BOOL OP 变量。唯一的托管外部依赖是 Factor 和 Backtest 的
+`dataset_query.stock_pool_member`：因为源码中没有可引用的本地 OP，这两个 dataset 上下文可以直接用
+字符串 `"stock_pool_member"` 作为 `on` 或其它 BOOL 引用。全市场时 Backend 注入恒真定义但不加入
+filter；指数动态池时注入所选指数的定义，Factor 分析还会将其加入第二阶段 filter。普通 Query 和
+Factor/Backtest 的 `codes_query` 不提供这个外部节点。完整契约见
+`arena://docs/factor/request` 和 `arena://docs/backtest/request`。
 
 ## 操作数
 

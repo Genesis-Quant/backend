@@ -49,7 +49,8 @@ get_workspace_status(workspace_id)
 list_workflows(application=null, state=null, page=1, page_size=20)
 ```
 
-- `application`：`query`、`factor`、`backtest`、`incremental` 或 `null`。
+- `application`：`query`、`factor`、`backtest`、`optimization`、`sensitivity`、`incremental` 或
+  `null`。
 - `state`：`active`、`success`、`failure` 或 `null`。
 - `page_size`：1 到 100。
 

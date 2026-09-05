@@ -25,6 +25,7 @@ from core.apps.workflows.services import (
     assign_auto_saved_version_number,
     create_workflow_attempt,
     current_workflow_attempt,
+    current_workflow_instance,
     finalize_auto_save_workspaces_now,
     record_event,
     remove_workspace_artifacts,
@@ -486,8 +487,7 @@ def project_information(
 def serialize_version(session: Session, version: FactorVersion) -> dict[str, Any]:
     workflow_instance_id = version.workflow_instance_id
     if workflow_instance_id is None:
-        attempt = current_workflow_attempt(session, version.workflow_workspace_id)
-        workflow = None if attempt is None else session.scalar(select(WorkflowInstance).where(WorkflowInstance.workflow_attempt_id == attempt.id))
+        workflow = current_workflow_instance(session, version.workflow_workspace_id)
         workflow_instance_id = workflow.workflow_instance_id if workflow is not None else None
     return {"id": version.id, "project_id": version.project_id, "workflow_workspace_id": version.workflow_workspace_id, "workflow_instance_id": workflow_instance_id, "version": version.version, "saved": version.saved, "is_current": version.is_current, "remark": version.remark, "parameters": version.parameters, "metrics": version.metrics, "created_at": version.created_at, "updated_at": version.updated_at}
 

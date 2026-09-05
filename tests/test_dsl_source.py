@@ -291,6 +291,150 @@ def test_backtest_compiles_dataset_without_rewriting_stored_sources() -> None:
     assert "dsl_source" not in runtime["dataset_query"]
 
 
+@pytest.mark.parametrize("language", ["json", "python"])
+def test_backtest_accepts_custom_dynamic_pool_without_factor_index_restriction(language: str) -> None:
+    raw = backtest_request()
+    pool = index_query()
+    document = json.loads(pool["dsl_source"]["json_source"])
+    document["derivatives"]["stock_pool_member"]["fields"]["left"] = "vol"
+    pool["dsl_source"] = {
+        "language": language,
+        "json_source": json.dumps(document),
+        "python_source": (
+            'member = DIRECT.binary.gt("stock_pool_member", left="vol", right=0)\n'
+            'FACTORS = []\nFILTERS = [member]\n'
+        ),
+    }
+    raw["codes_query"] = pool
+
+    query = QueryApplicationRequest.model_validate(pool).runtime_payload()["dataset_query"]
+    request = BacktestApplicationRequest.model_validate(raw)
+    runtime = request.runtime_payload()
+
+    assert request.stored_payload() == raw
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"] == query["derivatives"]["stock_pool_member"]
+    assert runtime["dataset_query"]["derivatives"]["stock_pool_member"]["fields"]["left"] == "vol"
+    assert runtime["dataset_query"]["filters"] == []
+    with pytest.raises(ValidationError, match="受支持指数权重"):
+        FactorAnalysisApplicationRequest.model_validate(factor_request(codes_query=pool))
+
+
+def custom_pool_with_dependencies() -> dict:
+    pool = index_query()
+    document = {
+        "factors": [],
+        "derivatives": {
+            "eligible": {
+                "type": "DIRECT", "op": "binary.gt",
+                "fields": {"left": "vol", "right": 0}, "params": {},
+            },
+            "liquidity_mean": {
+                "type": "TS", "op": "unary.rolling_mean",
+                "fields": {"col": "vol"}, "params": {"window": 5}, "on": "eligible",
+            },
+            "stock_pool_member": {
+                "type": "DIRECT", "op": "binary.gt",
+                "fields": {
+                    "left": {
+                        "type": "DIRECT", "op": "binary.mul",
+                        "fields": {"left": "liquidity_mean", "right": 2}, "params": {},
+                    },
+                    "right": 1000,
+                },
+                "params": {},
+            },
+            "unused": {
+                "type": "DIRECT", "op": "nullary.true", "fields": {}, "params": {},
+            },
+        },
+        "filters": ["stock_pool_member", "unused"],
+    }
+    pool["dsl_source"]["json_source"] = json.dumps(document)
+    return pool
+
+
+def test_backtest_injects_recursive_pool_dependencies_without_copying_unrelated_columns() -> None:
+    raw = backtest_request()
+    raw["codes_query"] = custom_pool_with_dependencies()
+
+    request = BacktestApplicationRequest.model_validate(raw)
+    runtime = request.runtime_payload()
+    derivatives = runtime["dataset_query"]["derivatives"]
+
+    assert set(derivatives) == {"momentum", "eligible", "liquidity_mean", "stock_pool_member"}
+    for name in ("eligible", "liquidity_mean", "stock_pool_member"):
+        assert derivatives[name] == runtime["codes_query"]["derivatives"][name]
+    assert runtime["dataset_query"]["filters"] == []
+    assert request.stored_payload() == raw
+
+
+def test_backtest_reuses_identical_pool_dependencies_after_node_validation() -> None:
+    raw = backtest_request()
+    raw["codes_query"] = custom_pool_with_dependencies()
+    document = json.loads(raw["codes_query"]["dsl_source"]["json_source"])
+    # The default min_periods is omitted in one source and explicit in the other.
+    document["derivatives"]["liquidity_mean"]["params"]["min_periods"] = None
+    del document["derivatives"]["stock_pool_member"]
+    del document["derivatives"]["unused"]
+    document["filters"] = ["eligible"]
+    raw["dataset_query"]["dsl_source"]["language"] = "json"
+    raw["dataset_query"]["dsl_source"]["json_source"] = json.dumps(document)
+
+    request = BacktestApplicationRequest.model_validate(raw)
+    runtime = request.runtime_payload()
+    derivatives = runtime["dataset_query"]["derivatives"]
+
+    assert set(derivatives) == {"eligible", "liquidity_mean", "stock_pool_member"}
+    for name in derivatives:
+        assert derivatives[name] == runtime["codes_query"]["derivatives"][name]
+    assert runtime["dataset_query"]["filters"] == ["eligible"]
+    assert request.stored_payload() == raw
+
+
+@pytest.mark.parametrize("collision", ["eligible", "vol"])
+def test_backtest_rejects_changed_pool_dependencies_and_shadowed_base_fields(collision: str) -> None:
+    raw = backtest_request()
+    raw["codes_query"] = custom_pool_with_dependencies()
+    document = {
+        "factors": [],
+        "derivatives": {
+            collision: {
+                "type": "DIRECT", "op": "nullary.true", "fields": {}, "params": {},
+            },
+        },
+        "filters": [],
+    }
+    raw["dataset_query"]["dsl_source"]["language"] = "json"
+    raw["dataset_query"]["dsl_source"]["json_source"] = json.dumps(document)
+
+    with pytest.raises(ValidationError, match="股票池依赖定义冲突"):
+        BacktestApplicationRequest.model_validate(raw)
+
+
+def test_backtest_requires_dynamic_membership_to_participate_in_first_stage_filters() -> None:
+    raw = backtest_request()
+    pool = index_query()
+    document = json.loads(pool["dsl_source"]["json_source"])
+    document["filters"] = []
+    pool["dsl_source"]["json_source"] = json.dumps(document)
+    raw["codes_query"] = pool
+
+    with pytest.raises(ValidationError, match="filters 必须包含 stock_pool_member"):
+        BacktestApplicationRequest.model_validate(raw)
+
+
+def test_backtest_rejects_non_bool_dynamic_membership() -> None:
+    raw = backtest_request()
+    pool = index_query()
+    document = json.loads(pool["dsl_source"]["json_source"])
+    document["derivatives"]["stock_pool_member"]["op"] = "binary.add"
+    pool["dsl_source"]["json_source"] = json.dumps(document)
+    raw["codes_query"] = pool
+
+    with pytest.raises(ValidationError, match="必须返回 BOOL"):
+        BacktestApplicationRequest.model_validate(raw)
+
+
 def test_backtest_dataset_can_reference_managed_stock_pool() -> None:
     raw = backtest_request()
     document = {

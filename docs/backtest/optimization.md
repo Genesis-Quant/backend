@@ -83,6 +83,7 @@ solution = osqp(q, P, A, l, u)
 独立的优化模型静态校验工具。矩阵维度、可行性、求解状态、数值容差和目标金额必须由调用方脚本在
 下单前检查；文档不把这些检查描述成服务端已提供能力。
 
-部署版本中的函数签名可用 `describe_dolphindb_functions(["osqp"])` 查询。管理员可用
-`execute_dolphindb_script` 验证自有最小脚本，但该工具只证明脚本在当前 DolphinDB session 中执行，
-不证明完整回测或业务约束正确。
+部署版本中的函数签名可用 `describe_dolphindb_functions(["osqp"])` 查询。所有已认证用户都可用
+`execute_dolphindb_script` 在只读账号和 10 分钟 Session 截止时间内验证自有最小脚本，但该工具没有
+CPU、内存配额或服务端资源沙箱；它只证明脚本在当前 DolphinDB session 中执行，不证明完整回测或
+业务约束正确。

@@ -67,9 +67,11 @@ attempt = get_workflow_attempt(history.items[0].attempt_id)
 request = attempt.payload.input_json.dataset_query
 ```
 
-这里读到的是 Backend 规范化并保存的双源码业务请求，不保证与 MCP 原始请求逐字相同。Query
-Attempt 的业务载荷比 MCP `run_query.request` 多一层 `dataset_query`；它也不是共享目录中已经移除
-`dsl_source` 的 Runtime `input.json`。调用 `run_query` 时仍不应额外包裹 `dataset_query`。
+这里读到的是 Backend 校验后保存的双源码业务请求，不保证整个 MCP 请求的字节表示、数字表示或日期
+等结构化字段与原始传输文本逐字相同；但 `dsl_source.language`、`json_source`、`python_source` 三项
+按提交值保存，Backend 不生成、格式化或互相转换源码。Query Attempt 的业务载荷比 MCP
+`run_query.request` 多一层 `dataset_query`；它也不是共享目录中已经移除 `dsl_source` 的 Runtime
+`input.json`。调用 `run_query` 时仍不应额外包裹 `dataset_query`。
 
 ## 输出
 

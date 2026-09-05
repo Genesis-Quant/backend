@@ -9,10 +9,11 @@ from core.apps.backtest.schemas import BacktestProjectItem, BacktestProjectListI
 from core.apps.factor.schemas import FactorProjectItem, FactorProjectListItem, FactorVersionListItem, FactorVersionResponse
 from core.apps.query.schemas import QueryProjectItem, QueryProjectListItem
 from core.apps.schemas import ProjectPage
+from core.scheduler.domain import ApplicationName
+from core.utils.dsl_source import DslDocument
 from core.utils.results import ResultFile
 
-type ApplicationName = Literal["query", "factor", "backtest", "optimization", "sensitivity"]
-type VersionedApplicationName = Literal["factor", "backtest"]
+type DslCompilationApplication = Literal["query", "factor", "backtest"]
 type DocumentName = Literal[
     "overview/overview",
     "overview/projects",
@@ -57,6 +58,23 @@ class DslOperatorSearchResult(BaseModel):
     operators: list[DslOperatorSummary]
     matched: int
     returned: int
+
+
+class PythonDslCompilationResult(BaseModel):
+    application: DslCompilationApplication = Field(
+        description="本次采用的编译上下文。",
+    )
+    success: bool = Field(
+        description="源码是否已成功编译并通过该上下文的 DSL 校验。",
+    )
+    compiled_json: DslDocument | None = Field(
+        default=None,
+        description="成功时生成的 factors、derivatives、filters；失败时为 null。",
+    )
+    error_reason: str | None = Field(
+        default=None,
+        description="失败时的具体编译或校验原因；成功时为 null。",
+    )
 
 
 class DolphinFunctionDefinition(BaseModel):
@@ -116,8 +134,8 @@ class McpResult[T](BaseModel):
 
 
 __all__ = [
-    "ApplicationName", "VersionedApplicationName", "DocumentName", "ProjectListResult", "ProjectResult",
+    "DslCompilationApplication", "DocumentName", "ProjectListResult", "ProjectResult",
     "VersionedProjectResult", "VersionListResult", "VersionResult", "READ_ONLY", "WRITE", "CONTROL", "SCRIPT", "DslOperatorSummary",
-    "DslOperatorSearchResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions", "DolphinScriptResult",
+    "DslOperatorSearchResult", "PythonDslCompilationResult", "DolphinFunctionDefinition", "DolphinFunctionDefinitions", "DolphinScriptResult",
     "WorkflowOutputFile", "WorkflowOutputs", "TaskLogDownload", "McpBatchRunItem", "McpResult",
 ]

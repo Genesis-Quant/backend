@@ -378,7 +378,8 @@ z-score，最后按残差
 - 日期、代码、市值、行业列的选择；
 - `factorCols`、`nGroups` 及基础数据版本。
 
-Runtime 应用进程启动时加载一次股票元数据并保存在 Python 模块变量中，后续调用直接复用。
+Runtime 在当前 Python 进程第一次需要股票元数据时加载并保存在模块变量中，后续调用直接复用；
+进程重启后的首次调用会重新读取。
 Factor 使用 `.SH/.SZ`，Backtest 将相同映射转换为 `.XSHG/.XSHE`，可通过 `getIndustry()` 读取。
 Backtest 不会自动
 向 `dataset_query` 结果添加 `industry`；调用方必须把该字典按 `code` 显式映射到待处理表，再调用
@@ -411,7 +412,7 @@ getTradeDates() -> 当前运行实际回放的有序 DATE 向量
 
 `initialize` 应读取参数并显式转换类型。`getParam(key)` 只接受标量 STRING 或 SYMBOL，并对空 key
 或缺失 key 直接抛错；如果需要一次遍历全部参数再使用 `getParams()`。`getIndustry()` 返回 Runtime
-应用进程启动时加载到 Python 变量的当前股票行业映射，不是按历史日期变化的 point-in-time 行业分类；字典只包含
+在当前进程首次使用时加载并缓存的股票行业映射，不是按历史日期变化的 point-in-time 行业分类；字典只包含
 Backtest 支持的 `.XSHG/.XSHE` 股票代码。插件提供
 `context.engine`，调用方自己的状态必须在 `initialize` 中创建。Arena 不向 context 注入 Factor 表、message、params 或任何
 `coreBacktest*` 变量。

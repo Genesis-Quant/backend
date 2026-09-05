@@ -77,10 +77,14 @@ CallToolResult.structuredContent.result
 - `read_arena_document(name)`：读取本文档表中的 Markdown。
 - `list_dsl_operators(search="", operator_type=null, limit=50)`：搜索基础字段和算符。
 - `describe_dsl_operator(operator)`：读取一个算符的精确节点 Schema。
+- `compile_python_dsl(python_source, application="query")`：用正式运行的同一编译器把首选 Python DSL
+  转为 JSON；失败时在 `error_reason` 返回具体原因，不创建项目或工作流。所有新建或修改的 Python
+  DSL 都应在调用 `run_*` 前通过该工具。
 - `describe_dolphindb_functions(names)`：查询 DolphinDB 内置函数签名和官方文档链接；Arena 回测
   helper 在 `arena://docs/backtest/dolphindb` 中说明。
 - `execute_dolphindb_script(script, max_rows=200)`：所有认证用户可用，使用只读运行账号在共享
-  DolphinDB 中执行测试脚本；其无计算资源沙箱和超时边界必须先读 `arena://docs/overview/dolphindb`。
+  DolphinDB 中执行测试脚本；它没有 CPU、内存配额或服务端资源沙箱，但有从连接成功起 10 分钟的
+  Session 截止时间。调用前必须先读 `arena://docs/overview/dolphindb`，不能把客户端超时当作资源隔离。
 - `get_current_user()`：读取当前认证用户。
 - `submit_feedback(content)`：以当前 Bearer Token 对应用户提交反馈，`content` 去除首尾空白后必须为
   1 到 4000 个字符；服务端固定记录来源为 `mcp`。成功返回本次新建的反馈记录。MCP 当前不提供
@@ -118,8 +122,9 @@ API 文档。`title` 去除首尾空格后长度为 1 到 128。Factor/Backtest 
 
 ```text
 1. 读取本页、对象关系、工作流文档和目标应用的 request/api/Schema
-2. 发现并校验所有 DSL 算符，按 overview/dsl 将单次使用的中间节点尽量嵌套并保持最小输出列；
-   Backtest 还要核对 DolphinDB 回测契约和插件函数白名单
+2. 默认编写 Python DSL，发现并核对所有算符，按 overview/dsl 将单次使用的中间节点尽量嵌套并保持
+   最小输出列；对每份源码调用 `compile_python_dsl`，修正全部错误后再继续；Backtest 还要核对
+   DolphinDB 回测契约和插件函数白名单
 3. create_project 或 get_project
 4. 调用目标应用的 run 工具，保存 workspace_id
 5. get_workspace_status(workspace_id) 轮询当前 Attempt

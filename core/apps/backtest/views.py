@@ -70,7 +70,7 @@ from core.utils.dsl_source import (
     BacktestApplicationRequest,
     DslDocument,
     DslSource,
-    compile_factor_dsl_source,
+    compile_backtest_dsl_source,
 )
 from core.utils.http import raise_api_http_error
 from core.utils.results import ResultFile
@@ -434,6 +434,6 @@ def catalog() -> BacktestCatalog:
 def compile_dataset_source(request: DslSource) -> DslDocument:
     """Compile a Backtest dataset DSL with its managed stock-pool symbol."""
     try:
-        return DslDocument.model_validate(compile_factor_dsl_source(request))
+        return DslDocument.model_validate(compile_backtest_dsl_source(request))
     except PythonDslCompileError as error:
         raise_api_http_error(error)

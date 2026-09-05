@@ -1,7 +1,10 @@
 # Query 请求
 
-Query 接收一份支持 JSON/Python 双源码的 `FactorQuery`，读取基础因子、计算派生列、执行逐行过滤，并生成
+Query 接收一份支持 Python/JSON 双源码的 `FactorQuery`，读取基础因子、计算派生列、执行逐行过滤，并生成
 `query.parquet`。Query 是单阶段接口；`run_query` 没有 `codes_query`。
+
+MCP 新建或修改 Query 时默认使用 Python DSL，并在提交前调用
+`compile_python_dsl(application="query")`；仅在用户明确选择 JSON 或延续既有 JSON 活动源码时使用 JSON。
 
 ## 调用
 
@@ -35,8 +38,8 @@ Query 项目、运行、历史参数与输出 API 见 `arena://docs/query/api`�
 `lookback` 使用 Pydantic TimeDelta 格式，例如 `P30D`、`P1Y`、`PT0S`。Runtime 会从
 `start_date - lookback` 开始加载数据，但最终输出只保留 `start_date..end_date`。
 
-`dsl_source` 的活动源码是唯一 DSL 执行依据；双源码保存、Python 的三个必需结果变量和未选中
-源码的处理规则见 `arena://docs/overview/dsl` 的“JSON 与 Python 双源码”。
+`dsl_source` 的活动源码是唯一 DSL 执行依据；双源码保存、Python 的两个必需结果变量和未选中
+源码的处理规则见 `arena://docs/overview/dsl` 的“Python 与 JSON 双源码”。
 
 ## 执行顺序
 
@@ -88,6 +91,8 @@ time, code, <factors...>, <命名 derivatives...>
 - 请求没有额外包一层 `dataset_query`；
 - 日期格式正确且 `lookback` 覆盖最长时序窗口；
 - 每个算符已用 `describe_dsl_operator` 核对；
+- 活动 Python 源码已用 `compile_python_dsl(application="query")` 编译成功，并将 `compiled_json` 的三项
+  结构同步到当前 `FactorQuery`；
 - 已把允许嵌套且只使用一次的中间节点内联，顶层输出列集合保持最小；
 - 所有 `filters` 都引用顶层 BOOL derivative；
 - 所有 `on` 字符串都引用顶层 BOOL derivative；

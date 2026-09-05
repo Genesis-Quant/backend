@@ -19,6 +19,7 @@ from runtime.apps.optimization.schema import (
     OptimizationParameters,
     OptimizationSettings,
 )
+from runtime.apps.query.dsl.query import derivative_references
 from runtime.apps.query.schema import FactorQuery
 from runtime.apps.sensitivity.schema import (
     SensitivityParameters,
@@ -181,10 +182,28 @@ def _validate_source_fields(
 
 def compile_factor_dsl_source(source: DslSource) -> dict[str, Any]:
     """Compile a Factor editor source with its managed stock-pool symbol."""
-    return compile_dsl_source(
+    document = compile_dsl_source(
         source,
         external_derivatives=FACTOR_STOCK_POOL_VALIDATION_DERIVATIVES,
     )
+    try:
+        validate_factor_editor_document(document, factor_columns=[], return_columns=[])
+    except ValueError as error:
+        raise PythonDslCompileError(str(error)) from error
+    return document
+
+
+def compile_backtest_dsl_source(source: DslSource) -> dict[str, Any]:
+    """Compile a Backtest dataset source and enforce its reserved names."""
+    document = compile_dsl_source(
+        source,
+        external_derivatives=FACTOR_STOCK_POOL_VALIDATION_DERIVATIVES,
+    )
+    try:
+        validate_backtest_editor_document(document)
+    except ValueError as error:
+        raise PythonDslCompileError(str(error)) from error
+    return document
 
 
 class FactorQueryRequest(BaseModel):
@@ -431,12 +450,8 @@ def factor_stock_pool_node(
     return member
 
 
-def backtest_dataset_runtime_query(
-    codes_query: FactorQuery | None,
-    dataset_query: ManagedDatasetQueryRequest,
-) -> FactorQuery:
-    """Build the complete Backtest dataset query before Runtime submission."""
-    document = dataset_query.compiled_document()
+def validate_backtest_editor_document(document: dict[str, Any]) -> None:
+    """Reject authored definitions and filters of the managed stock-pool node."""
     if (
         FACTOR_STOCK_POOL_NODE in document["factors"]
         or FACTOR_STOCK_POOL_NODE in document["derivatives"]
@@ -446,12 +461,54 @@ def backtest_dataset_runtime_query(
             "Backtest dataset DSL 不能定义或过滤 Backend 注入的 "
             "stock_pool_member"
         )
-    member = factor_stock_pool_node(codes_query)
+
+
+def backtest_dataset_runtime_query(
+    codes_query: FactorQuery | None,
+    dataset_query: ManagedDatasetQueryRequest,
+) -> FactorQuery:
+    """Build the complete Backtest dataset query before Runtime submission."""
+    document = dataset_query.compiled_document()
+    validate_backtest_editor_document(document)
+    stock_pool_derivatives = {
+        FACTOR_STOCK_POOL_NODE: FACTOR_ALL_MARKET_STOCK_POOL_NODE,
+    }
+    if codes_query is not None:
+        # FactorQuery has already checked that filters reference defined BOOL nodes.
+        if FACTOR_STOCK_POOL_NODE not in codes_query.filters:
+            raise ValueError("codes_query.filters 必须包含 stock_pool_member")
+        required: set[str] = set()
+        references: set[str] = set()
+        pending = [FACTOR_STOCK_POOL_NODE]
+        while pending:
+            name = pending.pop()
+            if name in required:
+                continue
+            required.add(name)
+            inputs = derivative_references(codes_query.derivatives[name])[0]
+            references.update(inputs)
+            pending.extend((inputs & codes_query.derivatives.keys()) - required)
+        stock_pool_derivatives = {
+            name: node.model_dump(mode="json")
+            for name, node in codes_query.derivatives.items()
+            if name in required
+        }
+        conflicts = required & set(document["factors"])
+        conflicts.update(
+            name for name in required & document["derivatives"].keys()
+            if document["derivatives"][name] != stock_pool_derivatives[name]
+        )
+        conflicts.update((references - required) & document["derivatives"].keys())
+        if conflicts:
+            raise ValueError(
+                "Backtest dataset DSL 与 codes_query 股票池依赖定义冲突："
+                f"{sorted(conflicts)}"
+            )
 
     return dataset_query.runtime_query({
         "factors": document["factors"],
         "derivatives": {
-            FACTOR_STOCK_POOL_NODE: member,
+            **stock_pool_derivatives,
             **document["derivatives"],
         },
         "filters": document["filters"],
@@ -601,6 +658,7 @@ __all__ = [
     "QueryApplicationRequest",
     "SensitivityApplicationRequest",
     "compile_application_payload",
+    "compile_backtest_dsl_source",
     "compile_dsl_source",
     "compile_factor_dsl_source",
 ]

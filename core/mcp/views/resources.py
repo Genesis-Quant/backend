@@ -37,7 +37,7 @@ def register_resources(server: MCPServer) -> None:
     @server.resource(
         "arena://docs/overview/dsl",
         title="Factor Query DSL",
-        description="JSON/Python 双源码保存、Runtime JSON 生成、派生节点、托管依赖、过滤器和算符发现方法。",
+        description="Python DSL 优先、编译为 JSON、双源码保存、派生节点、托管依赖、过滤器和算符发现方法。",
         mime_type="text/markdown",
     )
     def dsl_document() -> str:

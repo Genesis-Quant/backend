@@ -7,14 +7,24 @@ from pydantic import Field
 
 from runtime.database import create_session as create_dolphindb_session
 
-from core.utils.dsl import DslOperator, dsl_catalog
+from core.utils.dsl import DslOperator, PythonDslCompileError, dsl_catalog
+from core.utils.dsl_source import (
+    PYTHON_DSL_SOURCE_MAX_LENGTH,
+    DslDocument,
+    DslSource,
+    compile_backtest_dsl_source,
+    compile_dsl_source,
+    compile_factor_dsl_source,
+)
 
 from ..schemas import (
     DocumentName,
     DolphinFunctionDefinition,
     DolphinFunctionDefinitions,
+    DslCompilationApplication,
     DslOperatorSearchResult,
     McpResult,
+    PythonDslCompilationResult,
     READ_ONLY,
 )
 from ..services import authenticated_document, optional_parameter_count
@@ -55,6 +65,55 @@ def register_discovery_tools(server: MCPServer) -> None:
         if match is None:
             raise ValueError(f"不存在 DSL 算符：{operator}")
         return McpResult(result=match)
+
+    @server.tool(title="编译 Python DSL", annotations=READ_ONLY)
+    def compile_python_dsl(
+        python_source: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=PYTHON_DSL_SOURCE_MAX_LENGTH,
+                description=(
+                    "完整 Python Factor Query DSL 源码；必须定义 FACTORS 和 "
+                    "FILTERS。只做编译与校验，不创建项目或工作流。"
+                ),
+            ),
+        ],
+        application: Annotated[
+            DslCompilationApplication,
+            Field(
+                description=(
+                    "编译上下文：run_query 及所有 codes_query 使用 query；"
+                    "Factor/Backtest 的 dataset_query 分别使用 factor/backtest，"
+                    "以允许引用 Backend 托管的 stock_pool_member。"
+                ),
+            ),
+        ] = "query",
+    ) -> McpResult[PythonDslCompilationResult]:
+        """Compile Python DSL into the exact JSON document used by Arena."""
+        source = DslSource(
+            language="python",
+            json_source="",
+            python_source=python_source,
+        )
+        compiler = {
+            "query": compile_dsl_source,
+            "factor": compile_factor_dsl_source,
+            "backtest": compile_backtest_dsl_source,
+        }[application]
+        try:
+            compiled = DslDocument.model_validate(compiler(source))
+        except (PythonDslCompileError, ValueError) as error:
+            return McpResult(result=PythonDslCompilationResult(
+                application=application,
+                success=False,
+                error_reason=str(error),
+            ))
+        return McpResult(result=PythonDslCompilationResult(
+            application=application,
+            success=True,
+            compiled_json=compiled,
+        ))
 
     @server.tool(title="查询 DolphinDB 函数签名", annotations=READ_ONLY)
     def describe_dolphindb_functions(

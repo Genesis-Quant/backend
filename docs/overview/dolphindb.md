@@ -38,7 +38,7 @@ execute_dolphindb_script(script, max_rows=200)
   "column_count": 2,
   "columns": ["name", "version"],
   "truncated": false,
-  "value": [{"name": "Backtest", "version": "2.00.18.11"}]
+  "value": [{"name": "Backtest", "version": "2.00.16.32"}]
 }
 ```
 
@@ -91,5 +91,7 @@ result
 [OSQP](https://docs.dolphindb.com/en/3.00.5/Functions/o/osqp.html)、
 [quadprog](https://docs.dolphindb.com/zh/Functions/q/quadprog.html)。
 
-本文最后按 DolphinDB Server `2.00.18`、Backtest `2.00.18.11`、MatchingEngineSimulator
-`2.00.18.11` 于 2026-08-15 验证。
+本页示例中的 Backtest 版本与 `arena://docs/backtest/interfaces` 当前能力矩阵一致，为
+`2.00.16.32`。Server、Backtest 和 MatchingEngineSimulator 的实际版本必须在目标部署中通过本工具
+重新读取；只要实际 Backtest 版本与接口矩阵不同，就必须重新验证接口、返回形式和结果字段，不能只
+替换文档版本号。本页不再为未实时查询的 Server 或其他插件声明“当前版本”。

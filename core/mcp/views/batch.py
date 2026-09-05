@@ -45,7 +45,6 @@ from core.utils.dsl_source import (
 )
 
 from ..auth import current_user
-from ..contracts import validate_mcp_factor_parameters
 from ..schemas import CONTROL, McpBatchRunItem, McpResult, READ_ONLY, WRITE, WorkflowOutputFile, WorkflowOutputs
 
 
@@ -74,8 +73,6 @@ def register_batch_tools(server: MCPServer) -> None:
         request = BatchRunRequest[FactorAnalysisApplicationRequest].model_validate({
             "items": [item.model_dump() for item in items],
         })
-        for item in request.items:
-            validate_mcp_factor_parameters(item.parameters.runtime_parameters())
         with database_session_factory()() as session:
             user = current_user(session)
             result = submit_factor_batch(session, user.id, project_id, request.items)

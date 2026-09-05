@@ -64,7 +64,6 @@ from core.utils.dsl_source import (
 )
 
 from ..auth import current_user
-from ..contracts import validate_mcp_factor_parameters
 from ..schemas import (
     McpResult,
     CONTROL,
@@ -277,7 +276,6 @@ def register_project_tools(server: MCPServer) -> None:
     ) -> McpResult[WorkflowSubmitted]:
         """Validate and submit one Factor workflow."""
         prepared = FactorAnalysisApplicationRequest.model_validate(parameters)
-        validate_mcp_factor_parameters(prepared.runtime_parameters())
         with database_session_factory()() as session:
             user = current_user(session)
             workspace = submit_project_analysis(

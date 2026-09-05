@@ -54,7 +54,11 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 `codes_query` 与 `dataset_query` 均可通过 `dsl_source` 同时保存 JSON/Python 源码，`language` 决定
 本次编译版本。活动源码、未选中草稿和 Python 必需结果变量的规则见
-`arena://docs/overview/dsl` 的“JSON 与 Python 双源码”。
+`arena://docs/overview/dsl` 的“Python 与 JSON 双源码”。
+
+MCP 新建或修改回测查询时优先使用 Python DSL。`codes_query` 调用
+`compile_python_dsl(application="query")`，`dataset_query` 调用
+`compile_python_dsl(application="backtest")`；不能把 Backtest 上下文用于第一阶段查询。
 
 `adj` **不会复权 `dataset_query` 的 factors/derivatives**。它只改变用于插件撮合的 message 及由其
 产生的委托、成交和持仓价格。凡是把 DSL 中任意原始价格、价格差或价格型派生值与 message/持仓
@@ -83,7 +87,11 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 Backend 在生成调度器输入 JSON 时统一补全
 `dataset_query.derivatives.stock_pool_member`：动态股票池复用 `codes_query` 中参与过滤的同名节点，
-静态股票池使用恒真节点。该节点只作为策略可读取的逐日状态列，不会自动加入第二阶段 `filters`；
+该节点可以是任意合法的 BOOL 表达式，不受因子分析面板的四个指数选项限制。Backend 同时复制其
+递归依赖的命名节点（包括嵌套表达式和 `on` 的依赖），不复制无关列或第一阶段的其他 filters。
+第二阶段已定义同名依赖时，校验后的节点必须一致；不得用第二阶段的派生列替换股票池依赖的
+同名基础字段。有冲突会直接报错，不会静默覆盖。静态股票池使用恒真节点。
+该节点只作为策略可读取的逐日状态列，不会自动加入第二阶段 `filters`；
 保存的编辑器源码保持不变。Runtime 只接收补全后的请求，不再负责猜测或注入该业务字段。
 
 ## `dataset_query`
@@ -251,6 +259,7 @@ def finalize(mutable context)
 - 静态代码域非空，或第一阶段能产生候选代码；
 - 第二阶段仍包含退出持仓所需的代码；
 - `dataset_query` 已嵌套单次使用的中间节点，只保留回调、过滤、复用或核验真正需要的顶层列；
+- `codes_query` 和 `dataset_query` 的活动 Python 源码分别使用 `query`、`backtest` 上下文编译成功；
 - 所有信号通过 `getLastData` / `getHistoryData` 使用当前日期之前的数据；
 - 调用 `factor::factorPreprocess` 时只传严格历史表，并显式提供与研究口径一致的市值列和行业列；
 - `params` 的 key 均存在并在 initialize 转换类型；

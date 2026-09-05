@@ -44,6 +44,10 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 `stock_pool_member` 则按下文股票池契约注入。JSON/Python 双源码的通用保存和编译规则见
 `arena://docs/overview/dsl`。
 
+MCP 新建或修改两阶段查询时优先使用 Python DSL。`codes_query` 调用
+`compile_python_dsl(application="query")`，`dataset_query` 调用
+`compile_python_dsl(application="factor")`；两份源码都成功后才能提交分析。
+
 ## 两阶段查询
 
 使用指数股票池时，`run_factor_analysis` 和 `run_factor_batch` 按两阶段执行：
@@ -98,8 +102,10 @@ save_version(application="factor", project_id=..., workflow_instance_id=..., rem
 | 中证 1000 | `weight_000852SH` |
 
 第一阶段可以另外添加估值、流动性等候选筛选，但不能再用 `is_member` 等别名重复定义指数成员条件。
-网页和 MCP 只把 `codes_query.stock_pool_member` 识别为股票池选择；别名会造成页面显示、复制版本与
-实际过滤条件不一致。MCP 在提交工作流前检查节点名称、结构和 filter，失败时直接返回具体字段路径。
+网页和 MCP 只把 `codes_query.stock_pool_member` 识别为股票池选择；别名会被当作普通派生节点或
+filter，可能造成页面显示、复制版本与实际过滤条件不一致。Backend 只强制检查规范节点是否存在、
+是否使用受支持指数权重构造以及是否位于 filter 中，无法根据任意名称推断另一个节点是否在语义上
+重复了成员条件，因此调用方不得依赖服务端自动识别别名。
 
 ### 在分析 DSL 中使用 `stock_pool_member`
 
@@ -157,8 +163,9 @@ Python 源码中创建同名 OP，或把它加入分析 DSL 的 `filters`；Back
 5. 将残差再次 z-score；
 6. 按残差从小到大划分 `n_groups` 个等数量组。
 
-`industry_column=industry` 时，行业映射从 Runtime 应用进程启动时加载的 Python 模块变量读取，
-不由 `dataset_query` 提供。选择 `industry_l0` 至 `industry_l3` 时，Runtime 改用 CoreData 中按日期
+`industry_column=industry` 时，Runtime 在当前 Python 进程第一次需要股票元数据时读取行业映射，
+随后缓存在模块变量中并在该进程生命周期内复用；进程重启后的首次调用会重新读取。该映射不由
+`dataset_query` 提供。选择 `industry_l0` 至 `industry_l3` 时，Runtime 改用 CoreData 中按日期
 变化的动态行业字段，并自动把该字段加入 `dataset_query`；其中 `industry_l0` 是项目 11 类行业，
 另外三个字段分别是申万一至三级分类。若某日某因子的有效样本数不足以完成回归，该日该因子的
 处理值和分组保持空值，不会用未中性化值代替。
@@ -305,6 +312,7 @@ Factor 请求对象；其中的 Query 同样支持双源码。一次最多 100 �
 - `codes_query` 独立有效，`dataset_query` 在托管节点注入后满足完整 `FactorQuery` 契约；
 - 股票池使用全市场规范，或仅由 `codes_query` 定义并过滤受支持的 `stock_pool_member`；
 - `dataset_query` 源码不重复声明托管节点；两种股票池模式都可按需引用 `stock_pool_member`；
+- `codes_query` 和 `dataset_query` 的活动 Python 源码分别使用 `query`、`factor` 上下文编译成功；
 - 第二阶段仍包含需要逐日生效的其它状态过滤；
 - `factor_columns`、`return_columns` 与实际输出列同名；
 - 两阶段都已嵌套单次使用的中间节点，没有输出与分析无关的临时列；
